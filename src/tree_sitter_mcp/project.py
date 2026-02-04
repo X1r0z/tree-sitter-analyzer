@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections import OrderedDict
 from pathlib import Path
 
 from .analyzer import (
@@ -64,8 +65,7 @@ class ProjectAnalyzer:
         """
         self.path = path
         self.files = find_files(path)
-        self._analyzers: dict[str, CodeAnalyzer] = {}
-        self._analyzer_order: list[str] = []
+        self._analyzers: OrderedDict[str, CodeAnalyzer] = OrderedDict()
         self._file_contents_cache: dict[str, bytes] = {}
 
     def _get_file_contents(self, file_path: str) -> bytes | None:
@@ -89,8 +89,7 @@ class ProjectAnalyzer:
     def _get_analyzer(self, file_path: str) -> CodeAnalyzer | None:
         """Get or create an analyzer for a file with LRU eviction."""
         if file_path in self._analyzers:
-            self._analyzer_order.remove(file_path)
-            self._analyzer_order.append(file_path)
+            self._analyzers.move_to_end(file_path)
             return self._analyzers[file_path]
 
         try:
@@ -99,11 +98,9 @@ class ProjectAnalyzer:
             return None
 
         self._analyzers[file_path] = analyzer
-        self._analyzer_order.append(file_path)
 
         while len(self._analyzers) > self.MAX_CACHED_ANALYZERS:
-            oldest = self._analyzer_order.pop(0)
-            del self._analyzers[oldest]
+            self._analyzers.popitem(last=False)
 
         return analyzer
 

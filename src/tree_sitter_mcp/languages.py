@@ -72,7 +72,7 @@ LANGUAGE_QUERIES: dict[str, LanguageInfo] = {
         import_query="[(import_statement source: (string) @module) (export_statement source: (string) @module) (call_expression function: (identifier) @callee arguments: (arguments (string) @module))] @import",
         variable_query="[(variable_declarator name: (identifier) @name) (variable_declarator name: (object_pattern (shorthand_property_identifier_pattern) @name)) (variable_declarator name: (array_pattern (identifier) @name)) (assignment_expression left: (identifier) @name)] @declaration",
         string_query="[(string) (template_string)] @string",
-        field_query="(class_body (field_definition property: [(property_identifier) (private_property_identifier)] @name)) @field",
+        field_query="(field_definition property: [(property_identifier) (private_property_identifier)] @name) @field",
     ),
     "typescript": LanguageInfo(
         name="typescript",
@@ -83,7 +83,7 @@ LANGUAGE_QUERIES: dict[str, LanguageInfo] = {
         import_query="[(import_statement source: (string) @module) (export_statement source: (string) @module)] @import",
         variable_query="[(variable_declarator name: (identifier) @name) (variable_declarator name: (object_pattern (shorthand_property_identifier_pattern) @name)) (variable_declarator name: (array_pattern (identifier) @name)) (assignment_expression left: (identifier) @name)] @declaration",
         string_query="[(string) (template_string)] @string",
-        field_query="[(class_body [(public_field_definition name: (property_identifier) @name type: (type_annotation)? @type) (public_field_definition name: (private_property_identifier) @name type: (type_annotation)? @type)]) (interface_body (property_signature name: (property_identifier) @name type: (type_annotation)? @type))] @field",
+        field_query="[(public_field_definition name: [(property_identifier) (private_property_identifier)] @name type: (type_annotation)? @type) (property_signature name: (property_identifier) @name type: (type_annotation)? @type)] @field",
     ),
     "tsx": LanguageInfo(
         name="tsx",
@@ -94,7 +94,7 @@ LANGUAGE_QUERIES: dict[str, LanguageInfo] = {
         import_query="[(import_statement source: (string) @module) (export_statement source: (string) @module)] @import",
         variable_query="[(variable_declarator name: (identifier) @name) (variable_declarator name: (object_pattern (shorthand_property_identifier_pattern) @name)) (variable_declarator name: (array_pattern (identifier) @name)) (assignment_expression left: (identifier) @name)] @declaration",
         string_query="[(string) (template_string)] @string",
-        field_query="[(class_body [(public_field_definition name: (property_identifier) @name type: (type_annotation)? @type) (public_field_definition name: (private_property_identifier) @name type: (type_annotation)? @type)]) (interface_body (property_signature name: (property_identifier) @name type: (type_annotation)? @type))] @field",
+        field_query="[(public_field_definition name: [(property_identifier) (private_property_identifier)] @name type: (type_annotation)? @type) (property_signature name: (property_identifier) @name type: (type_annotation)? @type)] @field",
     ),
     "java": LanguageInfo(
         name="java",
@@ -116,7 +116,7 @@ LANGUAGE_QUERIES: dict[str, LanguageInfo] = {
         import_query="(import_spec path: [(interpreted_string_literal) (raw_string_literal)] @module) @import",
         variable_query="[(short_var_declaration left: (expression_list (identifier) @name)) (var_spec name: (identifier) @name)] @declaration",
         string_query="[(interpreted_string_literal) (raw_string_literal)] @string",
-        field_query="(field_declaration_list (field_declaration name: (field_identifier) @name type: (_) @type)) @field",
+        field_query="(field_declaration name: (field_identifier) @name type: (_) @type) @field",
     ),
 }
 

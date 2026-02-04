@@ -402,6 +402,7 @@ class CodeAnalyzer:
         name_nodes = captures.get("name", [])
 
         functions = []
+        func_ranges: list[tuple[int, int]] = []
         for func_node in func_nodes:
             name = ""
             for name_node in name_nodes:
@@ -412,6 +413,11 @@ class CodeAnalyzer:
                     name = self._node_text(name_node)
                     break
             if name:
+                start, end = func_node.start_byte, func_node.end_byte
+                is_nested = any(s < start and end <= e for s, e in func_ranges)
+                if is_nested:
+                    continue
+                func_ranges.append((start, end))
                 class_name = self._find_enclosing_class(func_node)
                 functions.append(
                     FunctionInfo(
@@ -594,6 +600,7 @@ class CodeAnalyzer:
         name_nodes = captures.get("name", [])
 
         classes = []
+        class_ranges: list[tuple[int, int]] = []
         for class_node in class_nodes:
             name = ""
             for name_node in name_nodes:
@@ -604,6 +611,11 @@ class CodeAnalyzer:
                     name = self._node_text(name_node)
                     break
             if name:
+                start, end = class_node.start_byte, class_node.end_byte
+                is_nested = any(s < start and end <= e for s, e in class_ranges)
+                if is_nested:
+                    continue
+                class_ranges.append((start, end))
                 methods = self._extract_methods_from_class(class_node)
                 if self._language == "go":
                     methods = sorted(set(methods) | methods_by_class.get(name, set()))

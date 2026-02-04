@@ -371,7 +371,12 @@ class CodeAnalyzer:
             if operand_node:
                 obj_name = self._node_text(operand_node)
         else:
-            id_types = ("identifier", "property_identifier", "field_identifier")
+            id_types = (
+                "identifier",
+                "property_identifier",
+                "private_property_identifier",
+                "field_identifier",
+            )
             attr_types = ("attribute", "member_expression", "selector_expression")
             ids = []
             for child in node.children:
@@ -1176,7 +1181,11 @@ class CodeAnalyzer:
             obj_name = None
 
             if self._language == "java":
-                if call_node.type == "object_creation_expression":
+                if call_node.type == "explicit_constructor_invocation":
+                    ctor_node = call_node.child_by_field_name("constructor")
+                    if ctor_node:
+                        callee = self._node_text(ctor_node)
+                elif call_node.type == "object_creation_expression":
                     type_node = call_node.child_by_field_name("type")
                     if type_node:
                         if type_node.type == "generic_type":

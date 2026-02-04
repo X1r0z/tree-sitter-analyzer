@@ -24,7 +24,7 @@ def get_functions(path: str, query: str = "") -> dict:
 
     Args:
         path: Directory path (searched recursively)
-        query: Optional filter string for fuzzy matching function/method names (contains match)
+        query: Optional filter pattern for function/method names (regex match)
     """
     try:
         path = os.path.realpath(path)
@@ -46,7 +46,7 @@ def get_classes(path: str, query: str = "") -> dict:
 
     Args:
         path: Directory path (searched recursively)
-        query: Optional filter string for fuzzy matching class names (contains match)
+        query: Optional filter pattern for class names (regex match)
     """
     try:
         path = os.path.realpath(path)
@@ -91,7 +91,7 @@ def get_imports(path: str, query: str = "") -> dict:
 
     Args:
         path: Directory path (searched recursively)
-        query: Optional filter string for fuzzy matching module names (contains match)
+        query: Optional filter pattern for module names (regex match)
     """
     try:
         path = os.path.realpath(path)
@@ -113,7 +113,7 @@ def get_variables(path: str, query: str = "") -> dict:
 
     Args:
         path: Directory path (searched recursively)
-        query: Optional filter string for fuzzy matching variable names (contains match)
+        query: Optional filter pattern for variable names (regex match)
     """
     try:
         path = os.path.realpath(path)

@@ -94,7 +94,7 @@ tree-sitter-analyzer functions <path> [-q QUERY] [--body] [--json]
 
 | Option | Description |
 |--------|-------------|
-| `-q, --query` | Filter by function name (fuzzy match) |
+| `-q, --query` | Filter by function name (regex match) |
 | `--body` | Include function body in output |
 
 Examples:
@@ -105,6 +105,9 @@ tree-sitter-analyzer functions ./src/
 
 # Filter functions containing "get"
 tree-sitter-analyzer functions ./src/ -q get
+
+# Filter functions starting with "get_" using regex
+tree-sitter-analyzer functions ./src/ -q "^get_"
 
 # Include function bodies
 tree-sitter-analyzer functions ./src/ --body
@@ -123,7 +126,7 @@ tree-sitter-analyzer classes <path> [-q QUERY] [--json]
 
 | Option | Description |
 |--------|-------------|
-| `-q, --query` | Filter by class name (fuzzy match) |
+| `-q, --query` | Filter by class name (regex match) |
 
 Examples:
 
@@ -133,6 +136,9 @@ tree-sitter-analyzer classes ./src/
 
 # Filter classes containing "Handler"
 tree-sitter-analyzer classes ./src/ -q Handler
+
+# Filter classes ending with "Service" using regex
+tree-sitter-analyzer classes ./src/ -q "Service$"
 ```
 
 #### `fields` - Get Class Fields
@@ -167,7 +173,7 @@ tree-sitter-analyzer imports <path> [-q QUERY] [--json]
 
 | Option | Description |
 |--------|-------------|
-| `-q, --query` | Filter by module name (fuzzy match) |
+| `-q, --query` | Filter by module name (regex match) |
 
 Examples:
 
@@ -177,6 +183,9 @@ tree-sitter-analyzer imports ./src/
 
 # Find imports containing "json"
 tree-sitter-analyzer imports ./src/ -q json
+
+# Find imports matching "^(os|sys)$" using regex
+tree-sitter-analyzer imports ./src/ -q "^(os|sys)$"
 ```
 
 #### `variables` - Extract Variable Declarations
@@ -189,7 +198,7 @@ tree-sitter-analyzer variables <path> [-q QUERY] [--json]
 
 | Option | Description |
 |--------|-------------|
-| `-q, --query` | Filter by variable name (fuzzy match) |
+| `-q, --query` | Filter by variable name (regex match) |
 
 Examples:
 
@@ -199,6 +208,9 @@ tree-sitter-analyzer variables ./src/
 
 # Find variables containing "config"
 tree-sitter-analyzer variables ./src/ -q config
+
+# Find variables matching uppercase pattern using regex
+tree-sitter-analyzer variables ./src/ -q "^[A-Z_]+$"
 ```
 
 ### Inheritance Analysis

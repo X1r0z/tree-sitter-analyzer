@@ -440,7 +440,7 @@ Supported languages: Python, JavaScript/TypeScript, Java, Go
     # functions command
     p_functions = subparsers.add_parser("functions", help="Extract all function/method definitions")
     p_functions.add_argument("path", help="Directory path")
-    p_functions.add_argument("-q", "--query", help="Filter by function name (fuzzy match)")
+    p_functions.add_argument("-q", "--query", help="Filter by function name (regex match)")
     p_functions.add_argument("--body", action="store_true", help="Include function body")
     add_format_args(p_functions)
     p_functions.set_defaults(func=cmd_functions)
@@ -450,7 +450,7 @@ Supported languages: Python, JavaScript/TypeScript, Java, Go
         "classes", help="Extract all class/struct/interface definitions"
     )
     p_classes.add_argument("path", help="Directory path")
-    p_classes.add_argument("-q", "--query", help="Filter by class name (fuzzy match)")
+    p_classes.add_argument("-q", "--query", help="Filter by class name (regex match)")
     add_format_args(p_classes)
     p_classes.set_defaults(func=cmd_classes)
 
@@ -464,14 +464,14 @@ Supported languages: Python, JavaScript/TypeScript, Java, Go
     # imports command
     p_imports = subparsers.add_parser("imports", help="Extract all import statements")
     p_imports.add_argument("path", help="Directory path")
-    p_imports.add_argument("-q", "--query", help="Filter by module name (fuzzy match)")
+    p_imports.add_argument("-q", "--query", help="Filter by module name (regex match)")
     add_format_args(p_imports)
     p_imports.set_defaults(func=cmd_imports)
 
     # variables command
     p_variables = subparsers.add_parser("variables", help="Extract all variable declarations")
     p_variables.add_argument("path", help="Directory path")
-    p_variables.add_argument("-q", "--query", help="Filter by variable name (fuzzy match)")
+    p_variables.add_argument("-q", "--query", help="Filter by variable name (regex match)")
     add_format_args(p_variables)
     p_variables.set_defaults(func=cmd_variables)
 

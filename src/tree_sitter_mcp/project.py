@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from .analyzer import (
@@ -106,16 +107,23 @@ class ProjectAnalyzer:
 
         return analyzer
 
+    def _match_query(self, name: str, query: str) -> bool:
+        """Check if name matches query using regex."""
+        if not query:
+            return True
+        try:
+            return bool(re.search(query, name))
+        except re.error:
+            return query in name
+
     def get_functions(self, query: str = "") -> list[FunctionInfo]:
         """Get all functions from all files."""
         functions = []
         for file_path in self.files:
-            if query and not self._file_contains_text(file_path, query):
-                continue
             analyzer = self._get_analyzer(file_path)
             if analyzer:
                 for f in analyzer.get_functions():
-                    if not query or query in f.name:
+                    if self._match_query(f.name, query):
                         functions.append(f)
         return functions
 
@@ -123,12 +131,10 @@ class ProjectAnalyzer:
         """Get all classes from all files."""
         classes = []
         for file_path in self.files:
-            if query and not self._file_contains_text(file_path, query):
-                continue
             analyzer = self._get_analyzer(file_path)
             if analyzer:
                 for c in analyzer.get_classes():
-                    if not query or query in c.name:
+                    if self._match_query(c.name, query):
                         classes.append(c)
         return classes
 
@@ -156,12 +162,10 @@ class ProjectAnalyzer:
         """Get all imports from all files."""
         imports = []
         for file_path in self.files:
-            if query and not self._file_contains_text(file_path, query):
-                continue
             analyzer = self._get_analyzer(file_path)
             if analyzer:
                 for i in analyzer.get_imports():
-                    if not query or query in i.module:
+                    if self._match_query(i.module, query):
                         imports.append(i)
         return imports
 
@@ -169,12 +173,10 @@ class ProjectAnalyzer:
         """Get all variables from all files."""
         variables = []
         for file_path in self.files:
-            if query and not self._file_contains_text(file_path, query):
-                continue
             analyzer = self._get_analyzer(file_path)
             if analyzer:
                 for v in analyzer.get_variables():
-                    if not query or query in v.name:
+                    if self._match_query(v.name, query):
                         variables.append(v)
         return variables
 

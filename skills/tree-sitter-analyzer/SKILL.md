@@ -80,6 +80,23 @@ tree-sitter-analyzer functions ./src/
 tree-sitter-analyzer functions ./src/ --json
 ```
 
+### Filtering JSON Output with jq
+
+When using `--json` output, prefer piping results through `jq` to extract only the fields you need, rather than outputting all results directly. This reduces LLM context consumption and focuses on relevant information.
+
+```bash
+# Extract only function names
+tree-sitter-analyzer functions ./src/ --json | jq '.functions[].name'
+
+# Get file and line for each class
+tree-sitter-analyzer classes ./src/ --json | jq '.classes[] | {name, file, start_line}'
+
+# Filter callers and show caller + line
+tree-sitter-analyzer callers ./src/ -f process_data --json | jq '.callers[] | "\(.caller):\(.line)"'
+```
+
+Refer to the JSON Output Formats section below for the structure of each command's output.
+
 ## Commands
 
 ### Code Structure

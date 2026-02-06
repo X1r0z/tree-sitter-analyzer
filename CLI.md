@@ -129,9 +129,6 @@ tree-sitter-analyzer fields <path> -c CLASS_NAME [--json] [--yaml]
 Examples:
 
 ```bash
-# Get fields of a class
-tree-sitter-analyzer fields ./src/models.py -c User
-
 # Search across a project
 tree-sitter-analyzer fields ./src/ -c DatabaseConfig
 ```

@@ -173,9 +173,6 @@ tree-sitter-analyzer fields <path> -c CLASS_NAME [--json]
 Examples:
 
 ```bash
-# Get fields of a class
-tree-sitter-analyzer fields ./src/models.py -c User
-
 # Search across a project
 tree-sitter-analyzer fields ./src/ -c DatabaseConfig
 ```
@@ -421,7 +418,7 @@ tree-sitter-analyzer callees /path/to/project -f <FUNCTION> --json
 # "Where is this identifier used?"
 tree-sitter-analyzer symbols /path/to/project -n <NAME> --json
 
-# "Show me all classes / all functions" (optionally filter by fuzzy query)
+# "Show me all classes / all functions" (optionally filter by regex query)
 tree-sitter-analyzer classes /path/to/project -q <QUERY>
 tree-sitter-analyzer functions /path/to/project -q <QUERY>
 ```

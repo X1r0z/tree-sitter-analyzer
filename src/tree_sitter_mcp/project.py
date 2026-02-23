@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import concurrent.futures
+import contextlib
 import re
 from collections import OrderedDict, deque
 from pathlib import Path
@@ -52,10 +54,63 @@ def find_files(path: str) -> list[str]:
     return sorted(set(files))
 
 
+def _process_file_for_callers(
+    file_path: str, function_name: str, class_name: str | None
+) -> list[dict]:
+    """Worker function for parallel caller search."""
+    try:
+        analyzer = CodeAnalyzer(file_path)
+        file_callers = analyzer.get_function_callers(function_name, class_name)
+        results = []
+        for caller_info in file_callers:
+            results.append(
+                {
+                    "caller": caller_info["caller"],
+                    "line": caller_info["line"],
+                    "file": file_path,
+                    "target_class": caller_info.get("target_class"),
+                }
+            )
+        return results
+    except Exception:
+        return []
+
+
+def _process_file_for_callees(
+    file_path: str, function_name: str, class_name: str | None
+) -> list[dict]:
+    """Worker function for parallel callee search."""
+    try:
+        analyzer = CodeAnalyzer(file_path)
+        # Check if function exists in file first (optimization inside worker)
+        # Actually get_function_callees calls get_all_functions_by_name internally,
+        # so we can just call get_function_callees directly if we trust it handles "not found" well.
+        # But ProjectAnalyzer logic checked "if funcs" before calling get_function_callees.
+        # Let's replicate the logic.
+        funcs = analyzer.get_all_functions_by_name(function_name, class_name)
+        if funcs:
+            callees = analyzer.get_function_callees(function_name, class_name)
+            results = []
+            for c in callees:
+                results.append(
+                    {
+                        "callee": c["callee"],
+                        "line": c["line"],
+                        "file": file_path,
+                        "class_name": c.get("class_name"),
+                    }
+                )
+            return results
+        return []
+    except Exception:
+        return []
+
+
 class ProjectAnalyzer:
     """Analyzes multiple source files in a project."""
 
     MAX_CACHED_ANALYZERS: int = 1000
+    PARALLEL_THRESHOLD: int = 10
 
     def __init__(self, path: str):
         """Initialize with a directory.
@@ -116,10 +171,10 @@ class ProjectAnalyzer:
     def get_functions(self, query: str = "") -> list[FunctionInfo]:
         """Get all functions from all files."""
         functions = []
-        
+
         # Fast path optimization for simple queries
         is_simple_query = query and not any(c in query for c in ".^$*+?{}[]|()\\")
-        
+
         for file_path in self.files:
             if is_simple_query and not self._file_contains_text(file_path, query):
                 continue
@@ -134,7 +189,7 @@ class ProjectAnalyzer:
     def get_classes(self, query: str = "") -> list[ClassInfo]:
         """Get all classes from all files."""
         classes = []
-        
+
         # Fast path optimization for simple queries
         is_simple_query = query and not any(c in query for c in ".^$*+?{}[]|()\\")
 
@@ -172,7 +227,7 @@ class ProjectAnalyzer:
     def get_imports(self, query: str = "") -> list[ImportInfo]:
         """Get all imports from all files."""
         imports = []
-        
+
         # Fast path optimization for simple queries
         is_simple_query = query and not any(c in query for c in ".^$*+?{}[]|()\\")
 
@@ -190,7 +245,7 @@ class ProjectAnalyzer:
     def get_variables(self, query: str = "") -> list[VariableInfo]:
         """Get all variables from all files."""
         variables = []
-        
+
         # Fast path optimization for simple queries
         is_simple_query = query and not any(c in query for c in ".^$*+?{}[]|()\\")
 
@@ -233,44 +288,78 @@ class ProjectAnalyzer:
 
     def get_callers(self, function_name: str, class_name: str | None = None) -> list[dict]:
         """Find all callers of a function across all files."""
+        relevant_files = [f for f in self.files if self._file_contains_text(f, function_name)]
+
+        if not relevant_files:
+            return []
+
         callers = []
-        for file_path in self.files:
-            if not self._file_contains_text(file_path, function_name):
-                continue
-            analyzer = self._get_analyzer(file_path)
-            if analyzer:
-                file_callers = analyzer.get_function_callers(function_name, class_name)
-                for caller_info in file_callers:
-                    callers.append(
-                        {
-                            "caller": caller_info["caller"],
-                            "line": caller_info["line"],
-                            "file": file_path,
-                            "target_class": caller_info.get("target_class"),
-                        }
-                    )
+
+        # Use sequential processing for small number of files to utilize cache and avoid overhead
+        if len(relevant_files) < self.PARALLEL_THRESHOLD:
+            for file_path in relevant_files:
+                analyzer = self._get_analyzer(file_path)
+                if analyzer:
+                    file_callers = analyzer.get_function_callers(function_name, class_name)
+                    for caller_info in file_callers:
+                        callers.append(
+                            {
+                                "caller": caller_info["caller"],
+                                "line": caller_info["line"],
+                                "file": file_path,
+                                "target_class": caller_info.get("target_class"),
+                            }
+                        )
+        else:
+            # Use parallel processing for larger number of files
+            with concurrent.futures.ProcessPoolExecutor() as executor:
+                futures = [
+                    executor.submit(_process_file_for_callers, f, function_name, class_name)
+                    for f in relevant_files
+                ]
+                for future in concurrent.futures.as_completed(futures):
+                    with contextlib.suppress(Exception):
+                        callers.extend(future.result())
+
         return sorted(callers, key=lambda x: (x["file"], x["line"]))
 
     def get_callees(self, function_name: str, class_name: str | None = None) -> list[dict]:
         """Find all functions called by a function across all files."""
+        relevant_files = [f for f in self.files if self._file_contains_text(f, function_name)]
+
+        if not relevant_files:
+            return []
+
         results = []
-        for file_path in self.files:
-            if not self._file_contains_text(file_path, function_name):
-                continue
-            analyzer = self._get_analyzer(file_path)
-            if analyzer:
-                funcs = analyzer.get_all_functions_by_name(function_name, class_name)
-                if funcs:
-                    callees = analyzer.get_function_callees(function_name, class_name)
-                    for c in callees:
-                        results.append(
-                            {
-                                "callee": c["callee"],
-                                "line": c["line"],
-                                "file": file_path,
-                                "class_name": c.get("class_name"),
-                            }
-                        )
+
+        # Use sequential processing for small number of files
+        if len(relevant_files) < self.PARALLEL_THRESHOLD:
+            for file_path in relevant_files:
+                analyzer = self._get_analyzer(file_path)
+                if analyzer:
+                    funcs = analyzer.get_all_functions_by_name(function_name, class_name)
+                    if funcs:
+                        callees = analyzer.get_function_callees(function_name, class_name)
+                        for c in callees:
+                            results.append(
+                                {
+                                    "callee": c["callee"],
+                                    "line": c["line"],
+                                    "file": file_path,
+                                    "class_name": c.get("class_name"),
+                                }
+                            )
+        else:
+            # Use parallel processing for larger number of files
+            with concurrent.futures.ProcessPoolExecutor() as executor:
+                futures = [
+                    executor.submit(_process_file_for_callees, f, function_name, class_name)
+                    for f in relevant_files
+                ]
+                for future in concurrent.futures.as_completed(futures):
+                    with contextlib.suppress(Exception):
+                        results.extend(future.result())
+
         return sorted(results, key=lambda x: (x["file"], x["line"]))
 
     def get_function_variables(
@@ -373,7 +462,7 @@ class ProjectAnalyzer:
 
     def get_sub_classes(self, class_name: str) -> list[ClassInfo]:
         """Get all child classes (descendants) that inherit from a specific class using BFS.
-        
+
         Uses text search pre-filtering to avoid parsing all files.
         """
         result = []
@@ -382,22 +471,22 @@ class ProjectAnalyzer:
 
         while queue:
             current_parent_name = queue.popleft()
-            
+
             # Find direct subclasses of current_parent_name
             # Scan files that contain the parent name
             for file_path in self.files:
                 if not self._file_contains_text(file_path, current_parent_name):
                     continue
-                    
+
                 analyzer = self._get_analyzer(file_path)
                 if not analyzer:
                     continue
-                    
+
                 # Check all classes in this file
                 for cls in analyzer.get_classes():
                     if cls.name in visited:
                         continue
-                        
+
                     if current_parent_name in cls.super_classes:
                         visited.add(cls.name)
                         result.append(cls)

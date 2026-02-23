@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -190,6 +191,8 @@ class CodeAnalyzer:
         self._parser: tree_sitter.Parser | None = None
         self._functions_cache: list[FunctionInfo] | None = None
         self._calls_cache: list[CallInfo] | None = None
+        self._calls_by_callee: dict[str, list[CallInfo]] | None = None
+        self._calls_by_caller: dict[str, list[CallInfo]] | None = None
         self._classes_cache: list[ClassInfo] | None = None
         self._imports_cache: list[ImportInfo] | None = None
         self._variables_cache: list[VariableInfo] | None = None
@@ -268,34 +271,34 @@ class CodeAnalyzer:
         try:
             cursor = tree_sitter.QueryCursor(query)
             matches = cursor.matches(self._tree.root_node)
-            
+
             results = []
             for match in matches:
                 # Handle different tree-sitter versions/bindings
                 if isinstance(match, tuple) and len(match) == 2:
                     _, captures = match
                 elif isinstance(match, tuple) and len(match) > 2:
-                     # Maybe (match_id, pattern_index, captures)
-                     captures = match[-1]
+                    # Maybe (match_id, pattern_index, captures)
+                    captures = match[-1]
                 else:
                     captures = match
 
                 match_dict = {}
                 if isinstance(captures, dict):
-                     for name, node in captures.items():
-                         if isinstance(node, list):
-                             match_dict[name] = node[0]
-                         else:
-                             match_dict[name] = node
+                    for name, node in captures.items():
+                        if isinstance(node, list):
+                            match_dict[name] = node[0]
+                        else:
+                            match_dict[name] = node
                 elif isinstance(captures, list):
                     for item in captures:
                         # item is (Node, str) or (Node, str, ...)
                         if isinstance(item, tuple) and len(item) >= 2:
-                             # usually (node, name)
-                             node = item[0]
-                             name = item[1]
-                             match_dict[name] = node
-                
+                            # usually (node, name)
+                            node = item[0]
+                            name = item[1]
+                            match_dict[name] = node
+
                 results.append(match_dict)
             return results
         except Exception as e:
@@ -365,12 +368,12 @@ class CodeAnalyzer:
             "class_body",
             "interface_declaration",
         }
-        
+
         # Go: method_declaration itself contains the receiver (class) info
         if self._language == "go" and node.type == "method_declaration":
-             receiver_class = self._extract_go_receiver_type(node)
-             if receiver_class:
-                 return receiver_class
+            receiver_class = self._extract_go_receiver_type(node)
+            if receiver_class:
+                return receiver_class
 
         current = node.parent
         while current:
@@ -416,7 +419,7 @@ class CodeAnalyzer:
                 if child.type == "parameter_list":
                     receiver_list = child
                     break
-        
+
         if not receiver_list:
             return None
 
@@ -425,7 +428,7 @@ class CodeAnalyzer:
                 type_node = param.child_by_field_name("type")
                 if type_node:
                     return self._unwrap_go_type(type_node)
-                
+
                 # Fallback to children traversal if type field is missing (rare)
                 for p in param.children:
                     if p.type == "pointer_type":
@@ -502,7 +505,7 @@ class CodeAnalyzer:
             return []
 
         matches = self._run_query_matches(lang_info.function_query)
-        
+
         # Extract function/name pairs
         func_pairs = []
         for match in matches:
@@ -510,13 +513,13 @@ class CodeAnalyzer:
             name_node = match.get("name")
             if func_node and name_node:
                 func_pairs.append((func_node, name_node))
-        
+
         # Sort nodes by start_byte to ensure outer functions are processed first
         func_pairs.sort(key=lambda p: (p[0].start_byte, -p[0].end_byte))
 
         functions = []
         func_ranges: list[tuple[int, int]] = []
-        
+
         for func_node, name_node in func_pairs:
             name = self._node_text(name_node)
             if not name:
@@ -526,7 +529,7 @@ class CodeAnalyzer:
             is_nested = any(s < start and end <= e for s, e in func_ranges)
             if is_nested:
                 continue
-            
+
             func_ranges.append((start, end))
             class_name = self._find_enclosing_class(func_node)
             functions.append(
@@ -605,14 +608,19 @@ class CodeAnalyzer:
         from anonymous functions like arrow functions.
         """
         funcs = self.get_all_functions_by_name(function_name, class_name)
-        all_calls = self.get_calls()
+        # Ensure calls are parsed and indexed
+        self.get_calls()
+        if self._calls_by_caller is None:
+            self._calls_by_caller = {}
+
         callees: list[dict] = []
         seen: set[tuple[str, str | None]] = set()
 
         if funcs:
             for func in funcs:
-                for call in all_calls:
-                    if call.caller == func.name and call.caller_class_name == func.class_name:
+                caller_calls = self._calls_by_caller.get(func.name, [])
+                for call in caller_calls:
+                    if call.caller_class_name == func.class_name:
                         callee = call.callee
                         if call.object_name:
                             callee = f"{call.object_name}.{callee}"
@@ -627,23 +635,24 @@ class CodeAnalyzer:
                                 }
                             )
         else:
-            for call in all_calls:
-                if call.caller == function_name:
-                    if class_name is not None and call.caller_class_name != class_name:
-                        continue
-                    callee = call.callee
-                    if call.object_name:
-                        callee = f"{call.object_name}.{callee}"
-                    key = (callee, call.caller_class_name)
-                    if key not in seen:
-                        seen.add(key)
-                        callees.append(
-                            {
-                                "callee": callee,
-                                "line": call.location.start_line,
-                                "class_name": call.caller_class_name,
-                            }
-                        )
+            # Fallback if we can't find the function definition but have calls attributed to it
+            caller_calls = self._calls_by_caller.get(function_name, [])
+            for call in caller_calls:
+                if class_name is not None and call.caller_class_name != class_name:
+                    continue
+                callee = call.callee
+                if call.object_name:
+                    callee = f"{call.object_name}.{callee}"
+                key = (callee, call.caller_class_name)
+                if key not in seen:
+                    seen.add(key)
+                    callees.append(
+                        {
+                            "callee": callee,
+                            "line": call.location.start_line,
+                            "class_name": call.caller_class_name,
+                        }
+                    )
         return callees
 
     def get_function_callers(self, function_name: str, class_name: str | None = None) -> list[dict]:
@@ -651,12 +660,16 @@ class CodeAnalyzer:
 
         Note: class_name is used to filter calls by the object name (e.g., self.method()).
         """
-        all_calls = self.get_calls()
+        # Ensure calls are parsed and indexed
+        self.get_calls()
+        if self._calls_by_callee is None:
+            self._calls_by_callee = {}
+
+        candidate_calls = self._calls_by_callee.get(function_name, [])
         callers: list[dict] = []
         seen: set[tuple[str, int]] = set()
-        for call in all_calls:
-            if call.callee != function_name:
-                continue
+
+        for call in candidate_calls:
             if class_name is not None:
                 matches_explicit_target = call.object_name == class_name
                 matches_implicit_same_class = (
@@ -706,20 +719,20 @@ class CodeAnalyzer:
                     methods_by_class.setdefault(func.class_name, set()).add(func.name)
 
         matches = self._run_query_matches(lang_info.class_query)
-        
+
         class_pairs = []
         for match in matches:
             class_node = match.get("class")
             name_node = match.get("name")
             if class_node and name_node:
                 class_pairs.append((class_node, name_node))
-                
+
         # Sort nodes by start_byte to ensure outer classes are processed first
         class_pairs.sort(key=lambda p: (p[0].start_byte, -p[0].end_byte))
 
         classes = []
         class_ranges: list[tuple[int, int]] = []
-        
+
         for class_node, name_node in class_pairs:
             name = self._node_text(name_node)
             if not name:
@@ -729,7 +742,7 @@ class CodeAnalyzer:
             is_nested = any(s < start and end <= e for s, e in class_ranges)
             if is_nested:
                 continue
-            
+
             class_ranges.append((start, end))
             methods = self._extract_methods_from_class(class_node)
             if self._language == "go":
@@ -893,6 +906,7 @@ class CodeAnalyzer:
         self, body_node: tree_sitter.Node, add_field_callback: Callable
     ) -> None:
         """Scan constructor body for 'this.prop = value' assignments."""
+
         def walk(node: tree_sitter.Node):
             if node.type == "assignment_expression":
                 left = node.child_by_field_name("left")
@@ -902,12 +916,20 @@ class CodeAnalyzer:
                     if obj and self._node_text(obj) == "this" and prop:
                         name = self._node_text(prop)
                         add_field_callback(name, node, None)
-            
+
             # Recurse but stop at function boundaries to avoid capturing nested function assignments
-            if node.type in {
-                "function_declaration", "function_expression", "arrow_function", 
-                "method_definition", "class_declaration", "class_expression"
-            } and node != body_node:
+            if (
+                node.type
+                in {
+                    "function_declaration",
+                    "function_expression",
+                    "arrow_function",
+                    "method_definition",
+                    "class_declaration",
+                    "class_expression",
+                }
+                and node != body_node
+            ):
                 return
 
             for child in node.children:
@@ -967,30 +989,30 @@ class CodeAnalyzer:
                         handle_expression(c)
                         return
                     return
-                
+
                 if node.type == "call_expression":
-                     func = node.child_by_field_name("function")
-                     if func:
-                         handle_expression(func)
-                     return
+                    func = node.child_by_field_name("function")
+                    if func:
+                        handle_expression(func)
+                    return
 
                 # Handle wrapper nodes
                 for child in node.named_children:
-                     handle_expression(child)
+                    handle_expression(child)
 
             def walk_heritage(node: tree_sitter.Node) -> None:
                 if node.type == "class_heritage":
                     for child in node.named_children:
                         if child.type in {"extends_clause", "implements_clause"}:
-                             for grandchild in child.named_children:
-                                 handle_expression(grandchild)
+                            for grandchild in child.named_children:
+                                handle_expression(grandchild)
                         else:
-                             handle_expression(child)
+                            handle_expression(child)
                     return
 
                 if node.type in {"extends_clause", "implements_clause"}:
                     for child in node.named_children:
-                         handle_expression(child)
+                        handle_expression(child)
                     return
 
                 for child in node.children:
@@ -1198,7 +1220,7 @@ class CodeAnalyzer:
             if node.type in field_types:
                 names = []
                 field_type = None
-                
+
                 # Go: try to get type directly
                 type_node = node.child_by_field_name("type")
                 if type_node:
@@ -1225,7 +1247,7 @@ class CodeAnalyzer:
                     ):
                         if not field_type:
                             field_type = self._node_text(child)
-                
+
                 if self._language == "go" and not names and field_type:
                     # Embedded field: name is implicit from type
                     # *T -> T, pkg.T -> T, *pkg.T -> T
@@ -1233,12 +1255,12 @@ class CodeAnalyzer:
                     type_str = field_type
                     if type_str.startswith("*"):
                         type_str = type_str[1:]
-                    
+
                     if "." in type_str:
                         names.append(type_str.split(".")[-1])
                     else:
                         names.append(type_str)
-                
+
                 for name in names:
                     add_field(name, self._node_location(node), field_type)
                 return
@@ -1251,7 +1273,7 @@ class CodeAnalyzer:
 
                         name = ""
                         field_type = None
-                        
+
                         # Extract type if present (for annotated assignments)
                         type_node = child.child_by_field_name("type")
                         if type_node:
@@ -1353,6 +1375,22 @@ class CodeAnalyzer:
                 )
 
         self._calls_cache = calls
+
+        # Build indices
+        self._calls_by_callee = {}
+        self._calls_by_caller = {}
+        for call in calls:
+            # Index by callee
+            if call.callee not in self._calls_by_callee:
+                self._calls_by_callee[call.callee] = []
+            self._calls_by_callee[call.callee].append(call)
+
+            # Index by caller
+            if call.caller:
+                if call.caller not in self._calls_by_caller:
+                    self._calls_by_caller[call.caller] = []
+                self._calls_by_caller[call.caller].append(call)
+
         return calls
 
     def get_imports(self) -> list[ImportInfo]:
@@ -1460,7 +1498,7 @@ class CodeAnalyzer:
                             "context": self._node_text(node.parent) if node.parent else "",
                         }
                     )
-                
+
                 if cursor.goto_first_child():
                     continue
 

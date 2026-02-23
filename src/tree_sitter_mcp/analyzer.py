@@ -19,7 +19,8 @@ def _get_compiled_query(language: str, query_str: str) -> tree_sitter.Query | No
         return None
     try:
         return tree_sitter.Query(lang, query_str)
-    except Exception:
+    except Exception as e:
+        print(f"Error compiling query for {language}: {e}")
         return None
 
 
@@ -199,7 +200,11 @@ class CodeAnalyzer:
         if not path.exists():
             raise FileNotFoundError(f"File not found: {file_path}")
 
-        self._source = path.read_bytes()
+        try:
+            self._source = path.read_bytes()
+        except OSError as e:
+            raise ValueError(f"Could not read file {file_path}: {e}")
+
         if not self._language:
             self._language = detect_language(file_path)
 
@@ -308,9 +313,16 @@ class CodeAnalyzer:
             "class_body",
             "interface_declaration",
         }
+        
+        # Go: method_declaration itself contains the receiver (class) info
+        if self._language == "go" and node.type == "method_declaration":
+             receiver_class = self._extract_go_receiver_type(node)
+             if receiver_class:
+                 return receiver_class
+
         current = node.parent
         while current:
-            if current.type == "method_declaration":
+            if self._language == "go" and current.type == "method_declaration":
                 receiver_class = self._extract_go_receiver_type(current)
                 if receiver_class:
                     return receiver_class
@@ -321,20 +333,55 @@ class CodeAnalyzer:
             current = current.parent
         return None
 
+    def _unwrap_go_type(self, type_node: tree_sitter.Node) -> str | None:
+        """Unwrap Go type (pointer, generic) to get the base type name."""
+        # print(f"Unwrapping type: {type_node.type} {self._node_text(type_node)}")
+        if type_node.type == "type_identifier":
+            return self._node_text(type_node)
+        elif type_node.type == "pointer_type":
+            # *Type or *Generic[T]
+            for child in type_node.children:
+                if child.type != "*":
+                    return self._unwrap_go_type(child)
+        elif type_node.type == "generic_type":
+            # Generic[T] -> Generic
+            base_type = type_node.child_by_field_name("type")
+            if base_type:
+                return self._unwrap_go_type(base_type)
+            # Fallback
+            for child in type_node.children:
+                if child.type == "type_identifier":
+                    return self._node_text(child)
+        return None
+
     def _extract_go_receiver_type(self, method_node: tree_sitter.Node) -> str | None:
         """Extract receiver type from a Go method_declaration node."""
-        for child in method_node.children:
-            if child.type == "parameter_list":
-                for param in child.children:
-                    if param.type == "parameter_declaration":
-                        for p in param.children:
-                            if p.type == "pointer_type":
-                                for pt in p.children:
-                                    if pt.type == "type_identifier":
-                                        return self._node_text(pt)
-                            if p.type == "type_identifier":
-                                return self._node_text(p)
-                break
+        # Try to get receiver field first
+        receiver_list = method_node.child_by_field_name("receiver")
+        if not receiver_list:
+            # Fallback: search for first parameter_list
+            for child in method_node.children:
+                if child.type == "parameter_list":
+                    receiver_list = child
+                    break
+        
+        if not receiver_list:
+            return None
+
+        for param in receiver_list.children:
+            if param.type == "parameter_declaration":
+                type_node = param.child_by_field_name("type")
+                if type_node:
+                    return self._unwrap_go_type(type_node)
+                
+                # Fallback to children traversal if type field is missing (rare)
+                for p in param.children:
+                    if p.type == "pointer_type":
+                        for pt in p.children:
+                            if pt.type == "type_identifier":
+                                return self._node_text(pt)
+                    if p.type == "type_identifier":
+                        return self._node_text(p)
         return None
 
     def _parse_attribute_node(self, node: tree_sitter.Node) -> tuple[str, str | None]:
@@ -776,68 +823,9 @@ class CodeAnalyzer:
 
     def _extract_fields_from_class(self, class_node: tree_sitter.Node) -> list[str]:
         """Extract field names from a class node."""
-        if self._language in {"javascript", "typescript", "tsx"}:
-            class_name_node = class_node.child_by_field_name("name")
-            class_name = self._node_text(class_name_node) if class_name_node else ""
-            return [f.name for f in self._extract_field_infos_js_like(class_node, class_name)]
-
-        fields: list[str] = []
-        seen: set[str] = set()
-        field_types = {
-            "field_definition",
-            "field_declaration",
-        }
-        method_types = {
-            "function_definition",
-            "method_definition",
-            "method_declaration",
-            "constructor_declaration",
-        }
-
-        def add_field(name: str) -> None:
-            if name and name not in seen:
-                seen.add(name)
-                fields.append(name)
-
-        def walk(node: tree_sitter.Node, inside_method: bool = False):
-            if node.type in method_types:
-                if self._language != "python":
-                    return
-                for child in node.children:
-                    walk(child, inside_method=True)
-                return
-            if node.type in field_types:
-                for child in node.children:
-                    if child.type in ("identifier", "property_identifier", "field_identifier"):
-                        add_field(self._node_text(child))
-                        break
-                    if child.type == "variable_declarator":
-                        for sub in child.children:
-                            if sub.type == "identifier":
-                                add_field(self._node_text(sub))
-                                break
-                        break
-                return
-            if self._language == "python" and node.type == "expression_statement" and inside_method:
-                for child in node.children:
-                    if child.type == "assignment":
-                        left_node = child.child_by_field_name("left")
-                        if left_node is not None and left_node.type == "attribute":
-                            obj_node = left_node.child_by_field_name("object")
-                            attr_node = left_node.child_by_field_name("attribute")
-                            if (
-                                obj_node is not None
-                                and attr_node is not None
-                                and self._node_text(obj_node) == "self"
-                            ):
-                                add_field(self._node_text(attr_node))
-                        break
-                return
-            for child in node.children:
-                walk(child, inside_method)
-
-        walk(class_node)
-        return fields
+        class_name_node = class_node.child_by_field_name("name")
+        class_name = self._node_text(class_name_node) if class_name_node else ""
+        return [f.name for f in self._extract_field_infos(class_node, class_name)]
 
     def _extract_super_classes_from_class(self, class_node: tree_sitter.Node) -> list[str]:
         """Extract parent class names from a class node."""
@@ -1105,15 +1093,21 @@ class CodeAnalyzer:
                     walk(child, inside_method=True)
                 return
             if node.type in field_types:
-                name = ""
+                names = []
                 field_type = None
+                
+                # Go: try to get type directly
+                type_node = node.child_by_field_name("type")
+                if type_node:
+                    field_type = self._node_text(type_node)
+
                 for child in node.children:
                     if child.type in ("identifier", "property_identifier", "field_identifier"):
-                        name = self._node_text(child)
+                        names.append(self._node_text(child))
                     elif child.type == "variable_declarator":
                         for sub in child.children:
                             if sub.type == "identifier":
-                                name = self._node_text(sub)
+                                names.append(self._node_text(sub))
                                 break
                     elif child.type in (
                         "type_annotation",
@@ -1126,31 +1120,58 @@ class CodeAnalyzer:
                         "array_type",
                         "scoped_type_identifier",
                     ):
-                        field_type = self._node_text(child)
-                if name:
+                        if not field_type:
+                            field_type = self._node_text(child)
+                
+                if self._language == "go" and not names and field_type:
+                    # Embedded field: name is implicit from type
+                    # *T -> T, pkg.T -> T, *pkg.T -> T
+                    # field_type string might be "*time.Timer" or "Reader"
+                    type_str = field_type
+                    if type_str.startswith("*"):
+                        type_str = type_str[1:]
+                    
+                    if "." in type_str:
+                        names.append(type_str.split(".")[-1])
+                    else:
+                        names.append(type_str)
+                
+                for name in names:
                     add_field(name, self._node_location(node), field_type)
                 return
-            if self._language == "python" and node.type == "expression_statement" and inside_method:
+            if self._language == "python" and node.type == "expression_statement":
                 for child in node.children:
                     if child.type == "assignment":
+                        left_node = child.child_by_field_name("left")
+                        if left_node is None:
+                            continue
+
                         name = ""
                         field_type = None
-                        left_node = child.child_by_field_name("left")
-                        if left_node is not None and left_node.type == "attribute":
-                            obj_node = left_node.child_by_field_name("object")
-                            attr_node = left_node.child_by_field_name("attribute")
-                            if (
-                                obj_node is not None
-                                and attr_node is not None
-                                and self._node_text(obj_node) == "self"
-                            ):
-                                name = self._node_text(attr_node)
+                        
+                        # Extract type if present (for annotated assignments)
                         type_node = child.child_by_field_name("type")
-                        if type_node is not None:
+                        if type_node:
                             field_type = self._node_text(type_node)
+
+                        if inside_method:
+                            # Instance attributes: self.x = ...
+                            if left_node.type == "attribute":
+                                obj_node = left_node.child_by_field_name("object")
+                                attr_node = left_node.child_by_field_name("attribute")
+                                if (
+                                    obj_node is not None
+                                    and attr_node is not None
+                                    and self._node_text(obj_node) == "self"
+                                ):
+                                    name = self._node_text(attr_node)
+                        else:
+                            # Class attributes: x = ... or x: int = ...
+                            if left_node.type == "identifier":
+                                name = self._node_text(left_node)
+
                         if name:
                             add_field(name, self._node_location(child), field_type)
-                        break
                 return
             for child in node.children:
                 walk(child, inside_method)

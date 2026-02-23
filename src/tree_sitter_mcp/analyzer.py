@@ -190,6 +190,10 @@ class CodeAnalyzer:
         self._functions_cache: list[FunctionInfo] | None = None
         self._calls_cache: list[CallInfo] | None = None
         self._classes_cache: list[ClassInfo] | None = None
+        self._imports_cache: list[ImportInfo] | None = None
+        self._variables_cache: list[VariableInfo] | None = None
+        self._strings_cache: list[StringLiteral] | None = None
+        self._fields_cache: dict[str, list[FieldInfo]] = {}
 
         if file_path:
             self._load_file(file_path)
@@ -1101,6 +1105,9 @@ class CodeAnalyzer:
 
     def get_fields(self, class_name: str) -> list[FieldInfo]:
         """Get all fields, optionally filtered by class name."""
+        if class_name in self._fields_cache:
+            return self._fields_cache[class_name]
+
         if not self._language:
             return []
 
@@ -1117,6 +1124,7 @@ class CodeAnalyzer:
             field_infos = self._get_fields_from_class_node(cls.name)
             fields.extend(field_infos)
 
+        self._fields_cache[class_name] = fields
         return fields
 
     def _get_fields_from_class_node(self, class_name: str) -> list[FieldInfo]:
@@ -1347,6 +1355,9 @@ class CodeAnalyzer:
         return calls
 
     def get_imports(self) -> list[ImportInfo]:
+        if self._imports_cache is not None:
+            return self._imports_cache
+
         if not self._language:
             return []
 
@@ -1368,9 +1379,13 @@ class CodeAnalyzer:
                 text = self._node_text(node)
                 imports.append(ImportInfo(module=text, location=self._node_location(node)))
 
+        self._imports_cache = imports
         return imports
 
     def get_variables(self) -> list[VariableInfo]:
+        if self._variables_cache is not None:
+            return self._variables_cache
+
         if not self._language:
             return []
 
@@ -1392,9 +1407,13 @@ class CodeAnalyzer:
                 )
             )
 
+        self._variables_cache = variables
         return variables
 
     def get_strings(self) -> list[StringLiteral]:
+        if self._strings_cache is not None:
+            return self._strings_cache
+
         if not self._language:
             return []
 
@@ -1410,6 +1429,7 @@ class CodeAnalyzer:
             text = self._node_text(node)
             strings.append(StringLiteral(value=text, location=self._node_location(node)))
 
+        self._strings_cache = strings
         return strings
 
     def find_symbols(self, name: str) -> list[dict]:
@@ -1425,20 +1445,31 @@ class CodeAnalyzer:
             return []
 
         refs: list[dict] = []
+        cursor = self._tree.walk()
+        visited_children = False
 
-        def walk(node: tree_sitter.Node) -> None:
-            if node.is_named and self._node_text(node) == name:
-                refs.append(
-                    {
-                        "type": node.type,
-                        "location": self._node_location(node).to_dict(),
-                        "context": self._node_text(node.parent) if node.parent else "",
-                    }
-                )
-            for child in node.children:
-                walk(child)
+        while True:
+            if not visited_children:
+                node = cursor.node
+                if node.is_named and self._node_text(node) == name:
+                    refs.append(
+                        {
+                            "type": node.type,
+                            "location": self._node_location(node).to_dict(),
+                            "context": self._node_text(node.parent) if node.parent else "",
+                        }
+                    )
+                
+                if cursor.goto_first_child():
+                    continue
 
-        walk(self._tree.root_node)
+            if cursor.goto_next_sibling():
+                visited_children = False
+            elif cursor.goto_parent():
+                visited_children = True
+            else:
+                break
+
         return refs
 
     def get_class_by_name(self, class_name: str) -> ClassInfo | None:

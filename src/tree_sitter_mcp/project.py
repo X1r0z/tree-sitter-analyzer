@@ -55,7 +55,7 @@ def find_files(path: str) -> list[str]:
 class ProjectAnalyzer:
     """Analyzes multiple source files in a project."""
 
-    MAX_CACHED_ANALYZERS: int = 256
+    MAX_CACHED_ANALYZERS: int = 1000
 
     def __init__(self, path: str):
         """Initialize with a directory.
@@ -116,7 +116,14 @@ class ProjectAnalyzer:
     def get_functions(self, query: str = "") -> list[FunctionInfo]:
         """Get all functions from all files."""
         functions = []
+        
+        # Fast path optimization for simple queries
+        is_simple_query = query and not any(c in query for c in ".^$*+?{}[]|()\\")
+        
         for file_path in self.files:
+            if is_simple_query and not self._file_contains_text(file_path, query):
+                continue
+
             analyzer = self._get_analyzer(file_path)
             if analyzer:
                 for f in analyzer.get_functions():
@@ -127,7 +134,14 @@ class ProjectAnalyzer:
     def get_classes(self, query: str = "") -> list[ClassInfo]:
         """Get all classes from all files."""
         classes = []
+        
+        # Fast path optimization for simple queries
+        is_simple_query = query and not any(c in query for c in ".^$*+?{}[]|()\\")
+
         for file_path in self.files:
+            if is_simple_query and not self._file_contains_text(file_path, query):
+                continue
+
             analyzer = self._get_analyzer(file_path)
             if analyzer:
                 for c in analyzer.get_classes():
@@ -158,7 +172,14 @@ class ProjectAnalyzer:
     def get_imports(self, query: str = "") -> list[ImportInfo]:
         """Get all imports from all files."""
         imports = []
+        
+        # Fast path optimization for simple queries
+        is_simple_query = query and not any(c in query for c in ".^$*+?{}[]|()\\")
+
         for file_path in self.files:
+            if is_simple_query and not self._file_contains_text(file_path, query):
+                continue
+
             analyzer = self._get_analyzer(file_path)
             if analyzer:
                 for i in analyzer.get_imports():
@@ -169,7 +190,14 @@ class ProjectAnalyzer:
     def get_variables(self, query: str = "") -> list[VariableInfo]:
         """Get all variables from all files."""
         variables = []
+        
+        # Fast path optimization for simple queries
+        is_simple_query = query and not any(c in query for c in ".^$*+?{}[]|()\\")
+
         for file_path in self.files:
+            if is_simple_query and not self._file_contains_text(file_path, query):
+                continue
+
             analyzer = self._get_analyzer(file_path)
             if analyzer:
                 for v in analyzer.get_variables():

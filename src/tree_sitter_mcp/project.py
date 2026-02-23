@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from pathlib import Path
 
 from .analyzer import (
@@ -338,36 +338,69 @@ class ProjectAnalyzer:
         return None
 
     def get_super_classes(self, class_name: str) -> list[ClassInfo]:
-        """Get all parent classes of a specific class across all files.
+        """Get all parent classes (ancestors) of a specific class across all files using BFS.
 
-        First finds the target class, then searches for its parent classes.
+        First finds the target class, then searches for its parent classes recursively.
+        Uses text search pre-filtering to avoid parsing all files.
         """
-        target_class = None
-        for file_path in self.files:
-            analyzer = self._get_analyzer(file_path)
-            if analyzer:
-                cls = analyzer.get_class_by_name(class_name)
-                if cls:
-                    target_class = cls
-                    break
-
+        # Find the starting class
+        target_class = self.get_class_by_name(class_name)
         if not target_class:
             return []
 
-        all_classes = self.get_classes()
-        class_map = {c.name: c for c in all_classes}
-
         result = []
-        for parent_name in target_class.super_classes:
-            if parent_name in class_map:
-                result.append(class_map[parent_name])
+        visited = {class_name}
+        queue = deque([target_class])
+
+        while queue:
+            current_class = queue.popleft()
+
+            for parent_name in current_class.super_classes:
+                if parent_name in visited:
+                    continue
+
+                # Try to find parent class definition
+                parent_class = self.get_class_by_name(parent_name)
+                if parent_class:
+                    visited.add(parent_name)
+                    result.append(parent_class)
+                    queue.append(parent_class)
+                else:
+                    # Mark as visited even if not found to avoid repeated searches
+                    visited.add(parent_name)
+
         return result
 
     def get_sub_classes(self, class_name: str) -> list[ClassInfo]:
-        """Get all child classes that inherit from a specific class across all files."""
-        all_classes = self.get_classes()
+        """Get all child classes (descendants) that inherit from a specific class using BFS.
+        
+        Uses text search pre-filtering to avoid parsing all files.
+        """
         result = []
-        for cls in all_classes:
-            if class_name in cls.super_classes:
-                result.append(cls)
+        visited = {class_name}
+        queue = deque([class_name])
+
+        while queue:
+            current_parent_name = queue.popleft()
+            
+            # Find direct subclasses of current_parent_name
+            # Scan files that contain the parent name
+            for file_path in self.files:
+                if not self._file_contains_text(file_path, current_parent_name):
+                    continue
+                    
+                analyzer = self._get_analyzer(file_path)
+                if not analyzer:
+                    continue
+                    
+                # Check all classes in this file
+                for cls in analyzer.get_classes():
+                    if cls.name in visited:
+                        continue
+                        
+                    if current_parent_name in cls.super_classes:
+                        visited.add(cls.name)
+                        result.append(cls)
+                        queue.append(cls.name)
+
         return result

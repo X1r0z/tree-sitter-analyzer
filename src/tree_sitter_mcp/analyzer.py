@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -1480,31 +1481,61 @@ class CodeAnalyzer:
         return None
 
     def get_super_classes(self, class_name: str) -> list[ClassInfo]:
-        """Get all parent classes of a specific class.
+        """Get all parent classes (ancestors) of a specific class using BFS.
 
         Returns ClassInfo for each parent class that can be found in this file.
         """
-        target_class = self.get_class_by_name(class_name)
-        if not target_class:
-            return []
-
         all_classes = self.get_classes()
         class_map = {c.name: c for c in all_classes}
 
+        if class_name not in class_map:
+            return []
+
+        target_class = class_map[class_name]
+
         result = []
-        for parent_name in target_class.super_classes:
-            if parent_name in class_map:
-                result.append(class_map[parent_name])
+        visited = {class_name}
+        queue = deque([target_class])
+
+        while queue:
+            current_class = queue.popleft()
+
+            for parent_name in current_class.super_classes:
+                if parent_name in class_map and parent_name not in visited:
+                    parent_class = class_map[parent_name]
+                    visited.add(parent_name)
+                    result.append(parent_class)
+                    queue.append(parent_class)
+
         return result
 
     def get_sub_classes(self, class_name: str) -> list[ClassInfo]:
-        """Get all child classes that inherit from a specific class.
+        """Get all child classes (descendants) that inherit from a specific class using BFS.
 
         Returns ClassInfo for each child class found in this file.
         """
         all_classes = self.get_classes()
-        result = []
+
+        inheritance_map = {}
         for cls in all_classes:
-            if class_name in cls.super_classes:
-                result.append(cls)
+            for parent in cls.super_classes:
+                if parent not in inheritance_map:
+                    inheritance_map[parent] = []
+                inheritance_map[parent].append(cls)
+
+        result = []
+        visited = {class_name}
+        queue = deque([class_name])
+
+        while queue:
+            current_name = queue.popleft()
+
+            if current_name in inheritance_map:
+                children = inheritance_map[current_name]
+                for child in children:
+                    if child.name not in visited:
+                        visited.add(child.name)
+                        result.append(child)
+                        queue.append(child.name)
+
         return result

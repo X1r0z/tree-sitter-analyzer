@@ -250,6 +250,53 @@ class CodeAnalyzer:
         except Exception:
             return {}
 
+    def _run_query_matches(self, query_str: str) -> list[dict[str, tree_sitter.Node]]:
+        """Run a query and return a list of matches, preserving capture relationships."""
+        self._ensure_tree()
+        if not self._tree or not self._language:
+            return []
+
+        query = _get_compiled_query(self._language, query_str)
+        if not query:
+            return []
+
+        try:
+            cursor = tree_sitter.QueryCursor(query)
+            matches = cursor.matches(self._tree.root_node)
+            
+            results = []
+            for match in matches:
+                # Handle different tree-sitter versions/bindings
+                if isinstance(match, tuple) and len(match) == 2:
+                    _, captures = match
+                elif isinstance(match, tuple) and len(match) > 2:
+                     # Maybe (match_id, pattern_index, captures)
+                     captures = match[-1]
+                else:
+                    captures = match
+
+                match_dict = {}
+                if isinstance(captures, dict):
+                     for name, node in captures.items():
+                         if isinstance(node, list):
+                             match_dict[name] = node[0]
+                         else:
+                             match_dict[name] = node
+                elif isinstance(captures, list):
+                    for item in captures:
+                        # item is (Node, str) or (Node, str, ...)
+                        if isinstance(item, tuple) and len(item) >= 2:
+                             # usually (node, name)
+                             node = item[0]
+                             name = item[1]
+                             match_dict[name] = node
+                
+                results.append(match_dict)
+            return results
+        except Exception as e:
+            print(f"Error running query matches: {e}")
+            return []
+
     def _find_enclosing_function(self, node: tree_sitter.Node) -> str | None:
         current = node.parent
         func_types = {
@@ -449,38 +496,44 @@ class CodeAnalyzer:
         if not lang_info:
             return []
 
-        captures = self._run_query(lang_info.function_query)
-        func_nodes = captures.get("function", [])
-        name_nodes = captures.get("name", [])
+        matches = self._run_query_matches(lang_info.function_query)
+        
+        # Extract function/name pairs
+        func_pairs = []
+        for match in matches:
+            func_node = match.get("function")
+            name_node = match.get("name")
+            if func_node and name_node:
+                func_pairs.append((func_node, name_node))
+        
+        # Sort nodes by start_byte to ensure outer functions are processed first
+        func_pairs.sort(key=lambda p: (p[0].start_byte, -p[0].end_byte))
 
         functions = []
         func_ranges: list[tuple[int, int]] = []
-        for func_node in func_nodes:
-            name = ""
-            for name_node in name_nodes:
-                if (
-                    func_node.start_byte <= name_node.start_byte
-                    and name_node.end_byte <= func_node.end_byte
-                ):
-                    name = self._node_text(name_node)
-                    break
-            if name:
-                start, end = func_node.start_byte, func_node.end_byte
-                is_nested = any(s < start and end <= e for s, e in func_ranges)
-                if is_nested:
-                    continue
-                func_ranges.append((start, end))
-                class_name = self._find_enclosing_class(func_node)
-                functions.append(
-                    FunctionInfo(
-                        name=name,
-                        location=self._node_location(func_node),
-                        body=self._node_text(func_node),
-                        node=func_node,
-                        is_method=class_name is not None,
-                        class_name=class_name,
-                    )
+        
+        for func_node, name_node in func_pairs:
+            name = self._node_text(name_node)
+            if not name:
+                continue
+
+            start, end = func_node.start_byte, func_node.end_byte
+            is_nested = any(s < start and end <= e for s, e in func_ranges)
+            if is_nested:
+                continue
+            
+            func_ranges.append((start, end))
+            class_name = self._find_enclosing_class(func_node)
+            functions.append(
+                FunctionInfo(
+                    name=name,
+                    location=self._node_location(func_node),
+                    body=self._node_text(func_node),
+                    node=func_node,
+                    is_method=class_name is not None,
+                    class_name=class_name,
                 )
+            )
 
         self._functions_cache = functions
         return functions
@@ -647,41 +700,46 @@ class CodeAnalyzer:
                 if func.class_name:
                     methods_by_class.setdefault(func.class_name, set()).add(func.name)
 
-        captures = self._run_query(lang_info.class_query)
-        class_nodes = captures.get("class", [])
-        name_nodes = captures.get("name", [])
+        matches = self._run_query_matches(lang_info.class_query)
+        
+        class_pairs = []
+        for match in matches:
+            class_node = match.get("class")
+            name_node = match.get("name")
+            if class_node and name_node:
+                class_pairs.append((class_node, name_node))
+                
+        # Sort nodes by start_byte to ensure outer classes are processed first
+        class_pairs.sort(key=lambda p: (p[0].start_byte, -p[0].end_byte))
 
         classes = []
         class_ranges: list[tuple[int, int]] = []
-        for class_node in class_nodes:
-            name = ""
-            for name_node in name_nodes:
-                if (
-                    class_node.start_byte <= name_node.start_byte
-                    and name_node.end_byte <= class_node.end_byte
-                ):
-                    name = self._node_text(name_node)
-                    break
-            if name:
-                start, end = class_node.start_byte, class_node.end_byte
-                is_nested = any(s < start and end <= e for s, e in class_ranges)
-                if is_nested:
-                    continue
-                class_ranges.append((start, end))
-                methods = self._extract_methods_from_class(class_node)
-                if self._language == "go":
-                    methods = sorted(set(methods) | methods_by_class.get(name, set()))
-                fields = self._extract_fields_from_class(class_node)
-                super_classes = self._extract_super_classes_from_class(class_node)
-                classes.append(
-                    ClassInfo(
-                        name=name,
-                        location=self._node_location(class_node),
-                        methods=methods,
-                        fields=fields,
-                        super_classes=super_classes,
-                    )
+        
+        for class_node, name_node in class_pairs:
+            name = self._node_text(name_node)
+            if not name:
+                continue
+
+            start, end = class_node.start_byte, class_node.end_byte
+            is_nested = any(s < start and end <= e for s, e in class_ranges)
+            if is_nested:
+                continue
+            
+            class_ranges.append((start, end))
+            methods = self._extract_methods_from_class(class_node)
+            if self._language == "go":
+                methods = sorted(set(methods) | methods_by_class.get(name, set()))
+            fields = self._extract_fields_from_class(class_node)
+            super_classes = self._extract_super_classes_from_class(class_node)
+            classes.append(
+                ClassInfo(
+                    name=name,
+                    location=self._node_location(class_node),
+                    methods=methods,
+                    fields=fields,
+                    super_classes=super_classes,
                 )
+            )
 
         self._classes_cache = classes
         return classes
@@ -819,7 +877,38 @@ class CodeAnalyzer:
 
                     add_field(param_name, param, param_type)
 
+                # Scan constructor body for assignments to this.prop
+                body_node = member.child_by_field_name("body")
+                if body_node:
+                    self._extract_fields_from_constructor_body(body_node, add_field)
+
         return fields
+
+    def _extract_fields_from_constructor_body(
+        self, body_node: tree_sitter.Node, add_field_callback: Callable
+    ) -> None:
+        """Scan constructor body for 'this.prop = value' assignments."""
+        def walk(node: tree_sitter.Node):
+            if node.type == "assignment_expression":
+                left = node.child_by_field_name("left")
+                if left and left.type == "member_expression":
+                    obj = left.child_by_field_name("object")
+                    prop = left.child_by_field_name("property")
+                    if obj and self._node_text(obj) == "this" and prop:
+                        name = self._node_text(prop)
+                        add_field_callback(name, node, None)
+            
+            # Recurse but stop at function boundaries to avoid capturing nested function assignments
+            if node.type in {
+                "function_declaration", "function_expression", "arrow_function", 
+                "method_definition", "class_declaration", "class_expression"
+            } and node != body_node:
+                return
+
+            for child in node.children:
+                walk(child)
+
+        walk(body_node)
 
     def _extract_fields_from_class(self, class_node: tree_sitter.Node) -> list[str]:
         """Extract field names from a class node."""
@@ -872,26 +961,31 @@ class CodeAnalyzer:
                     for c in node.named_children:
                         handle_expression(c)
                         return
+                    return
+                
+                if node.type == "call_expression":
+                     func = node.child_by_field_name("function")
+                     if func:
+                         handle_expression(func)
+                     return
 
-                if node.type == "generic_type":
-                    name_node = node.child_by_field_name("name")
-                    if name_node is not None:
-                        handle_expression(name_node)
-                        return
-                    for c in node.named_children:
-                        handle_expression(c)
-                        return
+                # Handle wrapper nodes
+                for child in node.named_children:
+                     handle_expression(child)
 
             def walk_heritage(node: tree_sitter.Node) -> None:
                 if node.type == "class_heritage":
-                    for child in node.children:
+                    for child in node.named_children:
                         if child.type in {"extends_clause", "implements_clause"}:
-                            walk_heritage(child)
+                             for grandchild in child.named_children:
+                                 handle_expression(grandchild)
+                        else:
+                             handle_expression(child)
                     return
 
                 if node.type in {"extends_clause", "implements_clause"}:
                     for child in node.named_children:
-                        handle_expression(child)
+                         handle_expression(child)
                     return
 
                 for child in node.children:

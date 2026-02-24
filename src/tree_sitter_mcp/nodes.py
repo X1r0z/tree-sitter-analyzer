@@ -31,6 +31,11 @@ class FunctionInfo:
     class_name: str | None = None
     node: tree_sitter.Node | None = None
 
+    def __getstate__(self) -> dict:
+        state = self.__dict__.copy()
+        state["node"] = None
+        return state
+
     def to_dict(self, include_body: bool = True, include_file: bool = True) -> dict:
         result = {
             "name": self.name,

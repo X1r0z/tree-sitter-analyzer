@@ -171,6 +171,20 @@ class CodeAnalyzer(BaseParser):
                                     "class_name": func.class_name,
                                 }
                             )
+                if self._language == "python" and self._is_python_property_function(func):
+                    for access in self._find_python_attribute_accesses_in_function(func):
+                        callee = access["callee"]
+                        key = (callee, func.class_name)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        callees.append(
+                            {
+                                "callee": callee,
+                                "line": access["line"],
+                                "class_name": func.class_name,
+                            }
+                        )
         else:
             # Fallback if we can't find the function definition but have calls attributed to it
             caller_calls = self._calls_by_caller.get(function_name, [])
@@ -199,11 +213,18 @@ class CodeAnalyzer(BaseParser):
         if self._calls_by_callee is None:
             self._calls_by_callee = {}
 
-        candidate_calls = self._calls_by_callee.get(function_name, [])
+        target_object = None
+        target_function = function_name
+        if "." in function_name:
+            target_object, target_function = function_name.rsplit(".", 1)
+
+        candidate_calls = self._calls_by_callee.get(target_function, [])
         callers: list[dict] = []
         seen: set[tuple[str, int]] = set()
 
         for call in candidate_calls:
+            if target_object is not None and call.object_name != target_object:
+                continue
             if class_name is not None and not self._matches_call_target_class(call, class_name):
                 continue
             caller = call.caller or "<module>"
@@ -217,6 +238,16 @@ class CodeAnalyzer(BaseParser):
                         "target_class": class_name,
                     }
                 )
+
+        if self._language == "python" and self._is_python_property(function_name, class_name):
+            for access in self._find_python_property_callers(function_name):
+                caller = access["caller"]
+                line = access["line"]
+                key = (caller, line)
+                if key in seen:
+                    continue
+                seen.add(key)
+                callers.append({"caller": caller, "line": line, "target_class": class_name})
         return callers
 
     def get_classes(self) -> list[ClassInfo]:
@@ -365,16 +396,28 @@ class CodeAnalyzer(BaseParser):
                         callee, obj_name = self._parse_attribute_node(func_node)
 
             if callee:
-                calls.append(
-                    CallInfo(
-                        callee=callee,
-                        location=self._node_location(call_node),
-                        caller=caller,
-                        caller_class_name=caller_class_name,
-                        is_method_call=is_method,
-                        object_name=obj_name,
+                resolved_callees = [callee]
+                if (
+                    self._language in {"javascript", "typescript", "tsx"}
+                    and not is_method
+                    and func_node is not None
+                    and func_node.type == "identifier"
+                ):
+                    resolved = self._resolve_js_identifier_call_targets(call_node, callee)
+                    if resolved:
+                        resolved_callees = resolved
+
+                for resolved_callee in resolved_callees:
+                    calls.append(
+                        CallInfo(
+                            callee=resolved_callee,
+                            location=self._node_location(call_node),
+                            caller=caller,
+                            caller_class_name=caller_class_name,
+                            is_method_call=is_method,
+                            object_name=obj_name,
+                        )
                     )
-                )
 
         self._calls_cache = calls
 

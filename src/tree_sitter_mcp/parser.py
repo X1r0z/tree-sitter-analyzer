@@ -9,7 +9,7 @@ from pathlib import Path
 import tree_sitter
 
 from .languages import detect_language, get_language_info, get_parser
-from .nodes import FieldInfo, Location
+from .nodes import CallInfo, FieldInfo, Location
 from .utils import get_compiled_query
 
 
@@ -182,6 +182,31 @@ class BaseParser:
             left_node = parent.child_by_field_name("left")
             if left_node and left_node.type == "identifier":
                 return self._node_text(left_node)
+        elif parent.type == "export_statement":
+            # Name anonymous default export function-like nodes as <default_export>
+            # so calls in that scope are attributed to a stable synthetic caller.
+            if any(self._node_text(child) == "default" for child in parent.children):
+                return "<default_export>"
+        return None
+
+    def _find_enclosing_function_node(self, node: tree_sitter.Node) -> tree_sitter.Node | None:
+        """Find the nearest enclosing function-like AST node."""
+        current = node.parent
+        func_types = {
+            "function_definition",
+            "async_function_definition",
+            "function_declaration",
+            "method_definition",
+            "arrow_function",
+            "method_declaration",
+            "constructor_declaration",
+            "function_expression",
+            "func_literal",
+        }
+        while current:
+            if current.type in func_types:
+                return current
+            current = current.parent
         return None
 
     def _find_enclosing_class(self, node: tree_sitter.Node) -> str | None:
@@ -191,6 +216,9 @@ class BaseParser:
             "class_declaration",
             "class_body",
             "interface_declaration",
+            "enum_declaration",
+            "record_declaration",
+            "annotation_type_declaration",
         }
 
         # Go: method_declaration itself contains the receiver (class) info
@@ -863,3 +891,159 @@ class BaseParser:
             return []
 
         return self._extract_field_infos(target_class_node, class_name)
+
+    def _is_python_property_function(self, func: FunctionInfo) -> bool:
+        if self._language != "python" or func.node is None:
+            return False
+        node = func.node
+        if node.type == "function_definition" and node.parent and node.parent.type == "decorated_definition":
+            node = node.parent
+        if node.type != "decorated_definition":
+            return False
+        for child in node.children:
+            if child.type != "decorator":
+                continue
+            text = self._node_text(child).strip()
+            if text == "@property":
+                return True
+        return False
+
+    def _is_python_property(self, function_name: str, class_name: str | None = None) -> bool:
+        funcs = self.get_all_functions_by_name(function_name, class_name)
+        return any(self._is_python_property_function(func) for func in funcs)
+
+    def _find_python_attribute_accesses_in_function(self, func: FunctionInfo) -> list[dict]:
+        if self._language != "python" or func.node is None:
+            return []
+        root = func.node
+        if root.type == "decorated_definition":
+            definition = root.child_by_field_name("definition")
+            if definition is not None:
+                root = definition
+
+        accesses: list[dict] = []
+        seen: set[tuple[str, int]] = set()
+
+        def walk(node):
+            if node.type == "attribute":
+                callee, obj = self._parse_attribute_node(node)
+                if callee and obj:
+                    value = f"{obj}.{callee}"
+                    line = node.start_point.row + 1
+                    key = (value, line)
+                    if key not in seen:
+                        seen.add(key)
+                        accesses.append({"callee": value, "line": line})
+            for child in node.children:
+                walk(child)
+
+        walk(root)
+        return accesses
+
+    def _find_python_property_callers(self, property_name: str) -> list[dict]:
+        self._ensure_tree()
+        if not self._tree:
+            return []
+
+        callers: list[dict] = []
+        seen: set[tuple[str, int]] = set()
+
+        def walk(node):
+            if node.type == "attribute":
+                callee, _ = self._parse_attribute_node(node)
+                if callee == property_name:
+                    caller = self._find_enclosing_function(node) or "<module>"
+                    line = node.start_point.row + 1
+                    key = (caller, line)
+                    if key not in seen:
+                        seen.add(key)
+                        callers.append({"caller": caller, "line": line})
+            for child in node.children:
+                walk(child)
+
+        walk(self._tree.root_node)
+        return callers
+
+    def _resolve_js_identifier_call_targets(
+        self, call_node, identifier_name: str
+    ) -> list[str]:
+        """Resolve simple JS/TS alias calls like `for (x of arr) await x()`."""
+        func_node = self._find_enclosing_function_node(call_node)
+        if not func_node:
+            return []
+
+        aliases: dict[str, set[str]] = {}
+
+        def add_alias(name: str | None, targets: set[str] | list[str]) -> None:
+            if not name:
+                return
+            cleaned = {t for t in targets if t}
+            if not cleaned:
+                return
+            aliases.setdefault(name, set()).update(cleaned)
+
+        def extract_identifiers_from_array(array_node) -> list[str]:
+            result: list[str] = []
+            for child in array_node.named_children:
+                if child.type == "identifier":
+                    result.append(self._node_text(child))
+            return result
+
+        def extract_loop_var(left_node) -> str | None:
+            if left_node is None:
+                return None
+            if left_node.type == "identifier":
+                return self._node_text(left_node)
+            for child in left_node.named_children:
+                if child.type == "identifier":
+                    return self._node_text(child)
+                if child.type == "variable_declarator":
+                    name_node = child.child_by_field_name("name")
+                    if name_node and name_node.type == "identifier":
+                        return self._node_text(name_node)
+            return None
+
+        def walk(node):
+            if node is call_node or node.start_byte >= call_node.start_byte:
+                return
+            if node.type == "variable_declarator":
+                name_node = node.child_by_field_name("name")
+                value_node = node.child_by_field_name("value")
+                if name_node and name_node.type == "identifier" and value_node:
+                    name = self._node_text(name_node)
+                    if value_node.type == "identifier":
+                        add_alias(name, {self._node_text(value_node)})
+                    elif value_node.type == "array":
+                        add_alias(name, extract_identifiers_from_array(value_node))
+            elif node.type == "for_in_statement":
+                left_node = node.child_by_field_name("left")
+                right_node = node.child_by_field_name("right")
+                loop_var = extract_loop_var(left_node)
+                if right_node is not None and right_node.type == "identifier":
+                    iterable = self._node_text(right_node)
+                    targets = aliases.get(iterable, {iterable})
+                    add_alias(loop_var, targets)
+
+            for child in node.children:
+                if child.start_byte < call_node.start_byte:
+                    walk(child)
+
+        walk(func_node)
+
+        resolved: set[str] = set()
+        queue = deque([identifier_name])
+        visited: set[str] = set()
+
+        while queue:
+            current = queue.popleft()
+            if current in visited:
+                continue
+            visited.add(current)
+            targets = aliases.get(current)
+            if not targets:
+                resolved.add(current)
+                continue
+            for target in targets:
+                queue.append(target)
+
+        return sorted(resolved)

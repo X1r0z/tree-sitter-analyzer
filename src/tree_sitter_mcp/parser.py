@@ -732,7 +732,7 @@ class BaseParser:
                             if sub.type == "identifier":
                                 names.append(self._node_text(sub))
                                 break
-                    elif child.type in (
+                    elif not field_type and child.type in (
                         "type_annotation",
                         "type",
                         "type_identifier",
@@ -743,8 +743,7 @@ class BaseParser:
                         "array_type",
                         "scoped_type_identifier",
                     ):
-                        if not field_type:
-                            field_type = self._node_text(child)
+                        field_type = self._node_text(child)
 
                 if self._language == "go" and not names and field_type:
                     # Embedded field: name is implicit from type

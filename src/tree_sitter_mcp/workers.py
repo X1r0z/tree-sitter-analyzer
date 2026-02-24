@@ -76,8 +76,6 @@ def find_callees(
     cls_name: str | None,
 ) -> list[dict]:
     analyzer = CodeAnalyzer(file_path)
-    if not analyzer.get_all_functions_by_name(fn_name, cls_name):
-        return []
     return [
         {
             "callee": c["callee"],

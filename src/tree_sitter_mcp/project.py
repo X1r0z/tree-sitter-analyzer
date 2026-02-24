@@ -217,7 +217,18 @@ class ProjectAnalyzer:
 
     def get_callees(self, function_name: str, class_name: str | None = None) -> list[dict]:
         """Find all functions called by a function across all files."""
-        relevant_files = self._filter_files_by_text(function_name)
+        function_defs = self.get_all_functions_by_name(function_name, class_name)
+        relevant_files: list[str] = []
+        seen_files: set[str] = set()
+        for func in function_defs:
+            file_path = func.location.file
+            if file_path in self._files_set and file_path not in seen_files:
+                seen_files.add(file_path)
+                relevant_files.append(file_path)
+
+        # Fallback for cases where function definition cannot be found.
+        if not relevant_files:
+            relevant_files = self._filter_files_by_text(function_name)
 
         if not relevant_files:
             return []

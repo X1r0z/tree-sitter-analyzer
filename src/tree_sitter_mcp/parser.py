@@ -23,6 +23,8 @@ class BaseParser:
         self._source: bytes | None = None
         self._tree: tree_sitter.Tree | None = None
         self._parser: tree_sitter.Parser | None = None
+        self._enclosing_function_cache: dict[tuple[int, int, str], str | None] = {}
+        self._enclosing_class_cache: dict[tuple[int, int, str], str | None] = {}
 
         if file_path:
             self._load_file(file_path)
@@ -130,9 +132,13 @@ class BaseParser:
             print(f"Error running query matches: {e}")
             return []
 
-    def _find_enclosing_function(self, node: tree_sitter.Node) -> str | None:
-        current = node.parent
-        func_types = {
+    @staticmethod
+    def _node_cache_key(node: tree_sitter.Node) -> tuple[int, int, str]:
+        return (node.start_byte, node.end_byte, node.type)
+
+    @staticmethod
+    def _is_function_like_node(node_type: str) -> bool:
+        return node_type in {
             "function_definition",
             "async_function_definition",
             "function_declaration",
@@ -143,23 +149,39 @@ class BaseParser:
             "function_expression",
             "func_literal",
         }
+
+    def _find_enclosing_function(self, node: tree_sitter.Node) -> str | None:
+        current = node.parent
         anonymous_types = {"arrow_function", "func_literal"}
+        traversed: list[tuple[int, int, str]] = []
+        result: str | None = None
+
         while current:
-            if current.type in func_types:
+            key = self._node_cache_key(current)
+            cached = self._enclosing_function_cache.get(key)
+            if key in self._enclosing_function_cache:
+                result = cached
+                break
+
+            traversed.append(key)
+            if self._is_function_like_node(current.type):
                 name_node = current.child_by_field_name("name")
                 if name_node:
-                    return self._node_text(name_node)
-                if current.type in anonymous_types:
-                    inferred = self._infer_anonymous_function_name(current)
-                    return inferred
-                if current.type == "function_expression":
-                    inferred = self._infer_anonymous_function_name(current)
-                    return inferred
+                    result = self._node_text(name_node)
+                    break
+                if current.type in anonymous_types or current.type == "function_expression":
+                    result = self._infer_anonymous_function_name(current)
+                    break
                 for child in current.children:
                     if child.type in ("identifier", "property_identifier", "field_identifier"):
-                        return self._node_text(child)
+                        result = self._node_text(child)
+                        break
+                break
             current = current.parent
-        return None
+
+        for node_key in traversed:
+            self._enclosing_function_cache[node_key] = result
+        return result
 
     def _infer_anonymous_function_name(self, func_node: tree_sitter.Node) -> str | None:
         """Infer the name of an anonymous function from its assignment context."""
@@ -193,19 +215,8 @@ class BaseParser:
     def _find_enclosing_function_node(self, node: tree_sitter.Node) -> tree_sitter.Node | None:
         """Find the nearest enclosing function-like AST node."""
         current = node.parent
-        func_types = {
-            "function_definition",
-            "async_function_definition",
-            "function_declaration",
-            "method_definition",
-            "arrow_function",
-            "method_declaration",
-            "constructor_declaration",
-            "function_expression",
-            "func_literal",
-        }
         while current:
-            if current.type in func_types:
+            if self._is_function_like_node(current.type):
                 return current
             current = current.parent
         return None
@@ -222,24 +233,40 @@ class BaseParser:
             "annotation_type_declaration",
         }
 
-        # Go: method_declaration itself contains the receiver (class) info
+        # Go: method_declaration itself contains the receiver (class) info.
         if self._language == "go" and node.type == "method_declaration":
             receiver_class = self._extract_go_receiver_type(node)
             if receiver_class:
                 return receiver_class
 
         current = node.parent
+        traversed: list[tuple[int, int, str]] = []
+        result: str | None = None
+
         while current:
+            key = self._node_cache_key(current)
+            cached = self._enclosing_class_cache.get(key)
+            if key in self._enclosing_class_cache:
+                result = cached
+                break
+
+            traversed.append(key)
             if self._language == "go" and current.type == "method_declaration":
                 receiver_class = self._extract_go_receiver_type(current)
                 if receiver_class:
-                    return receiver_class
+                    result = receiver_class
+                    break
             if current.type in class_types:
                 for child in current.children:
                     if child.type in ("identifier", "type_identifier", "name"):
-                        return self._node_text(child)
+                        result = self._node_text(child)
+                        break
+                break
             current = current.parent
-        return None
+
+        for node_key in traversed:
+            self._enclosing_class_cache[node_key] = result
+        return result
 
     def _unwrap_go_type(self, type_node: tree_sitter.Node) -> str | None:
         """Unwrap Go type (pointer, generic) to get the base type name."""
@@ -917,7 +944,11 @@ class BaseParser:
         if self._language != "python" or func.node is None:
             return False
         node = func.node
-        if node.type == "function_definition" and node.parent and node.parent.type == "decorated_definition":
+        if (
+            node.type == "function_definition"
+            and node.parent
+            and node.parent.type == "decorated_definition"
+        ):
             node = node.parent
         if node.type != "decorated_definition":
             return False
@@ -985,9 +1016,7 @@ class BaseParser:
         walk(self._tree.root_node)
         return callers
 
-    def _resolve_js_identifier_call_targets(
-        self, call_node, identifier_name: str
-    ) -> list[str]:
+    def _resolve_js_identifier_call_targets(self, call_node, identifier_name: str) -> list[str]:
         """Resolve simple JS/TS alias calls like `for (x of arr) await x()`."""
         func_node = self._find_enclosing_function_node(call_node)
         if not func_node:

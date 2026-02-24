@@ -2,108 +2,20 @@
 
 from __future__ import annotations
 
-import concurrent.futures
-import contextlib
-import re
 from collections import OrderedDict, deque
 from pathlib import Path
 
-from .analyzer import (
+from .analyzer import CodeAnalyzer
+from .nodes import (
     CallInfo,
     ClassInfo,
-    CodeAnalyzer,
     FieldInfo,
     FunctionInfo,
     ImportInfo,
     VariableInfo,
 )
-from .languages import FILE_EXTENSION_MAP
-
-
-def get_supported_extensions() -> set[str]:
-    """Get all supported file extensions."""
-    return set(FILE_EXTENSION_MAP.keys())
-
-
-def _validate_directory_path(path: str) -> Path:
-    p = Path(path)
-    if not p.exists():
-        raise FileNotFoundError(f"Path not found: {path}")
-    if not p.is_dir():
-        raise NotADirectoryError(f"Path must be a directory: {path}")
-
-    return p
-
-
-def find_files(path: str) -> list[str]:
-    """Find all supported source files under a directory.
-
-    Args:
-        path: Directory path (searched recursively)
-
-    Returns:
-        List of absolute file paths
-    """
-    directory = _validate_directory_path(path)
-    extensions = get_supported_extensions()
-    files = [
-        str(p.resolve())
-        for p in directory.rglob("*")
-        if p.is_file() and p.suffix.lower() in extensions
-    ]
-    return sorted(set(files))
-
-
-def _process_file_for_callers(
-    file_path: str, function_name: str, class_name: str | None
-) -> list[dict]:
-    """Worker function for parallel caller search."""
-    try:
-        analyzer = CodeAnalyzer(file_path)
-        file_callers = analyzer.get_function_callers(function_name, class_name)
-        results = []
-        for caller_info in file_callers:
-            results.append(
-                {
-                    "caller": caller_info["caller"],
-                    "line": caller_info["line"],
-                    "file": file_path,
-                    "target_class": caller_info.get("target_class"),
-                }
-            )
-        return results
-    except Exception:
-        return []
-
-
-def _process_file_for_callees(
-    file_path: str, function_name: str, class_name: str | None
-) -> list[dict]:
-    """Worker function for parallel callee search."""
-    try:
-        analyzer = CodeAnalyzer(file_path)
-        # Check if function exists in file first (optimization inside worker)
-        # Actually get_function_callees calls get_all_functions_by_name internally,
-        # so we can just call get_function_callees directly if we trust it handles "not found" well.
-        # But ProjectAnalyzer logic checked "if funcs" before calling get_function_callees.
-        # Let's replicate the logic.
-        funcs = analyzer.get_all_functions_by_name(function_name, class_name)
-        if funcs:
-            callees = analyzer.get_function_callees(function_name, class_name)
-            results = []
-            for c in callees:
-                results.append(
-                    {
-                        "callee": c["callee"],
-                        "line": c["line"],
-                        "file": file_path,
-                        "class_name": c.get("class_name"),
-                    }
-                )
-            return results
-        return []
-    except Exception:
-        return []
+from .parallel import run_parallel
+from .utils import find_files, match_query
 
 
 class ProjectAnalyzer:
@@ -113,11 +25,7 @@ class ProjectAnalyzer:
     PARALLEL_THRESHOLD: int = 10
 
     def __init__(self, path: str):
-        """Initialize with a directory.
-
-        Args:
-            path: Directory path (searched recursively)
-        """
+        """Initialize the project analyzer with a directory path."""
         self.path = path
         self.files = find_files(path)
         self._analyzers: OrderedDict[str, CodeAnalyzer] = OrderedDict()
@@ -159,15 +67,6 @@ class ProjectAnalyzer:
 
         return analyzer
 
-    def _match_query(self, name: str, query: str) -> bool:
-        """Check if name matches query using regex."""
-        if not query:
-            return True
-        try:
-            return bool(re.search(query, name))
-        except re.error:
-            return query in name
-
     def get_functions(self, query: str = "") -> list[FunctionInfo]:
         """Get all functions from all files."""
         functions = []
@@ -182,7 +81,7 @@ class ProjectAnalyzer:
             analyzer = self._get_analyzer(file_path)
             if analyzer:
                 for f in analyzer.get_functions():
-                    if self._match_query(f.name, query):
+                    if match_query(f.name, query):
                         functions.append(f)
         return functions
 
@@ -200,7 +99,7 @@ class ProjectAnalyzer:
             analyzer = self._get_analyzer(file_path)
             if analyzer:
                 for c in analyzer.get_classes():
-                    if self._match_query(c.name, query):
+                    if match_query(c.name, query):
                         classes.append(c)
         return classes
 
@@ -238,7 +137,7 @@ class ProjectAnalyzer:
             analyzer = self._get_analyzer(file_path)
             if analyzer:
                 for i in analyzer.get_imports():
-                    if self._match_query(i.module, query):
+                    if match_query(i.module, query):
                         imports.append(i)
         return imports
 
@@ -256,7 +155,7 @@ class ProjectAnalyzer:
             analyzer = self._get_analyzer(file_path)
             if analyzer:
                 for v in analyzer.get_variables():
-                    if self._match_query(v.name, query):
+                    if match_query(v.name, query):
                         variables.append(v)
         return variables
 
@@ -293,33 +192,27 @@ class ProjectAnalyzer:
         if not relevant_files:
             return []
 
-        callers = []
-
-        # Use sequential processing for small number of files to utilize cache and avoid overhead
-        if len(relevant_files) < self.PARALLEL_THRESHOLD:
-            for file_path in relevant_files:
-                analyzer = self._get_analyzer(file_path)
-                if analyzer:
-                    file_callers = analyzer.get_function_callers(function_name, class_name)
-                    for caller_info in file_callers:
-                        callers.append(
-                            {
-                                "caller": caller_info["caller"],
-                                "line": caller_info["line"],
-                                "file": file_path,
-                                "target_class": caller_info.get("target_class"),
-                            }
-                        )
-        else:
-            # Use parallel processing for larger number of files
-            with concurrent.futures.ProcessPoolExecutor() as executor:
-                futures = [
-                    executor.submit(_process_file_for_callers, f, function_name, class_name)
-                    for f in relevant_files
+        def find_callers(file_path: str, fn_name: str, cls_name: str | None) -> list[dict]:
+            try:
+                analyzer = CodeAnalyzer(file_path)
+                return [
+                    {
+                        "caller": c["caller"],
+                        "line": c["line"],
+                        "file": file_path,
+                        "target_class": c.get("target_class"),
+                    }
+                    for c in analyzer.get_function_callers(fn_name, cls_name)
                 ]
-                for future in concurrent.futures.as_completed(futures):
-                    with contextlib.suppress(Exception):
-                        callers.extend(future.result())
+            except Exception:
+                return []
+
+        if len(relevant_files) < self.PARALLEL_THRESHOLD:
+            callers = []
+            for file_path in relevant_files:
+                callers.extend(find_callers(file_path, function_name, class_name))
+        else:
+            callers = run_parallel(relevant_files, find_callers, function_name, class_name)
 
         return sorted(callers, key=lambda x: (x["file"], x["line"]))
 
@@ -330,43 +223,37 @@ class ProjectAnalyzer:
         if not relevant_files:
             return []
 
-        results = []
-
-        # Use sequential processing for small number of files
-        if len(relevant_files) < self.PARALLEL_THRESHOLD:
-            for file_path in relevant_files:
-                analyzer = self._get_analyzer(file_path)
-                if analyzer:
-                    funcs = analyzer.get_all_functions_by_name(function_name, class_name)
-                    if funcs:
-                        callees = analyzer.get_function_callees(function_name, class_name)
-                        for c in callees:
-                            results.append(
-                                {
-                                    "callee": c["callee"],
-                                    "line": c["line"],
-                                    "file": file_path,
-                                    "class_name": c.get("class_name"),
-                                }
-                            )
-        else:
-            # Use parallel processing for larger number of files
-            with concurrent.futures.ProcessPoolExecutor() as executor:
-                futures = [
-                    executor.submit(_process_file_for_callees, f, function_name, class_name)
-                    for f in relevant_files
+        def find_callees(file_path: str, fn_name: str, cls_name: str | None) -> list[dict]:
+            try:
+                analyzer = CodeAnalyzer(file_path)
+                if not analyzer.get_all_functions_by_name(fn_name, cls_name):
+                    return []
+                return [
+                    {
+                        "callee": c["callee"],
+                        "line": c["line"],
+                        "file": file_path,
+                        "class_name": c.get("class_name"),
+                    }
+                    for c in analyzer.get_function_callees(fn_name, cls_name)
                 ]
-                for future in concurrent.futures.as_completed(futures):
-                    with contextlib.suppress(Exception):
-                        results.extend(future.result())
+            except Exception:
+                return []
 
-        return sorted(results, key=lambda x: (x["file"], x["line"]))
+        if len(relevant_files) < self.PARALLEL_THRESHOLD:
+            callees = []
+            for file_path in relevant_files:
+                callees.extend(find_callees(file_path, function_name, class_name))
+        else:
+            callees = run_parallel(relevant_files, find_callees, function_name, class_name)
+
+        return sorted(callees, key=lambda x: (x["file"], x["line"]))
 
     def get_function_variables(
         self, function_name: str, class_name: str | None = None
     ) -> list[dict]:
         """Get all variables in a function across all files."""
-        results = []
+        fn_variables = []
         for file_path in self.files:
             if not self._file_contains_text(file_path, function_name):
                 continue
@@ -374,18 +261,18 @@ class ProjectAnalyzer:
             if analyzer:
                 variables = analyzer.get_function_variables(function_name, class_name)
                 for v in variables:
-                    results.append(
+                    fn_variables.append(
                         {
                             "name": v.name,
                             "line": v.location.start_line,
                             "file": file_path,
                         }
                     )
-        return sorted(results, key=lambda x: (x["file"], x["line"]))
+        return sorted(fn_variables, key=lambda x: (x["file"], x["line"]))
 
     def get_function_strings(self, function_name: str, class_name: str | None = None) -> list[dict]:
         """Get all strings in a function across all files."""
-        results = []
+        fn_strings = []
         for file_path in self.files:
             if not self._file_contains_text(file_path, function_name):
                 continue
@@ -393,14 +280,14 @@ class ProjectAnalyzer:
             if analyzer:
                 strings = analyzer.get_function_strings(function_name, class_name)
                 for s in strings:
-                    results.append(
+                    fn_strings.append(
                         {
                             "value": s.value,
                             "line": s.location.start_line,
                             "file": file_path,
                         }
                     )
-        return sorted(results, key=lambda x: (x["file"], x["line"]))
+        return sorted(fn_strings, key=lambda x: (x["file"], x["line"]))
 
     def find_symbols(self, name: str) -> list[dict]:
         """Find all references to an identifier across all files."""
@@ -428,9 +315,6 @@ class ProjectAnalyzer:
 
     def get_super_classes(self, class_name: str) -> list[ClassInfo]:
         """Get all parent classes (ancestors) of a specific class across all files using BFS.
-
-        First finds the target class, then searches for its parent classes recursively.
-        Uses text search pre-filtering to avoid parsing all files.
         """
         # Find the starting class
         target_class = self.get_class_by_name(class_name)
@@ -462,8 +346,6 @@ class ProjectAnalyzer:
 
     def get_sub_classes(self, class_name: str) -> list[ClassInfo]:
         """Get all child classes (descendants) that inherit from a specific class using BFS.
-
-        Uses text search pre-filtering to avoid parsing all files.
         """
         result = []
         visited = {class_name}

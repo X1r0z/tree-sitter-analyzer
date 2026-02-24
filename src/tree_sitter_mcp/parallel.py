@@ -10,9 +10,9 @@ def run_parallel(
     files: list[str],
     fn: callable,
     *args: object,
-) -> list[dict]:
+) -> list:
     """Run fn(file, *args) across files in parallel, returning aggregated results."""
-    results: list[dict] = []
+    results: list = []
     with concurrent.futures.ProcessPoolExecutor() as executor:
         futures = [executor.submit(fn, f, *args) for f in files]
         for future in concurrent.futures.as_completed(futures):

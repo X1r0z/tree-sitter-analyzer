@@ -55,84 +55,148 @@ class ProjectAnalyzer:
 
     def get_functions(self, query: str = "") -> list[FunctionInfo]:
         """Get all functions from all files."""
-        functions = []
-
         # Fast path optimization for simple queries
         is_simple_query = query and not any(c in query for c in ".^$*+?{}[]|()\\")
         candidate_files = self._filter_files_by_text(query) if is_simple_query else self.files
 
-        for file_path in candidate_files:
-            analyzer = self._get_analyzer(file_path)
-            if analyzer:
-                for f in analyzer.get_functions():
-                    if match_query(f.name, query):
-                        functions.append(f)
+        if not candidate_files:
+            return []
+
+        def find_functions(file_path: str, q: str) -> list[FunctionInfo]:
+            try:
+                analyzer = CodeAnalyzer(file_path)
+                return [f for f in analyzer.get_functions() if match_query(f.name, q)]
+            except Exception:
+                return []
+
+        if len(candidate_files) < self.PARALLEL_THRESHOLD:
+            functions = []
+            for file_path in candidate_files:
+                functions.extend(find_functions(file_path, query))
+        else:
+            functions = run_parallel(candidate_files, find_functions, query)
+
         return functions
 
     def get_classes(self, query: str = "") -> list[ClassInfo]:
         """Get all classes from all files."""
-        classes = []
-
         # Fast path optimization for simple queries
         is_simple_query = query and not any(c in query for c in ".^$*+?{}[]|()\\")
         candidate_files = self._filter_files_by_text(query) if is_simple_query else self.files
 
-        for file_path in candidate_files:
-            analyzer = self._get_analyzer(file_path)
-            if analyzer:
-                for c in analyzer.get_classes():
-                    if match_query(c.name, query):
-                        classes.append(c)
+        if not candidate_files:
+            return []
+
+        def find_classes(file_path: str, q: str) -> list[ClassInfo]:
+            try:
+                analyzer = CodeAnalyzer(file_path)
+                return [c for c in analyzer.get_classes() if match_query(c.name, q)]
+            except Exception:
+                return []
+
+        if len(candidate_files) < self.PARALLEL_THRESHOLD:
+            classes = []
+            for file_path in candidate_files:
+                classes.extend(find_classes(file_path, query))
+        else:
+            classes = run_parallel(candidate_files, find_classes, query)
+
         return classes
 
     def get_fields(self, class_name: str) -> list[FieldInfo]:
         """Get all fields from all files, optionally filtered by class name."""
-        fields = []
-        for file_path in self._filter_files_by_text(class_name):
-            analyzer = self._get_analyzer(file_path)
-            if analyzer:
-                fields.extend(analyzer.get_fields(class_name))
+        candidate_files = self._filter_files_by_text(class_name)
+
+        if not candidate_files:
+            return []
+
+        def find_fields(file_path: str, cls_name: str) -> list[FieldInfo]:
+            try:
+                analyzer = CodeAnalyzer(file_path)
+                return analyzer.get_fields(cls_name)
+            except Exception:
+                return []
+
+        if len(candidate_files) < self.PARALLEL_THRESHOLD:
+            fields = []
+            for file_path in candidate_files:
+                fields.extend(find_fields(file_path, class_name))
+        else:
+            fields = run_parallel(candidate_files, find_fields, class_name)
+
         return fields
 
     def get_calls(self) -> list[CallInfo]:
         """Get all function calls from all files."""
-        calls = []
-        for file_path in self.files:
-            analyzer = self._get_analyzer(file_path)
-            if analyzer:
-                calls.extend(analyzer.get_calls())
+        candidate_files = self.files
+
+        if not candidate_files:
+            return []
+
+        def find_calls(file_path: str) -> list[CallInfo]:
+            try:
+                analyzer = CodeAnalyzer(file_path)
+                return analyzer.get_calls()
+            except Exception:
+                return []
+
+        if len(candidate_files) < self.PARALLEL_THRESHOLD:
+            calls = []
+            for file_path in candidate_files:
+                calls.extend(find_calls(file_path))
+        else:
+            calls = run_parallel(candidate_files, find_calls)
+
         return calls
 
     def get_imports(self, query: str = "") -> list[ImportInfo]:
         """Get all imports from all files."""
-        imports = []
-
         # Fast path optimization for simple queries
         is_simple_query = query and not any(c in query for c in ".^$*+?{}[]|()\\")
         candidate_files = self._filter_files_by_text(query) if is_simple_query else self.files
 
-        for file_path in candidate_files:
-            analyzer = self._get_analyzer(file_path)
-            if analyzer:
-                for i in analyzer.get_imports():
-                    if match_query(i.module, query):
-                        imports.append(i)
+        if not candidate_files:
+            return []
+
+        def find_imports(file_path: str, q: str) -> list[ImportInfo]:
+            try:
+                analyzer = CodeAnalyzer(file_path)
+                return [i for i in analyzer.get_imports() if match_query(i.module, q)]
+            except Exception:
+                return []
+
+        if len(candidate_files) < self.PARALLEL_THRESHOLD:
+            imports = []
+            for file_path in candidate_files:
+                imports.extend(find_imports(file_path, query))
+        else:
+            imports = run_parallel(candidate_files, find_imports, query)
+
         return imports
 
     def get_variables(self, query: str = "") -> list[VariableInfo]:
         """Get all variables from all files."""
-        variables = []
-
         # Fast path optimization for simple queries
         is_simple_query = query and not any(c in query for c in ".^$*+?{}[]|()\\")
         candidate_files = self._filter_files_by_text(query) if is_simple_query else self.files
 
-        for file_path in candidate_files:
-            analyzer = self._get_analyzer(file_path)
-            if analyzer:
-                for v in analyzer.get_variables():
-                    if match_query(v.name, query):
-                        variables.append(v)
+        if not candidate_files:
+            return []
+
+        def find_variables(file_path: str, q: str) -> list[VariableInfo]:
+            try:
+                analyzer = CodeAnalyzer(file_path)
+                return [v for v in analyzer.get_variables() if match_query(v.name, q)]
+            except Exception:
+                return []
+
+        if len(candidate_files) < self.PARALLEL_THRESHOLD:
+            variables = []
+            for file_path in candidate_files:
+                variables.extend(find_variables(file_path, query))
+        else:
+            variables = run_parallel(candidate_files, find_variables, query)
+
         return variables
 
     def get_function_by_name(self, name: str, class_name: str | None = None) -> FunctionInfo | None:
@@ -149,12 +213,25 @@ class ProjectAnalyzer:
         self, name: str, class_name: str | None = None
     ) -> list[FunctionInfo]:
         """Find all functions with a given name across all files, optionally filtering by class_name."""
-        functions = []
-        for file_path in self._filter_files_by_text(name):
-            analyzer = self._get_analyzer(file_path)
-            if analyzer:
-                funcs = analyzer.get_all_functions_by_name(name, class_name)
-                functions.extend(funcs)
+        candidate_files = self._filter_files_by_text(name)
+
+        if not candidate_files:
+            return []
+
+        def find_funcs(file_path: str, fn_name: str, cls_name: str | None) -> list[FunctionInfo]:
+            try:
+                analyzer = CodeAnalyzer(file_path)
+                return analyzer.get_all_functions_by_name(fn_name, cls_name)
+            except Exception:
+                return []
+
+        if len(candidate_files) < self.PARALLEL_THRESHOLD:
+            functions = []
+            for file_path in candidate_files:
+                functions.extend(find_funcs(file_path, name, class_name))
+        else:
+            functions = run_parallel(candidate_files, find_funcs, name, class_name)
+
         return functions
 
     def get_callers(self, function_name: str, class_name: str | None = None) -> list[dict]:
@@ -225,46 +302,77 @@ class ProjectAnalyzer:
         self, function_name: str, class_name: str | None = None
     ) -> list[dict]:
         """Get all variables in a function across all files."""
-        fn_variables = []
-        for file_path in self._filter_files_by_text(function_name):
-            analyzer = self._get_analyzer(file_path)
-            if analyzer:
-                variables = analyzer.get_function_variables(function_name, class_name)
-                for v in variables:
-                    fn_variables.append(
-                        {
-                            "name": v.name,
-                            "line": v.location.start_line,
-                            "file": file_path,
-                        }
-                    )
+        candidate_files = self._filter_files_by_text(function_name)
+
+        if not candidate_files:
+            return []
+
+        def find_fn_vars(file_path: str, fn_name: str, cls_name: str | None) -> list[dict]:
+            try:
+                analyzer = CodeAnalyzer(file_path)
+                return [
+                    {"name": v.name, "line": v.location.start_line, "file": file_path}
+                    for v in analyzer.get_function_variables(fn_name, cls_name)
+                ]
+            except Exception:
+                return []
+
+        if len(candidate_files) < self.PARALLEL_THRESHOLD:
+            fn_variables = []
+            for file_path in candidate_files:
+                fn_variables.extend(find_fn_vars(file_path, function_name, class_name))
+        else:
+            fn_variables = run_parallel(candidate_files, find_fn_vars, function_name, class_name)
+
         return sorted(fn_variables, key=lambda x: (x["file"], x["line"]))
 
     def get_function_strings(self, function_name: str, class_name: str | None = None) -> list[dict]:
         """Get all strings in a function across all files."""
-        fn_strings = []
-        for file_path in self._filter_files_by_text(function_name):
-            analyzer = self._get_analyzer(file_path)
-            if analyzer:
-                strings = analyzer.get_function_strings(function_name, class_name)
-                for s in strings:
-                    fn_strings.append(
-                        {
-                            "value": s.value,
-                            "line": s.location.start_line,
-                            "file": file_path,
-                        }
-                    )
+        candidate_files = self._filter_files_by_text(function_name)
+
+        if not candidate_files:
+            return []
+
+        def find_fn_strings(file_path: str, fn_name: str, cls_name: str | None) -> list[dict]:
+            try:
+                analyzer = CodeAnalyzer(file_path)
+                return [
+                    {"value": s.value, "line": s.location.start_line, "file": file_path}
+                    for s in analyzer.get_function_strings(fn_name, cls_name)
+                ]
+            except Exception:
+                return []
+
+        if len(candidate_files) < self.PARALLEL_THRESHOLD:
+            fn_strings = []
+            for file_path in candidate_files:
+                fn_strings.extend(find_fn_strings(file_path, function_name, class_name))
+        else:
+            fn_strings = run_parallel(candidate_files, find_fn_strings, function_name, class_name)
+
         return sorted(fn_strings, key=lambda x: (x["file"], x["line"]))
 
     def find_symbols(self, name: str) -> list[dict]:
         """Find all references to an identifier across all files."""
-        refs = []
-        for file_path in self._filter_files_by_text(name):
-            analyzer = self._get_analyzer(file_path)
-            if analyzer:
-                file_refs = analyzer.find_symbols(name)
-                refs.extend(file_refs)
+        candidate_files = self._filter_files_by_text(name)
+
+        if not candidate_files:
+            return []
+
+        def find_refs(file_path: str, symbol_name: str) -> list[dict]:
+            try:
+                analyzer = CodeAnalyzer(file_path)
+                return analyzer.find_symbols(symbol_name)
+            except Exception:
+                return []
+
+        if len(candidate_files) < self.PARALLEL_THRESHOLD:
+            refs = []
+            for file_path in candidate_files:
+                refs.extend(find_refs(file_path, name))
+        else:
+            refs = run_parallel(candidate_files, find_refs, name)
+
         return refs
 
     def get_class_by_name(self, class_name: str) -> ClassInfo | None:
@@ -289,22 +397,37 @@ class ProjectAnalyzer:
         visited = {class_name}
         queue = deque([target_class])
 
+        def find_class_def(file_path: str, cls_name: str) -> list[ClassInfo]:
+            try:
+                analyzer = CodeAnalyzer(file_path)
+                cls = analyzer.get_class_by_name(cls_name)
+                return [cls] if cls else []
+            except Exception:
+                return []
+
         while queue:
             current_class = queue.popleft()
 
             for parent_name in current_class.super_classes:
                 if parent_name in visited:
                     continue
+                visited.add(parent_name)
 
-                # Try to find parent class definition
-                parent_class = self.get_class_by_name(parent_name)
-                if parent_class:
-                    visited.add(parent_name)
+                candidate_files = self._filter_files_by_text(parent_name)
+                if not candidate_files:
+                    continue
+
+                if len(candidate_files) < self.PARALLEL_THRESHOLD:
+                    found = []
+                    for file_path in candidate_files:
+                        found.extend(find_class_def(file_path, parent_name))
+                else:
+                    found = run_parallel(candidate_files, find_class_def, parent_name)
+
+                if found:
+                    parent_class = found[0]
                     result.append(parent_class)
                     queue.append(parent_class)
-                else:
-                    # Mark as visited even if not found to avoid repeated searches
-                    visited.add(parent_name)
 
         return result
 
@@ -315,24 +438,34 @@ class ProjectAnalyzer:
         visited = {class_name}
         queue = deque([class_name])
 
+        def find_subclasses(file_path: str, parent_name: str) -> list[ClassInfo]:
+            try:
+                analyzer = CodeAnalyzer(file_path)
+                return [
+                    cls for cls in analyzer.get_classes()
+                    if parent_name in cls.super_classes
+                ]
+            except Exception:
+                return []
+
         while queue:
             current_parent_name = queue.popleft()
+            candidate_files = self._filter_files_by_text(current_parent_name)
 
-            # Find direct subclasses of current_parent_name
-            # Scan files that contain the parent name
-            for file_path in self._filter_files_by_text(current_parent_name):
-                analyzer = self._get_analyzer(file_path)
-                if not analyzer:
-                    continue
+            if not candidate_files:
+                continue
 
-                # Check all classes in this file
-                for cls in analyzer.get_classes():
-                    if cls.name in visited:
-                        continue
+            if len(candidate_files) < self.PARALLEL_THRESHOLD:
+                found = []
+                for file_path in candidate_files:
+                    found.extend(find_subclasses(file_path, current_parent_name))
+            else:
+                found = run_parallel(candidate_files, find_subclasses, current_parent_name)
 
-                    if current_parent_name in cls.super_classes:
-                        visited.add(cls.name)
-                        result.append(cls)
-                        queue.append(cls.name)
+            for cls in found:
+                if cls.name not in visited:
+                    visited.add(cls.name)
+                    result.append(cls)
+                    queue.append(cls.name)
 
         return result

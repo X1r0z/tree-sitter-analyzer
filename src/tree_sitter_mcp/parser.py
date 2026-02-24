@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from pathlib import Path
 
@@ -314,6 +315,37 @@ class BaseParser:
                     obj_name = ids[0]
 
         return callee, obj_name
+
+    def _extract_instance_attr(self, object_name: str) -> str | None:
+        for prefix in ("self.", "this.", "cls."):
+            if object_name.startswith(prefix):
+                remainder = object_name[len(prefix) :]
+                if remainder:
+                    return remainder.split(".")[0]
+        return None
+
+    def _type_matches_class(self, field_type: str | None, class_name: str) -> bool:
+        if not field_type:
+            return False
+        tokens = re.split(r"[^A-Za-z0-9_]+", field_type)
+        return class_name in {t for t in tokens if t}
+
+    def _matches_call_target_class(self, call: CallInfo, class_name: str) -> bool:
+        if call.object_name == class_name:
+            return True
+        if call.object_name is None:
+            return call.caller_class_name == class_name
+        if call.object_name in {"self", "this", "cls"}:
+            return call.caller_class_name == class_name
+        if call.caller_class_name:
+            attr_name = self._extract_instance_attr(call.object_name)
+            if attr_name:
+                for field in self.get_fields(call.caller_class_name):
+                    if field.name != attr_name:
+                        continue
+                    if self._type_matches_class(field.field_type, class_name):
+                        return True
+        return False
 
     def _extract_methods_from_class(self, class_node: tree_sitter.Node) -> list[str]:
         """Extract method names from a class node."""

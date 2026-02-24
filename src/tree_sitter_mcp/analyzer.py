@@ -204,24 +204,8 @@ class CodeAnalyzer(BaseParser):
         seen: set[tuple[str, int]] = set()
 
         for call in candidate_calls:
-            if class_name is not None:
-                matches_explicit_target = call.object_name == class_name
-                matches_implicit_same_class = (
-                    call.object_name is None and call.caller_class_name == class_name
-                )
-                matches_this_qualifier = (
-                    call.object_name == "this" and call.caller_class_name == class_name
-                )
-                matches_self_qualifier = (
-                    call.object_name == "self" and call.caller_class_name == class_name
-                )
-                if not (
-                    matches_explicit_target
-                    or matches_implicit_same_class
-                    or matches_this_qualifier
-                    or matches_self_qualifier
-                ):
-                    continue
+            if class_name is not None and not self._matches_call_target_class(call, class_name):
+                continue
             caller = call.caller or "<module>"
             key = (caller, call.location.start_line)
             if key not in seen:

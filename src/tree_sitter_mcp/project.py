@@ -180,7 +180,9 @@ class ProjectAnalyzer:
         return None
 
     def get_all_functions_by_name(
-        self, name: str, class_name: str | None = None,
+        self,
+        name: str,
+        class_name: str | None = None,
     ) -> list[FunctionInfo]:
         """Find all functions with a given name across all files."""
         candidate_files = self._filter_files_by_text(name)
@@ -230,7 +232,9 @@ class ProjectAnalyzer:
         return sorted(callees, key=lambda x: (x["file"], x["line"]))
 
     def get_function_variables(
-        self, function_name: str, class_name: str | None = None,
+        self,
+        function_name: str,
+        class_name: str | None = None,
     ) -> list[dict]:
         """Get all variables in a function across all files."""
         candidate_files = self._filter_files_by_text(function_name)
@@ -244,13 +248,18 @@ class ProjectAnalyzer:
                 fn_variables.extend(find_fn_vars(file_path, function_name, class_name))
         else:
             fn_variables = run_parallel(
-                candidate_files, find_fn_vars, function_name, class_name,
+                candidate_files,
+                find_fn_vars,
+                function_name,
+                class_name,
             )
 
         return sorted(fn_variables, key=lambda x: (x["file"], x["line"]))
 
     def get_function_strings(
-        self, function_name: str, class_name: str | None = None,
+        self,
+        function_name: str,
+        class_name: str | None = None,
     ) -> list[dict]:
         """Get all strings in a function across all files."""
         candidate_files = self._filter_files_by_text(function_name)
@@ -264,7 +273,10 @@ class ProjectAnalyzer:
                 fn_strings.extend(find_fn_strings(file_path, function_name, class_name))
         else:
             fn_strings = run_parallel(
-                candidate_files, find_fn_strings, function_name, class_name,
+                candidate_files,
+                find_fn_strings,
+                function_name,
+                class_name,
             )
 
         return sorted(fn_strings, key=lambda x: (x["file"], x["line"]))

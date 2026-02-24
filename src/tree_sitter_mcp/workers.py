@@ -166,8 +166,6 @@ def find_class_def(file_path: str, cls_name: str) -> list[ClassInfo]:
 def find_subclasses(file_path: str, parent_name: str) -> list[ClassInfo]:
     try:
         analyzer = CodeAnalyzer(file_path)
-        return [
-            cls for cls in analyzer.get_classes() if parent_name in cls.super_classes
-        ]
+        return [cls for cls in analyzer.get_classes() if parent_name in cls.super_classes]
     except Exception:
         return []

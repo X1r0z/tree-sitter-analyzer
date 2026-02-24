@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import re
+from collections import deque
 from collections.abc import Callable
 from pathlib import Path
 
 import tree_sitter
 
 from .languages import detect_language, get_language_info, get_parser
-from .nodes import CallInfo, FieldInfo, Location
+from .nodes import CallInfo, FieldInfo, FunctionInfo, Location
 from .utils import get_compiled_query
 
 
@@ -749,6 +750,15 @@ class BaseParser:
         fields: list[FieldInfo] = []
         seen: set[str] = set()
         field_types = {"field_definition", "field_declaration"}
+        class_types = {
+            "class_definition",
+            "class_declaration",
+            "class",
+            "interface_declaration",
+            "enum_declaration",
+            "record_declaration",
+            "annotation_type_declaration",
+        }
         method_types = {
             "function_definition",
             "method_definition",
@@ -768,7 +778,21 @@ class BaseParser:
                     )
                 )
 
+        def declared_class_name(node: tree_sitter.Node) -> str:
+            name_node = node.child_by_field_name("name")
+            if name_node is not None:
+                return self._node_text(name_node)
+            for child in node.children:
+                if child.type in {"identifier", "type_identifier"}:
+                    return self._node_text(child)
+            return ""
+
         def walk(node: tree_sitter.Node, inside_method: bool = False):
+            if node != class_node and node.type in class_types:
+                nested_class_name = declared_class_name(node)
+                if nested_class_name and nested_class_name != class_name:
+                    return
+
             if node.type in method_types:
                 if self._language != "python":
                     return
@@ -863,33 +887,30 @@ class BaseParser:
 
     def _get_fields_from_class_node(self, class_name: str) -> list[FieldInfo]:
         """Get detailed field info for a specific class."""
-        if not self._language or not self._tree:
+        if not self._language:
             return []
 
         lang_info = get_language_info(self._language)
         if not lang_info:
             return []
 
-        captures = self._run_query(lang_info.class_query)
-        class_nodes = captures.get("class", [])
-        name_nodes = captures.get("name", [])
+        matches = self._run_query_matches(lang_info.class_query)
+        candidates: list[tree_sitter.Node] = []
 
-        target_class_node = None
-        for class_node in class_nodes:
-            for name_node in name_nodes:
-                if (
-                    class_node.start_byte <= name_node.start_byte
-                    and name_node.end_byte <= class_node.end_byte
-                    and self._node_text(name_node) == class_name
-                ):
-                    target_class_node = class_node
-                    break
-            if target_class_node:
-                break
+        for match in matches:
+            class_node = match.get("class")
+            name_node = match.get("name")
+            if not class_node or not name_node:
+                continue
+            if self._node_text(name_node) != class_name:
+                continue
+            candidates.append(class_node)
 
-        if not target_class_node:
+        if not candidates:
             return []
 
+        # Prefer the most specific declaration node when wrappers exist (e.g. decorated definitions).
+        target_class_node = min(candidates, key=lambda n: (n.end_byte - n.start_byte, n.start_byte))
         return self._extract_field_infos(target_class_node, class_name)
 
     def _is_python_property_function(self, func: FunctionInfo) -> bool:

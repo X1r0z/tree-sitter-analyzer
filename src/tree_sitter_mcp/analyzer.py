@@ -290,7 +290,7 @@ class CodeAnalyzer(BaseParser):
 
             start, end = class_node.start_byte, class_node.end_byte
             is_nested = any(s < start and end <= e for s, e in class_ranges)
-            if is_nested:
+            if is_nested and self._language != "java":
                 continue
 
             class_ranges.append((start, end))

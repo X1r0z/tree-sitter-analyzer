@@ -3,19 +3,30 @@
 from __future__ import annotations
 
 import concurrent.futures
-import contextlib
+from collections.abc import Callable
 
 
 def run_parallel(
     files: list[str],
-    fn: callable,
+    fn: Callable,
     *args: object,
 ) -> list:
     """Run fn(file, *args) across files in parallel, returning aggregated results."""
     results: list = []
+    errors: list[str] = []
     with concurrent.futures.ProcessPoolExecutor() as executor:
-        futures = [executor.submit(fn, f, *args) for f in files]
+        futures = {executor.submit(fn, f, *args): f for f in files}
         for future in concurrent.futures.as_completed(futures):
-            with contextlib.suppress(Exception):
+            file_path = futures[future]
+            try:
                 results.extend(future.result())
+            except Exception as exc:
+                errors.append(f"{file_path}: {type(exc).__name__}: {exc}")
+
+    if errors:
+        details = "; ".join(errors[:3])
+        if len(errors) > 3:
+            details += f"; ... and {len(errors) - 3} more"
+        raise RuntimeError(f"Parallel analysis failed for {len(errors)} file(s): {details}")
+
     return results

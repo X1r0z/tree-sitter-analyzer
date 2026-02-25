@@ -6,7 +6,7 @@
 - Run CLI: `uv run tree-sitter-analyzer <command> <path> [options]`
 - Lint: `uv run ruff check src/`
 - Format: `uv run ruff format src/`
-- Test: No test framework configured yet
+- Test: `uv run pytest tests/`
 
 ## Architecture
 - **src/tree_sitter_mcp/** - FastMCP server exposing AST analysis as MCP tools
@@ -14,7 +14,9 @@
   - `analyzer.py` - CodeAnalyzer: single-file AST parsing, call graphs, inheritance
   - `project.py` - ProjectAnalyzer: multi-file directory analysis
   - `languages.py` - Language configs: parsers, queries, extension mapping
-- **src/tree_sitter_analyzer/** - CLI wrapper around CodeAnalyzer/ProjectAnalyzer
+  - `nodes.py`, `parser.py`, `utils.py` - AST node helpers, parsing, utilities
+  - `parallel.py`, `workers.py` - Parallel analysis infrastructure
+- **src/tree_sitter_analyzer/** - CLI wrapper (`cli.py`) around CodeAnalyzer/ProjectAnalyzer
 - Supported languages: Python, JavaScript/TypeScript, Java, Go
 
 ## Code Style

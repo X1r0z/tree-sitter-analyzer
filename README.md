@@ -1,4 +1,4 @@
-# tree-sitter-mcp
+# tree-sitter-analyzer
 
 A code analysis toolkit using [tree-sitter](https://tree-sitter.github.io/tree-sitter/) for AST-based code structure extraction, call graph analysis, and symbol reference tracking.
 
@@ -10,7 +10,6 @@ A code analysis toolkit using [tree-sitter](https://tree-sitter.github.io/tree-s
 - **Import Analysis** - Extract import statements and dependencies
 - **Variable Tracking** - Identify variable declarations with scope information
 - **Symbol Reference Tracking** - Find all references to a specific symbol
-- **Dual Interface** - Use as MCP server or standalone CLI tool
 
 ## Supported Languages
 
@@ -25,30 +24,10 @@ A code analysis toolkit using [tree-sitter](https://tree-sitter.github.io/tree-s
 ## Installation
 
 ```bash
-# Using uv (recommended)
-uv tool install git+https://github.com/X1r0z/tree-sitter-mcp
-
-# Using pip
-pip install git+https://github.com/X1r0z/tree-sitter-mcp
+cargo install --git https://github.com/X1r0z/tree-sitter-analyzer
 ```
 
 ## Usage
-
-### MCP Server
-
-```json
-{
-  "mcpServers": {
-    "tree-sitter": {
-      "command": "tree-sitter-mcp"
-    }
-  }
-}
-```
-
-### CLI Tool
-
-Use `tree-sitter-analyzer` for command-line analysis:
 
 ```bash
 # List all classes in a directory
@@ -67,59 +46,59 @@ tree-sitter-analyzer functions ./src/ --json
 tree-sitter-analyzer functions ./src/ --yaml
 ```
 
-See [CLI.md](CLI.md) for complete CLI documentation.
+See [USAGE.md](USAGE.md) for complete documentation.
 
-## Tools
+## Modules
 
 ### Code Structure
 
 | Tool | Description |
 |------|-------------|
-| `get_functions` | Extract all function/method definitions |
-| `get_classes` | Extract all class/struct/interface definitions |
-| `get_fields` | Extract all field definitions |
-| `get_imports` | Extract all import statements |
-| `get_variables` | Extract all variable declarations |
+| `functions` | Extract all function/method definitions |
+| `classes` | Extract all class/struct/interface definitions |
+| `fields` | Extract all field definitions |
+| `imports` | Extract all import statements |
+| `variables` | Extract all variable declarations |
 
 ### Inheritance Analysis
 
 | Tool | Description |
 |------|-------------|
-| `get_super_classes` | Get all parent classes of a specific class |
-| `get_sub_classes` | Get all child classes that inherit from a specific class |
+| `super-classes` | Get all parent classes of a specific class |
+| `sub-classes` | Get all child classes that inherit from a specific class |
 
 ### Call Graph Analysis
 
 | Tool | Description |
 |------|-------------|
-| `get_callers` | Find functions that call a specific function |
-| `get_callees` | Find functions called by a specific function |
+| `callers` | Find functions that call a specific function |
+| `callees` | Find functions called by a specific function |
 
 ### Function-Level Analysis
 
 | Tool | Description |
 |------|-------------|
-| `get_function_definition` | Get the complete source code of a function |
-| `get_function_variables` | Get all variables declared in a function |
-| `get_function_strings` | Get all string literals in a function |
+| `definition` | Get the complete source code of a function |
+| `function-variables` | Get all variables declared in a function |
+| `function-strings` | Get all string literals in a function |
 
 ### Symbol Reference Tracking
 
 | Tool | Description |
 |------|-------------|
-| `find_symbols` | Find all references to a specific symbol |
+| `symbols` | Find all references to a specific symbol |
 
 ## Development
 
 ```bash
-# Install with dev dependencies
-uv pip install -e ".[dev]"
+# Build
+cargo build --release
 
 # Lint
-uv run ruff check src/
+cargo clippy
 
 # Format
-uv run ruff format src/
+cargo fmt
 ```
 
 ## License

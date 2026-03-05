@@ -1,0 +1,1175 @@
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::Path;
+
+use streaming_iterator::StreamingIterator;
+use tree_sitter::{Node, Parser, Query, QueryCursor, Tree};
+
+use crate::languages::{detect_language, get_language, get_language_info, LanguageInfo};
+use crate::nodes::*;
+
+pub(crate) struct BaseParser {
+    pub(crate) file_path: String,
+    pub(crate) language: String,
+    pub(crate) source: Vec<u8>,
+    pub(crate) tree: Tree,
+    pub(crate) lang_info: &'static LanguageInfo,
+}
+
+#[allow(dead_code)]
+impl BaseParser {
+    pub(crate) fn new(file_path: &str) -> anyhow::Result<Self> {
+        let path = Path::new(file_path);
+        let language = detect_language(path)
+            .ok_or_else(|| anyhow::anyhow!("Could not detect language for: {}", file_path))?;
+        let ts_lang = get_language(language)
+            .ok_or_else(|| anyhow::anyhow!("Unsupported language: {}", language))?;
+        let lang_info = get_language_info(language)
+            .ok_or_else(|| anyhow::anyhow!("No language info for: {}", language))?;
+
+        let source = fs::read(file_path)?;
+        let mut parser = Parser::new();
+        parser.set_language(&ts_lang)?;
+        let tree = parser
+            .parse(&source, None)
+            .ok_or_else(|| anyhow::anyhow!("Failed to parse: {}", file_path))?;
+
+        Ok(Self {
+            file_path: file_path.to_string(),
+            language: language.to_string(),
+            source,
+            tree,
+            lang_info,
+        })
+    }
+
+    pub(crate) fn node_text(&self, node: Node) -> String {
+        String::from_utf8_lossy(&self.source[node.start_byte()..node.end_byte()]).to_string()
+    }
+
+    pub(crate) fn node_text_utf8(&self, node: Node) -> String {
+        String::from_utf8_lossy(&self.source[node.start_byte()..node.end_byte()]).to_string()
+    }
+
+    pub(crate) fn node_location(&self, node: Node) -> Location {
+        Location {
+            file: self.file_path.clone(),
+            start_line: node.start_position().row + 1,
+            end_line: node.end_position().row + 1,
+        }
+    }
+
+    pub(crate) fn run_query(&self, query_str: &str) -> HashMap<String, Vec<Node<'_>>> {
+        let ts_lang = match get_language(&self.language) {
+            Some(l) => l,
+            None => return HashMap::new(),
+        };
+        let query = match Query::new(&ts_lang, query_str) {
+            Ok(q) => q,
+            Err(_) => return HashMap::new(),
+        };
+
+        let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(&query, self.tree.root_node(), self.source.as_slice());
+
+        let mut result: HashMap<String, Vec<Node>> = HashMap::new();
+        while let Some(m) = matches.next() {
+            for cap in m.captures {
+                let name = query.capture_names()[cap.index as usize];
+                result.entry(name.to_string()).or_default().push(cap.node);
+            }
+        }
+        result
+    }
+
+    pub(crate) fn run_query_matches(&self, query_str: &str) -> Vec<HashMap<String, Node<'_>>> {
+        let ts_lang = match get_language(&self.language) {
+            Some(l) => l,
+            None => return Vec::new(),
+        };
+        let query = match Query::new(&ts_lang, query_str) {
+            Ok(q) => q,
+            Err(_) => return Vec::new(),
+        };
+
+        let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(&query, self.tree.root_node(), self.source.as_slice());
+
+        let mut results = Vec::new();
+        while let Some(m) = matches.next() {
+            let mut match_dict = HashMap::new();
+            for cap in m.captures {
+                let name = query.capture_names()[cap.index as usize];
+                match_dict.insert(name.to_string(), cap.node);
+            }
+            results.push(match_dict);
+        }
+        results
+    }
+
+    pub(crate) fn is_function_like(node_kind: &str) -> bool {
+        matches!(
+            node_kind,
+            "function_definition"
+                | "async_function_definition"
+                | "function_declaration"
+                | "method_definition"
+                | "arrow_function"
+                | "method_declaration"
+                | "constructor_declaration"
+                | "function_expression"
+                | "func_literal"
+        )
+    }
+
+    pub(crate) fn find_enclosing_function(&self, node: Node) -> Option<String> {
+        let mut current = node.parent();
+        let anonymous_types = ["arrow_function", "func_literal"];
+        while let Some(cur) = current {
+            if Self::is_function_like(cur.kind()) {
+                if let Some(name_node) = cur.child_by_field_name("name") {
+                    return Some(self.node_text(name_node));
+                }
+                if anonymous_types.contains(&cur.kind()) || cur.kind() == "function_expression" {
+                    return self.infer_anonymous_function_name(cur);
+                }
+                for i in 0..cur.child_count() {
+                    let child = cur.child(i).unwrap();
+                    if matches!(
+                        child.kind(),
+                        "identifier" | "property_identifier" | "field_identifier"
+                    ) {
+                        return Some(self.node_text(child));
+                    }
+                }
+                return None;
+            }
+            current = cur.parent();
+        }
+        None
+    }
+
+    pub(crate) fn infer_anonymous_function_name(&self, func_node: Node) -> Option<String> {
+        let parent = func_node.parent()?;
+        match parent.kind() {
+            "variable_declarator" => {
+                let name_node = parent.child_by_field_name("name")?;
+                if name_node.kind() == "identifier" {
+                    return Some(self.node_text(name_node));
+                }
+            }
+            "assignment_expression" | "assignment" => {
+                let left_node = parent.child_by_field_name("left")?;
+                if left_node.kind() == "identifier" {
+                    return Some(self.node_text(left_node));
+                }
+            }
+            "pair" | "property" => {
+                let key_node = parent.child_by_field_name("key")?;
+                if matches!(
+                    key_node.kind(),
+                    "identifier" | "property_identifier" | "string"
+                ) {
+                    let text = self.node_text(key_node);
+                    return Some(text.trim_matches(|c| c == '"' || c == '\'').to_string());
+                }
+            }
+            "export_statement" => {
+                for i in 0..parent.child_count() {
+                    let child = parent.child(i).unwrap();
+                    if self.node_text(child) == "default" {
+                        return Some("<default_export>".to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+        None
+    }
+
+    pub(crate) fn find_enclosing_class(&self, node: Node) -> Option<String> {
+        let class_types: HashSet<&str> = [
+            "class_definition",
+            "class_declaration",
+            "class_body",
+            "interface_declaration",
+            "enum_declaration",
+            "record_declaration",
+            "annotation_type_declaration",
+        ]
+        .into_iter()
+        .collect();
+
+        if self.language == "go" && node.kind() == "method_declaration" {
+            if let Some(rc) = self.extract_go_receiver_type(node) {
+                return Some(rc);
+            }
+        }
+
+        let mut current = node.parent();
+        while let Some(cur) = current {
+            if self.language == "go" && cur.kind() == "method_declaration" {
+                if let Some(rc) = self.extract_go_receiver_type(cur) {
+                    return Some(rc);
+                }
+            }
+            if class_types.contains(cur.kind()) {
+                if let Some(name_node) = cur.child_by_field_name("name") {
+                    let class_name = self.node_text(name_node);
+                    if !class_name.is_empty() {
+                        return Some(class_name);
+                    }
+                }
+                for i in 0..cur.child_count() {
+                    let child = cur.child(i).unwrap();
+                    if matches!(child.kind(), "identifier" | "type_identifier" | "name") {
+                        let class_name = self.node_text(child);
+                        if !class_name.is_empty() {
+                            return Some(class_name);
+                        }
+                    }
+                }
+                // Some nodes like Java `class_body` don't carry the class name.
+                // Keep walking upward to find the owning class declaration.
+                current = cur.parent();
+                continue;
+            }
+            current = cur.parent();
+        }
+        None
+    }
+
+    pub(crate) fn extract_go_receiver_type(&self, method_node: Node) -> Option<String> {
+        let receiver_list = method_node.child_by_field_name("receiver").or_else(|| {
+            for i in 0..method_node.child_count() {
+                let child = method_node.child(i).unwrap();
+                if child.kind() == "parameter_list" {
+                    return Some(child);
+                }
+            }
+            None
+        })?;
+
+        for i in 0..receiver_list.child_count() {
+            let param = receiver_list.child(i).unwrap();
+            if param.kind() == "parameter_declaration" {
+                if let Some(type_node) = param.child_by_field_name("type") {
+                    return self.unwrap_go_type(type_node);
+                }
+                for j in 0..param.child_count() {
+                    let p = param.child(j).unwrap();
+                    if p.kind() == "pointer_type" {
+                        for k in 0..p.child_count() {
+                            let pt = p.child(k).unwrap();
+                            if pt.kind() == "type_identifier" {
+                                return Some(self.node_text(pt));
+                            }
+                        }
+                    }
+                    if p.kind() == "type_identifier" {
+                        return Some(self.node_text(p));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    pub(crate) fn unwrap_go_type(&self, type_node: Node) -> Option<String> {
+        match type_node.kind() {
+            "type_identifier" => Some(self.node_text(type_node)),
+            "pointer_type" => {
+                for i in 0..type_node.child_count() {
+                    let child = type_node.child(i).unwrap();
+                    if child.kind() != "*" {
+                        return self.unwrap_go_type(child);
+                    }
+                }
+                None
+            }
+            "generic_type" => {
+                if let Some(base) = type_node.child_by_field_name("type") {
+                    return self.unwrap_go_type(base);
+                }
+                for i in 0..type_node.child_count() {
+                    let child = type_node.child(i).unwrap();
+                    if child.kind() == "type_identifier" {
+                        return Some(self.node_text(child));
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn parse_attribute_node(&self, node: Node) -> (String, Option<String>) {
+        let mut callee = String::new();
+        let mut obj_name: Option<String> = None;
+
+        match node.kind() {
+            "attribute" => {
+                if let Some(attr_node) = node.child_by_field_name("attribute") {
+                    callee = self.node_text(attr_node);
+                }
+                if let Some(obj_node) = node.child_by_field_name("object") {
+                    obj_name = Some(self.node_text(obj_node));
+                }
+            }
+            "member_expression" => {
+                if let Some(prop_node) = node.child_by_field_name("property") {
+                    callee = self.node_text(prop_node);
+                }
+                if let Some(obj_node) = node.child_by_field_name("object") {
+                    obj_name = Some(self.node_text(obj_node));
+                }
+            }
+            "selector_expression" => {
+                if let Some(field_node) = node.child_by_field_name("field") {
+                    callee = self.node_text(field_node);
+                }
+                if let Some(operand_node) = node.child_by_field_name("operand") {
+                    obj_name = Some(self.node_text(operand_node));
+                }
+            }
+            _ => {
+                let id_types = [
+                    "identifier",
+                    "property_identifier",
+                    "private_property_identifier",
+                    "field_identifier",
+                ];
+                let attr_types = ["attribute", "member_expression", "selector_expression"];
+                let mut ids = Vec::new();
+                for i in 0..node.child_count() {
+                    let child = node.child(i).unwrap();
+                    if id_types.contains(&child.kind()) {
+                        ids.push(self.node_text(child));
+                    } else if attr_types.contains(&child.kind()) {
+                        obj_name = Some(self.node_text(child));
+                    }
+                }
+                if let Some(last) = ids.last() {
+                    callee = last.clone();
+                    if ids.len() > 1 && obj_name.is_none() {
+                        obj_name = Some(ids[0].clone());
+                    }
+                }
+            }
+        }
+        (callee, obj_name)
+    }
+
+    pub(crate) fn find_capture_in_call(
+        &self,
+        call_node: Node,
+        capture_name: &str,
+    ) -> Option<Node<'_>> {
+        let ts_lang = get_language(&self.language)?;
+        let query = Query::new(&ts_lang, self.lang_info.call_query).ok()?;
+        let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(&query, self.tree.root_node(), self.source.as_slice());
+
+        while let Some(m) = matches.next() {
+            let mut has_call = false;
+            let mut result = None;
+            for cap in m.captures {
+                let name = query.capture_names()[cap.index as usize];
+                if name == "call" && cap.node.id() == call_node.id() {
+                    has_call = true;
+                }
+                if name == capture_name {
+                    result = Some(cap.node);
+                }
+            }
+            if has_call {
+                return result;
+            }
+        }
+        None
+    }
+
+    pub(crate) fn extract_methods_from_class(&self, class_node: Node) -> Vec<String> {
+        let method_types: HashSet<&str> = [
+            "function_definition",
+            "method_definition",
+            "method_declaration",
+            "constructor_declaration",
+            "method_elem",
+            "method_spec",
+        ]
+        .into_iter()
+        .collect();
+
+        let mut methods = Vec::new();
+        let mut stack = vec![class_node];
+        while let Some(node) = stack.pop() {
+            if method_types.contains(node.kind()) {
+                for i in 0..node.child_count() {
+                    let child = node.child(i).unwrap();
+                    if matches!(
+                        child.kind(),
+                        "identifier" | "property_identifier" | "field_identifier" | "name"
+                    ) {
+                        methods.push(self.node_text(child));
+                        break;
+                    }
+                }
+                continue;
+            }
+            for i in (0..node.child_count()).rev() {
+                if let Some(child) = node.child(i) {
+                    stack.push(child);
+                }
+            }
+        }
+        methods
+    }
+
+    pub(crate) fn extract_fields_from_class(&self, class_node: Node) -> Vec<String> {
+        let class_name_node = class_node.child_by_field_name("name");
+        let class_name = class_name_node
+            .map(|n| self.node_text(n))
+            .unwrap_or_default();
+        self.extract_field_infos(class_node, &class_name)
+            .into_iter()
+            .map(|f| f.name)
+            .collect()
+    }
+
+    pub(crate) fn extract_field_infos(&self, class_node: Node, class_name: &str) -> Vec<FieldInfo> {
+        if matches!(self.language.as_str(), "javascript" | "typescript" | "tsx") {
+            return self.extract_field_infos_js_like(class_node, class_name);
+        }
+
+        let fields: Vec<FieldInfo> = Vec::new();
+        let seen: HashSet<String> = HashSet::new();
+        let field_types: HashSet<&str> = ["field_definition", "field_declaration"]
+            .into_iter()
+            .collect();
+        let class_types: HashSet<&str> = [
+            "class_definition",
+            "class_declaration",
+            "class",
+            "interface_declaration",
+            "enum_declaration",
+            "record_declaration",
+            "annotation_type_declaration",
+        ]
+        .into_iter()
+        .collect();
+        let method_types: HashSet<&str> = [
+            "function_definition",
+            "method_definition",
+            "method_declaration",
+            "constructor_declaration",
+        ]
+        .into_iter()
+        .collect();
+
+        struct WalkCtx<'a> {
+            analyzer: &'a BaseParser,
+            class_node_id: usize,
+            class_name: String,
+            fields: Vec<FieldInfo>,
+            seen: HashSet<String>,
+            field_types: HashSet<&'static str>,
+            class_types: HashSet<&'static str>,
+            method_types: HashSet<&'static str>,
+        }
+
+        fn walk(ctx: &mut WalkCtx, node: Node, inside_method: bool) {
+            if node.id() != ctx.class_node_id && ctx.class_types.contains(node.kind()) {
+                let nested_name = node
+                    .child_by_field_name("name")
+                    .map(|n| ctx.analyzer.node_text(n))
+                    .unwrap_or_default();
+                if !nested_name.is_empty() && nested_name != ctx.class_name {
+                    return;
+                }
+            }
+
+            if ctx.method_types.contains(node.kind()) {
+                if ctx.analyzer.language != "python" {
+                    return;
+                }
+                for i in 0..node.child_count() {
+                    if let Some(child) = node.child(i) {
+                        walk(ctx, child, true);
+                    }
+                }
+                return;
+            }
+
+            if ctx.field_types.contains(node.kind()) {
+                let mut names = Vec::new();
+                let mut field_type: Option<String> = None;
+
+                if let Some(type_node) = node.child_by_field_name("type") {
+                    field_type = Some(ctx.analyzer.node_text(type_node));
+                }
+
+                for i in 0..node.child_count() {
+                    let child = node.child(i).unwrap();
+                    if matches!(
+                        child.kind(),
+                        "identifier" | "property_identifier" | "field_identifier"
+                    ) {
+                        names.push(ctx.analyzer.node_text(child));
+                    } else if child.kind() == "variable_declarator" {
+                        for j in 0..child.child_count() {
+                            let sub = child.child(j).unwrap();
+                            if sub.kind() == "identifier" {
+                                names.push(ctx.analyzer.node_text(sub));
+                                break;
+                            }
+                        }
+                    } else if field_type.is_none()
+                        && matches!(
+                            child.kind(),
+                            "type_annotation"
+                                | "type"
+                                | "type_identifier"
+                                | "integral_type"
+                                | "floating_point_type"
+                                | "boolean_type"
+                                | "generic_type"
+                                | "array_type"
+                                | "scoped_type_identifier"
+                        )
+                    {
+                        field_type = Some(ctx.analyzer.node_text(child));
+                    }
+                }
+
+                // Go embedded fields
+                if ctx.analyzer.language == "go" && names.is_empty() {
+                    if let Some(ref ft) = field_type {
+                        let type_str = ft.trim_start_matches('*');
+                        let name = if type_str.contains('.') {
+                            type_str.rsplit('.').next().unwrap_or(type_str)
+                        } else {
+                            type_str
+                        };
+                        names.push(name.to_string());
+                    }
+                }
+
+                for name in names {
+                    if !name.is_empty() && ctx.seen.insert(name.clone()) {
+                        ctx.fields.push(FieldInfo {
+                            name,
+                            location: ctx.analyzer.node_location(node),
+                            field_type: field_type.clone(),
+                            class_name: Some(ctx.class_name.clone()),
+                        });
+                    }
+                }
+                return;
+            }
+
+            // Python: expression_statement with assignment
+            if ctx.analyzer.language == "python" && node.kind() == "expression_statement" {
+                for i in 0..node.child_count() {
+                    let child = node.child(i).unwrap();
+                    if child.kind() == "assignment" {
+                        let left_node = match child.child_by_field_name("left") {
+                            Some(n) => n,
+                            None => continue,
+                        };
+                        let mut field_type: Option<String> = None;
+                        if let Some(type_node) = child.child_by_field_name("type") {
+                            field_type = Some(ctx.analyzer.node_text(type_node));
+                        }
+                        let mut name = String::new();
+                        if inside_method {
+                            if left_node.kind() == "attribute" {
+                                let obj_node = left_node.child_by_field_name("object");
+                                let attr_node = left_node.child_by_field_name("attribute");
+                                if let (Some(obj), Some(attr)) = (obj_node, attr_node) {
+                                    if ctx.analyzer.node_text(obj) == "self" {
+                                        name = ctx.analyzer.node_text(attr);
+                                    }
+                                }
+                            }
+                        } else if left_node.kind() == "identifier" {
+                            name = ctx.analyzer.node_text(left_node);
+                        }
+                        if !name.is_empty() && ctx.seen.insert(name.clone()) {
+                            ctx.fields.push(FieldInfo {
+                                name,
+                                location: ctx.analyzer.node_location(child),
+                                field_type,
+                                class_name: Some(ctx.class_name.clone()),
+                            });
+                        }
+                    }
+                }
+                return;
+            }
+
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    walk(ctx, child, inside_method);
+                }
+            }
+        }
+
+        let mut ctx = WalkCtx {
+            analyzer: self,
+            class_node_id: class_node.id(),
+            class_name: class_name.to_string(),
+            fields,
+            seen,
+            field_types,
+            class_types,
+            method_types,
+        };
+        walk(&mut ctx, class_node, false);
+        ctx.fields
+    }
+
+    pub(crate) fn extract_field_infos_js_like(
+        &self,
+        class_node: Node,
+        class_name: &str,
+    ) -> Vec<FieldInfo> {
+        let body = class_node.child_by_field_name("body").or_else(|| {
+            for i in 0..class_node.child_count() {
+                let child = class_node.child(i).unwrap();
+                if child.kind() == "class_body" {
+                    return Some(child);
+                }
+            }
+            None
+        });
+        let body = match body {
+            Some(b) => b,
+            None => return Vec::new(),
+        };
+
+        let mut fields: Vec<FieldInfo> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+
+        for i in 0..body.child_count() {
+            let member = body.child(i).unwrap();
+            if !member.is_named() {
+                continue;
+            }
+
+            if member.kind().ends_with("field_definition")
+                || matches!(member.kind(), "property_definition" | "field_definition")
+            {
+                let name_node = member
+                    .child_by_field_name("name")
+                    .or_else(|| member.child_by_field_name("property"))
+                    .or_else(|| member.child_by_field_name("pattern"));
+                let name_node = match name_node {
+                    Some(n) => n,
+                    None => continue,
+                };
+                if !matches!(
+                    name_node.kind(),
+                    "identifier"
+                        | "property_identifier"
+                        | "private_property_identifier"
+                        | "field_identifier"
+                ) {
+                    continue;
+                }
+                let name = self.node_text(name_node);
+                let field_type = member
+                    .child_by_field_name("type")
+                    .map(|t| self.clean_type_text(&self.node_text(t)));
+                if !name.is_empty() && seen.insert(name.clone()) {
+                    fields.push(FieldInfo {
+                        name,
+                        location: self.node_location(member),
+                        field_type,
+                        class_name: Some(class_name.to_string()),
+                    });
+                }
+            }
+
+            if member.kind() == "method_definition" {
+                let name_node = match member.child_by_field_name("name") {
+                    Some(n) => n,
+                    None => continue,
+                };
+                if self.node_text(name_node) != "constructor" {
+                    continue;
+                }
+                let params = match member.child_by_field_name("parameters") {
+                    Some(p) => p,
+                    None => continue,
+                };
+                for j in 0..params.child_count() {
+                    let param = params.child(j).unwrap();
+                    if !param.is_named() {
+                        continue;
+                    }
+                    let has_modifier = (0..param.child_count()).any(|k| {
+                        let c = param.child(k).unwrap();
+                        matches!(c.kind(), "accessibility_modifier" | "readonly")
+                    });
+                    if !has_modifier {
+                        continue;
+                    }
+                    let mut pattern = param
+                        .child_by_field_name("pattern")
+                        .or_else(|| param.child_by_field_name("name"));
+                    if let Some(p) = pattern {
+                        if p.kind() == "assignment_pattern" {
+                            pattern = p.child_by_field_name("left").or(Some(p));
+                        }
+                    }
+                    let pattern = match pattern {
+                        Some(p) => p,
+                        None => continue,
+                    };
+                    if !matches!(pattern.kind(), "identifier" | "property_identifier") {
+                        continue;
+                    }
+                    let param_name = self.node_text(pattern);
+                    let param_type = param
+                        .child_by_field_name("type")
+                        .map(|t| self.clean_type_text(&self.node_text(t)));
+                    if !param_name.is_empty() && seen.insert(param_name.clone()) {
+                        fields.push(FieldInfo {
+                            name: param_name,
+                            location: self.node_location(param),
+                            field_type: param_type,
+                            class_name: Some(class_name.to_string()),
+                        });
+                    }
+                }
+
+                // Scan constructor body for this.prop assignments
+                if let Some(body_node) = member.child_by_field_name("body") {
+                    self.extract_fields_from_constructor_body(
+                        body_node,
+                        class_name,
+                        &mut seen,
+                        &mut fields,
+                    );
+                }
+            }
+        }
+        fields
+    }
+
+    pub(crate) fn extract_fields_from_constructor_body(
+        &self,
+        body_node: Node,
+        class_name: &str,
+        seen: &mut HashSet<String>,
+        fields: &mut Vec<FieldInfo>,
+    ) {
+        let mut stack = vec![body_node];
+        while let Some(node) = stack.pop() {
+            if node.kind() == "assignment_expression" {
+                if let Some(left) = node.child_by_field_name("left") {
+                    if left.kind() == "member_expression" {
+                        let obj = left.child_by_field_name("object");
+                        let prop = left.child_by_field_name("property");
+                        if let (Some(obj), Some(prop)) = (obj, prop) {
+                            if self.node_text(obj) == "this" {
+                                let name = self.node_text(prop);
+                                if !name.is_empty() && seen.insert(name.clone()) {
+                                    fields.push(FieldInfo {
+                                        name,
+                                        location: self.node_location(node),
+                                        field_type: None,
+                                        class_name: Some(class_name.to_string()),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if matches!(
+                node.kind(),
+                "function_declaration"
+                    | "function_expression"
+                    | "arrow_function"
+                    | "method_definition"
+                    | "class_declaration"
+                    | "class_expression"
+            ) && node.id() != body_node.id()
+            {
+                continue;
+            }
+            for i in (0..node.child_count()).rev() {
+                if let Some(child) = node.child(i) {
+                    stack.push(child);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn clean_type_text(&self, text: &str) -> String {
+        let stripped = text.trim();
+        if let Some(rest) = stripped.strip_prefix(':') {
+            rest.trim().to_string()
+        } else {
+            stripped.to_string()
+        }
+    }
+
+    pub(crate) fn extract_super_classes(&self, class_node: Node) -> Vec<String> {
+        let mut super_classes = Vec::new();
+
+        match self.language.as_str() {
+            "python" => {
+                for i in 0..class_node.child_count() {
+                    let child = class_node.child(i).unwrap();
+                    if child.kind() == "argument_list" {
+                        for j in 0..child.child_count() {
+                            let arg = child.child(j).unwrap();
+                            if matches!(arg.kind(), "identifier" | "attribute") {
+                                super_classes.push(self.node_text(arg));
+                            }
+                        }
+                    }
+                }
+            }
+            "javascript" | "typescript" | "tsx" => {
+                let mut seen: HashSet<String> = HashSet::new();
+                self.walk_heritage(class_node, &mut super_classes, &mut seen);
+            }
+            "java" => {
+                for i in 0..class_node.child_count() {
+                    let child = class_node.child(i).unwrap();
+                    match child.kind() {
+                        "superclass" => {
+                            for j in 0..child.child_count() {
+                                let sub = child.child(j).unwrap();
+                                if sub.kind() == "type_identifier" {
+                                    super_classes.push(self.node_text(sub));
+                                } else if sub.kind() == "generic_type" {
+                                    for k in 0..sub.child_count() {
+                                        let g = sub.child(k).unwrap();
+                                        if g.kind() == "type_identifier" {
+                                            super_classes.push(self.node_text(g));
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        "super_interfaces" => {
+                            for j in 0..child.child_count() {
+                                let sub = child.child(j).unwrap();
+                                if sub.kind() == "type_list" {
+                                    for k in 0..sub.child_count() {
+                                        let t = sub.child(k).unwrap();
+                                        if t.kind() == "type_identifier" {
+                                            super_classes.push(self.node_text(t));
+                                        } else if t.kind() == "generic_type" {
+                                            for l in 0..t.child_count() {
+                                                let g = t.child(l).unwrap();
+                                                if g.kind() == "type_identifier" {
+                                                    super_classes.push(self.node_text(g));
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            "go" => {
+                self.extract_go_super_classes(class_node, &mut super_classes);
+            }
+            _ => {}
+        }
+        super_classes
+    }
+
+    pub(crate) fn walk_heritage(
+        &self,
+        node: Node,
+        super_classes: &mut Vec<String>,
+        seen: &mut HashSet<String>,
+    ) {
+        for i in 0..node.child_count() {
+            let child = node.child(i).unwrap();
+            if child.kind() == "class_heritage" {
+                for j in 0..child.child_count() {
+                    let sub = child.child(j).unwrap();
+                    if matches!(sub.kind(), "extends_clause" | "implements_clause") {
+                        for k in 0..sub.child_count() {
+                            let gc = sub.child(k).unwrap();
+                            if gc.is_named() {
+                                self.handle_heritage_expression(gc, super_classes, seen);
+                            }
+                        }
+                    } else if sub.is_named() {
+                        self.handle_heritage_expression(sub, super_classes, seen);
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) fn handle_heritage_expression(
+        &self,
+        node: Node,
+        super_classes: &mut Vec<String>,
+        seen: &mut HashSet<String>,
+    ) {
+        match node.kind() {
+            "identifier" | "type_identifier" | "property_identifier" => {
+                let name = self.node_text(node).trim().to_string();
+                if !name.is_empty() && seen.insert(name.clone()) {
+                    super_classes.push(name);
+                }
+            }
+            "member_expression" => {
+                let text = self.node_text(node).trim().to_string();
+                if !text.is_empty() && seen.insert(text.clone()) {
+                    super_classes.push(text);
+                }
+                for i in (0..node.child_count()).rev() {
+                    let c = node.child(i).unwrap();
+                    if matches!(c.kind(), "identifier" | "property_identifier") {
+                        let name = self.node_text(c).trim().to_string();
+                        if !name.is_empty() && seen.insert(name.clone()) {
+                            super_classes.push(name);
+                        }
+                        break;
+                    }
+                }
+            }
+            "expression_with_type_arguments" => {
+                if let Some(expr) = node.child_by_field_name("expression") {
+                    self.handle_heritage_expression(expr, super_classes, seen);
+                    return;
+                }
+                for i in 0..node.named_child_count() {
+                    if let Some(c) = node.named_child(i) {
+                        self.handle_heritage_expression(c, super_classes, seen);
+                        return;
+                    }
+                }
+            }
+            "call_expression" => {
+                if let Some(func) = node.child_by_field_name("function") {
+                    self.handle_heritage_expression(func, super_classes, seen);
+                }
+            }
+            _ => {
+                for i in 0..node.named_child_count() {
+                    if let Some(child) = node.named_child(i) {
+                        self.handle_heritage_expression(child, super_classes, seen);
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) fn extract_go_super_classes(
+        &self,
+        class_node: Node,
+        super_classes: &mut Vec<String>,
+    ) {
+        for i in 0..class_node.child_count() {
+            let child = class_node.child(i).unwrap();
+            if child.kind() == "type_spec" {
+                for j in 0..child.child_count() {
+                    let sub = child.child(j).unwrap();
+                    if sub.kind() == "struct_type" {
+                        for k in 0..sub.child_count() {
+                            let field = sub.child(k).unwrap();
+                            if field.kind() == "field_declaration_list" {
+                                for l in 0..field.child_count() {
+                                    let fd = field.child(l).unwrap();
+                                    if fd.kind() == "field_declaration" {
+                                        if let Some(embedded) =
+                                            self.embedded_from_field_declaration(fd)
+                                        {
+                                            super_classes.push(embedded);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) fn embedded_from_field_declaration(&self, fd: Node) -> Option<String> {
+        // If there's a field_identifier, it's a named field, not embedded
+        for i in 0..fd.child_count() {
+            let c = fd.child(i).unwrap();
+            if c.kind() == "field_identifier" {
+                return None;
+            }
+        }
+        for i in 0..fd.child_count() {
+            let c = fd.child(i).unwrap();
+            if c.kind() == "*" {
+                continue;
+            }
+            if matches!(
+                c.kind(),
+                "type_identifier"
+                    | "qualified_type"
+                    | "generic_type"
+                    | "pointer_type"
+                    | "parenthesized_type"
+            ) {
+                return self.parse_embedded_type_name(c);
+            }
+        }
+        for i in 0..fd.named_child_count() {
+            if let Some(c) = fd.named_child(i) {
+                if let Some(name) = self.parse_embedded_type_name(c) {
+                    return Some(name);
+                }
+            }
+        }
+        None
+    }
+
+    pub(crate) fn parse_embedded_type_name(&self, node: Node) -> Option<String> {
+        match node.kind() {
+            "type_identifier" => Some(self.node_text(node)),
+            "qualified_type" => {
+                for i in 0..node.child_count() {
+                    let c = node.child(i).unwrap();
+                    if c.kind() == "type_identifier" {
+                        return Some(self.node_text(c));
+                    }
+                }
+                None
+            }
+            "generic_type" => {
+                for i in 0..node.child_count() {
+                    let c = node.child(i).unwrap();
+                    if matches!(
+                        c.kind(),
+                        "type_identifier" | "qualified_type" | "pointer_type"
+                    ) {
+                        return self.parse_embedded_type_name(c);
+                    }
+                }
+                None
+            }
+            "pointer_type" => {
+                for i in 0..node.child_count() {
+                    let c = node.child(i).unwrap();
+                    if matches!(
+                        c.kind(),
+                        "type_identifier"
+                            | "qualified_type"
+                            | "generic_type"
+                            | "parenthesized_type"
+                    ) {
+                        return self.parse_embedded_type_name(c);
+                    }
+                }
+                None
+            }
+            "parenthesized_type" => {
+                for i in 0..node.named_child_count() {
+                    if let Some(c) = node.named_child(i) {
+                        if let Some(name) = self.parse_embedded_type_name(c) {
+                            return Some(name);
+                        }
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn get_fields_from_class_node(&self, class_name: &str) -> Vec<FieldInfo> {
+        let matches = self.run_query_matches(self.lang_info.class_query);
+        let mut candidates: Vec<Node> = Vec::new();
+
+        for m in &matches {
+            let class_node = match m.get("class") {
+                Some(n) => *n,
+                None => continue,
+            };
+            let name_node = match m.get("name") {
+                Some(n) => *n,
+                None => continue,
+            };
+            if self.node_text(name_node) != class_name {
+                continue;
+            }
+            candidates.push(class_node);
+        }
+        if candidates.is_empty() {
+            return Vec::new();
+        }
+
+        candidates.sort_by_key(|n| {
+            let size = n.end_byte() - n.start_byte();
+            (size, n.start_byte())
+        });
+        let target = candidates[0];
+        self.extract_field_infos(target, class_name)
+    }
+
+    pub(crate) fn matches_call_target_class(&self, call: &CallInfo, class_name: &str) -> bool {
+        if call.object_name.as_deref() == Some(class_name) {
+            return true;
+        }
+        if call.object_name.is_none() {
+            return call.caller_class_name.as_deref() == Some(class_name);
+        }
+        if matches!(
+            call.object_name.as_deref(),
+            Some("self") | Some("this") | Some("cls")
+        ) {
+            return call.caller_class_name.as_deref() == Some(class_name);
+        }
+        if let (Some(object_name), Some(caller_class_name)) = (
+            call.object_name.as_deref(),
+            call.caller_class_name.as_deref(),
+        ) {
+            if let Some(attr_name) = self.extract_instance_attr(object_name) {
+                for field in self.get_fields_from_class_node(caller_class_name) {
+                    if field.name != attr_name {
+                        continue;
+                    }
+                    if Self::type_matches_class(field.field_type.as_deref(), class_name) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    fn extract_instance_attr(&self, object_name: &str) -> Option<String> {
+        for prefix in ["self.", "this.", "cls."] {
+            if let Some(rest) = object_name.strip_prefix(prefix) {
+                if !rest.is_empty() {
+                    return Some(rest.split('.').next().unwrap_or(rest).to_string());
+                }
+            }
+        }
+        None
+    }
+
+    fn type_matches_class(field_type: Option<&str>, class_name: &str) -> bool {
+        let Some(field_type) = field_type else {
+            return false;
+        };
+        field_type
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .any(|token| !token.is_empty() && token == class_name)
+    }
+}

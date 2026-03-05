@@ -1,15 +1,11 @@
-# Tree-sitter Analyzer CLI
+# Tree-sitter Analyzer
 
 Command-line interface for analyzing code using tree-sitter AST parsing.
 
 ## Installation
 
 ```bash
-# Using uv (recommended)
-uv tool install git+https://github.com/X1r0z/tree-sitter-mcp
-
-# Using pip
-pip install git+https://github.com/X1r0z/tree-sitter-mcp
+cargo install --git https://github.com/X1r0z/tree-sitter-analyzer
 ```
 
 After installation, the `tree-sitter-analyzer` command will be available.

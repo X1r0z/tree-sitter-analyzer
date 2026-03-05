@@ -77,7 +77,7 @@ Only use Grep instead of tree-sitter-analyzer when:
 ## Installation
 
 ```bash
-uv tool install git+https://github.com/X1r0z/tree-sitter-mcp
+cargo install --git https://github.com/X1r0z/tree-sitter-analyzer
 ```
 
 ## Usage
@@ -113,7 +113,7 @@ tree-sitter-analyzer classes ./src/ --json | jq -r '.classes[] | "\(.name)\t\(.f
 tree-sitter-analyzer callers ./src/ -f process_data --json | jq -r '.callers[] | "\(.caller)\t\(.file):\(.line)"'
 ```
 
-Full JSON output schemas for each command: see `references/JSON_OUTPUT.md`.
+Full JSON output schemas for each command: see `references/OUTPUT.md`.
 
 ## Commands
 

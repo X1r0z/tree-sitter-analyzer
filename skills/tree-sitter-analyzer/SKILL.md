@@ -6,7 +6,7 @@ description: >
   "subclasses/superclasses", "find symbol references", and any structural code understanding across files or directories.
   Prefer over Grep for code understanding — Grep is for exact literal text matches only.
   Supports Python, JavaScript/TypeScript, Java, Go.
-allowed-tools: Bash(tree-sitter-analyzer:*)
+allowed-tools: Bash(tsa:*)
 ---
 
 # Tree-sitter Analyzer
@@ -15,9 +15,9 @@ AST-based code structure analysis across Python, JavaScript/TypeScript, Java, an
 
 ## When to Use
 
-**Always prefer tree-sitter-analyzer over Grep/finder for code understanding tasks.**
+**Always prefer tree-sitter-analyzer (tsa) over Grep/finder for code understanding tasks.**
 
-tree-sitter-analyzer parses the actual AST (Abstract Syntax Tree) of source code, not plain text. This means it understands code structure — it can distinguish a function definition from a function call, a class field from a local variable, and a method override from a standalone function. Grep treats code as flat text and will miss structural relationships, produce false matches on comments/strings, and break across formatting differences. tree-sitter-analyzer gives precise, semantically meaningful results regardless of whitespace, indentation style, or code formatting.
+tree-sitter-analyzer (tsa) parses the actual AST (Abstract Syntax Tree) of source code, not plain text. This means it understands code structure — it can distinguish a function definition from a function call, a class field from a local variable, and a method override from a standalone function. Grep treats code as flat text and will miss structural relationships, produce false matches on comments/strings, and break across formatting differences. tree-sitter-analyzer (tsa) gives precise, semantically meaningful results regardless of whitespace, indentation style, or code formatting.
 
 ### Structural Code Understanding
 
@@ -32,7 +32,7 @@ Use this skill whenever you need answers about code structure or relationships:
 
 ### Code Auditing & Security Review
 
-tree-sitter-analyzer is particularly powerful for security audits because it can trace data flow structurally rather than relying on string matching:
+tree-sitter-analyzer (tsa) is particularly powerful for security audits because it can trace data flow structurally rather than relying on string matching:
 
 - **Dangerous function inventory** — Find all calls to security-sensitive functions (e.g., `eval`, `exec`, `os.system`, `subprocess.Popen`, `Runtime.exec`, `sql.Query`) by listing callees or searching symbols, then trace their callers to understand input sources
 - **Taint source tracing** — Identify functions that handle user input (e.g., `request.GET`, `req.body`, `Scanner.nextLine`), then use `callers` to trace how tainted data propagates through the codebase
@@ -51,7 +51,7 @@ tree-sitter-analyzer is particularly powerful for security audits because it can
 
 ### When to Fall Back to Grep
 
-Only use Grep instead of tree-sitter-analyzer when:
+Only use Grep instead of tree-sitter-analyzer (tsa) when:
 - You need an exact literal string match (e.g., a specific error message, URL, or log text)
 - You're searching in comments, documentation, or non-code files (`.md`, `.txt`, `.yaml`, etc.)
 - The target language is not supported (only Python, JS/TS, Java, Go are supported)
@@ -83,7 +83,7 @@ cargo install --git https://github.com/X1r0z/tree-sitter-analyzer
 ## Usage
 
 ```bash
-tree-sitter-analyzer <command> <path> [options]
+tsa <command> <path> [options]
 ```
 
 ### Supported Languages
@@ -104,13 +104,13 @@ When using `--json`, pipe through `jq` to reduce context and extract only what y
 
 ```bash
 # Names only
-tree-sitter-analyzer functions ./src/ --json | jq -r '.functions[].name'
+tsa functions ./src/ --json | jq -r '.functions[].name'
 
 # Location tuples
-tree-sitter-analyzer classes ./src/ --json | jq -r '.classes[] | "\(.name)\t\(.file):\(.start_line)"'
+tsa classes ./src/ --json | jq -r '.classes[] | "\(.name)\t\(.file):\(.start_line)"'
 
 # Caller summary
-tree-sitter-analyzer callers ./src/ -f process_data --json | jq -r '.callers[] | "\(.caller)\t\(.file):\(.line)"'
+tsa callers ./src/ -f process_data --json | jq -r '.callers[] | "\(.caller)\t\(.file):\(.line)"'
 ```
 
 Full JSON output schemas for each command: see `references/OUTPUT.md`.
@@ -120,7 +120,7 @@ Full JSON output schemas for each command: see `references/OUTPUT.md`.
 ### `functions` — Extract function/method definitions
 
 ```bash
-tree-sitter-analyzer functions <path> [-q QUERY] [--body] [--json]
+tsa functions <path> [-q QUERY] [--body] [--json]
 ```
 
 | Option | Description |
@@ -129,13 +129,13 @@ tree-sitter-analyzer functions <path> [-q QUERY] [--body] [--json]
 | `--body` | Include function body |
 
 ```bash
-tree-sitter-analyzer functions ./src/ -q "^get_" --json
+tsa functions ./src/ -q "^get_" --json
 ```
 
 ### `classes` — Extract class/struct/interface definitions
 
 ```bash
-tree-sitter-analyzer classes <path> [-q QUERY] [--json]
+tsa classes <path> [-q QUERY] [--json]
 ```
 
 | Option | Description |
@@ -143,13 +143,13 @@ tree-sitter-analyzer classes <path> [-q QUERY] [--json]
 | `-q, --query` | Filter by name (regex) |
 
 ```bash
-tree-sitter-analyzer classes ./src/ -q "Service$" --json
+tsa classes ./src/ -q "Service$" --json
 ```
 
 ### `fields` — Get class fields
 
 ```bash
-tree-sitter-analyzer fields <path> -c CLASS_NAME [--json]
+tsa fields <path> -c CLASS_NAME [--json]
 ```
 
 | Option | Description |
@@ -157,13 +157,13 @@ tree-sitter-analyzer fields <path> -c CLASS_NAME [--json]
 | `-c, --class-name` | Class name (required) |
 
 ```bash
-tree-sitter-analyzer fields ./src/ -c DatabaseConfig --json
+tsa fields ./src/ -c DatabaseConfig --json
 ```
 
 ### `imports` — Extract import statements
 
 ```bash
-tree-sitter-analyzer imports <path> [-q QUERY] [--json]
+tsa imports <path> [-q QUERY] [--json]
 ```
 
 | Option | Description |
@@ -171,13 +171,13 @@ tree-sitter-analyzer imports <path> [-q QUERY] [--json]
 | `-q, --query` | Filter by module name (regex) |
 
 ```bash
-tree-sitter-analyzer imports ./src/ -q "^(os|sys)$" --json
+tsa imports ./src/ -q "^(os|sys)$" --json
 ```
 
 ### `variables` — Extract variable declarations
 
 ```bash
-tree-sitter-analyzer variables <path> [-q QUERY] [--json]
+tsa variables <path> [-q QUERY] [--json]
 ```
 
 | Option | Description |
@@ -185,13 +185,13 @@ tree-sitter-analyzer variables <path> [-q QUERY] [--json]
 | `-q, --query` | Filter by name (regex) |
 
 ```bash
-tree-sitter-analyzer variables ./src/ -q "^[A-Z_]+$" --json
+tsa variables ./src/ -q "^[A-Z_]+$" --json
 ```
 
 ### `callers` — Find who calls a function
 
 ```bash
-tree-sitter-analyzer callers <path> -f FUNCTION [-c CLASS_NAME] [--json]
+tsa callers <path> -f FUNCTION [-c CLASS_NAME] [--json]
 ```
 
 | Option | Description |
@@ -200,13 +200,13 @@ tree-sitter-analyzer callers <path> -f FUNCTION [-c CLASS_NAME] [--json]
 | `-c, --class-name` | Scope to a method in this class |
 
 ```bash
-tree-sitter-analyzer callers ./src/ -f save -c DatabaseHandler --json
+tsa callers ./src/ -f save -c DatabaseHandler --json
 ```
 
 ### `callees` — Find what a function calls
 
 ```bash
-tree-sitter-analyzer callees <path> -f FUNCTION [-c CLASS_NAME] [--json]
+tsa callees <path> -f FUNCTION [-c CLASS_NAME] [--json]
 ```
 
 | Option | Description |
@@ -215,13 +215,13 @@ tree-sitter-analyzer callees <path> -f FUNCTION [-c CLASS_NAME] [--json]
 | `-c, --class-name` | Scope to a method in this class |
 
 ```bash
-tree-sitter-analyzer callees ./src/ -f initialize -c Application --json
+tsa callees ./src/ -f initialize -c Application --json
 ```
 
 ### `definition` — Get function source code
 
 ```bash
-tree-sitter-analyzer definition <path> -f FUNCTION [-c CLASS_NAME] [--json]
+tsa definition <path> -f FUNCTION [-c CLASS_NAME] [--json]
 ```
 
 | Option | Description |
@@ -230,13 +230,13 @@ tree-sitter-analyzer definition <path> -f FUNCTION [-c CLASS_NAME] [--json]
 | `-c, --class-name` | Scope to a method in this class |
 
 ```bash
-tree-sitter-analyzer definition ./src/ -f parse_config --json
+tsa definition ./src/ -f parse_config --json
 ```
 
 ### `function-variables` — Variables inside a function
 
 ```bash
-tree-sitter-analyzer function-variables <path> -f FUNCTION [-c CLASS_NAME] [--json]
+tsa function-variables <path> -f FUNCTION [-c CLASS_NAME] [--json]
 ```
 
 | Option | Description |
@@ -245,13 +245,13 @@ tree-sitter-analyzer function-variables <path> -f FUNCTION [-c CLASS_NAME] [--js
 | `-c, --class-name` | Scope to a method in this class |
 
 ```bash
-tree-sitter-analyzer function-variables ./src/ -f process_request --json
+tsa function-variables ./src/ -f process_request --json
 ```
 
 ### `function-strings` — String literals inside a function
 
 ```bash
-tree-sitter-analyzer function-strings <path> -f FUNCTION [-c CLASS_NAME] [--json]
+tsa function-strings <path> -f FUNCTION [-c CLASS_NAME] [--json]
 ```
 
 | Option | Description |
@@ -260,13 +260,13 @@ tree-sitter-analyzer function-strings <path> -f FUNCTION [-c CLASS_NAME] [--json
 | `-c, --class-name` | Scope to a method in this class |
 
 ```bash
-tree-sitter-analyzer function-strings ./src/ -f handle_request --json
+tsa function-strings ./src/ -f handle_request --json
 ```
 
 ### `symbols` — Find all references to an identifier
 
 ```bash
-tree-sitter-analyzer symbols <path> -n NAME [--json]
+tsa symbols <path> -n NAME [--json]
 ```
 
 | Option | Description |
@@ -274,13 +274,13 @@ tree-sitter-analyzer symbols <path> -n NAME [--json]
 | `-n, --name` | Identifier name (required) |
 
 ```bash
-tree-sitter-analyzer symbols ./src/ -n CONFIG_PATH --json
+tsa symbols ./src/ -n CONFIG_PATH --json
 ```
 
 ### `super-classes` — Get parent classes
 
 ```bash
-tree-sitter-analyzer super-classes <path> -c CLASS_NAME [--json]
+tsa super-classes <path> -c CLASS_NAME [--json]
 ```
 
 | Option | Description |
@@ -288,13 +288,13 @@ tree-sitter-analyzer super-classes <path> -c CLASS_NAME [--json]
 | `-c, --class-name` | Class name (required) |
 
 ```bash
-tree-sitter-analyzer super-classes ./src/ -c AdminUser --json
+tsa super-classes ./src/ -c AdminUser --json
 ```
 
 ### `sub-classes` — Get child classes
 
 ```bash
-tree-sitter-analyzer sub-classes <path> -c CLASS_NAME [--json]
+tsa sub-classes <path> -c CLASS_NAME [--json]
 ```
 
 | Option | Description |
@@ -302,7 +302,7 @@ tree-sitter-analyzer sub-classes <path> -c CLASS_NAME [--json]
 | `-c, --class-name` | Class name (required) |
 
 ```bash
-tree-sitter-analyzer sub-classes ./src/ -c BaseModel --json
+tsa sub-classes ./src/ -c BaseModel --json
 ```
 
 ## Typical Workflows
@@ -310,35 +310,35 @@ tree-sitter-analyzer sub-classes ./src/ -c BaseModel --json
 ### Inventory a repository
 
 ```bash
-tree-sitter-analyzer functions /path/to/project --json | jq -r '.functions[] | "\(.name)\t\(.file):\(.start_line)"'
-tree-sitter-analyzer classes /path/to/project --json | jq -r '.classes[] | "\(.name)\t\(.file):\(.start_line)"'
-tree-sitter-analyzer imports /path/to/project --json | jq -r '.imports[] | "\(.module)\t\(.file):\(.line)"'
+tsa functions /path/to/project --json | jq -r '.functions[] | "\(.name)\t\(.file):\(.start_line)"'
+tsa classes /path/to/project --json | jq -r '.classes[] | "\(.name)\t\(.file):\(.start_line)"'
+tsa imports /path/to/project --json | jq -r '.imports[] | "\(.module)\t\(.file):\(.line)"'
 ```
 
 ### Impact analysis (who calls X / what does X call)
 
 ```bash
-tree-sitter-analyzer callers /path/to/project -f process_data --json
-tree-sitter-analyzer callees /path/to/project -f process_data --json
+tsa callers /path/to/project -f process_data --json
+tsa callees /path/to/project -f process_data --json
 ```
 
 ### Trace a symbol through a project
 
 ```bash
-tree-sitter-analyzer symbols /path/to/project -n CONFIG_PATH --json
+tsa symbols /path/to/project -n CONFIG_PATH --json
 ```
 
 ### Inspect a function in detail
 
 ```bash
-tree-sitter-analyzer definition /path/to/project -f main --json
-tree-sitter-analyzer function-variables /path/to/project -f main --json
-tree-sitter-analyzer function-strings /path/to/project -f main --json
+tsa definition /path/to/project -f main --json
+tsa function-variables /path/to/project -f main --json
+tsa function-strings /path/to/project -f main --json
 ```
 
 ### Map class hierarchy
 
 ```bash
-tree-sitter-analyzer super-classes /path/to/project -c AdminUser --json
-tree-sitter-analyzer sub-classes /path/to/project -c BaseModel --json
+tsa super-classes /path/to/project -c AdminUser --json
+tsa sub-classes /path/to/project -c BaseModel --json
 ```

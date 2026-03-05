@@ -2,7 +2,7 @@
 
 ## Commands
 - Build: `cargo build --release`
-- Run: `./target/release/tree-sitter-analyzer <command> <path> [options]`
+- Run: `cargo run --release -- <command> <path> [options]`
 - Lint: `cargo clippy`
 - Format: `cargo fmt`
 - Test: `cargo test`

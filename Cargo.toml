@@ -7,7 +7,7 @@ license = "MIT"
 authors = ["X1r0z <i@exp10it.io>"]
 
 [[bin]]
-name = "tree-sitter-analyzer"
+name = "tsa"
 path = "src/main.rs"
 
 [dependencies]

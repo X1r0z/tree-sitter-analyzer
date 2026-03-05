@@ -31,19 +31,19 @@ cargo install --git https://github.com/X1r0z/tree-sitter-analyzer
 
 ```bash
 # List all classes in a directory
-tree-sitter-analyzer classes ./src/
+tsa classes ./src/
 
 # Find all callers of a function
-tree-sitter-analyzer callers ./src/ --function process_data
+tsa callers ./src/ --function process_data
 
 # Get function definition
-tree-sitter-analyzer definition ./src/ --function main
+tsa definition ./src/ --function main
 
 # Output as JSON
-tree-sitter-analyzer functions ./src/ --json
+tsa functions ./src/ --json
 
 # Output as YAML
-tree-sitter-analyzer functions ./src/ --yaml
+tsa functions ./src/ --yaml
 ```
 
 See [USAGE.md](USAGE.md) for complete documentation.

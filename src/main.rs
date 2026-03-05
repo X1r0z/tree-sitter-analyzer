@@ -21,23 +21,7 @@ use crate::project::ProjectAnalyzer;
     name = "tree-sitter-analyzer",
     version = "0.1.0",
     about = "Tree-sitter based code analyzer for extracting code structure and relationships",
-    after_help = r#"Examples:
-  # List all classes in a directory
-  tree-sitter-analyzer classes ./src/
-
-  # List all functions in a directory
-  tree-sitter-analyzer functions ./src/
-
-  # Find all callers of a function
-  tree-sitter-analyzer callers ./src/ --function process_data
-
-  # Get function definition with body
-  tree-sitter-analyzer definition ./src/ --function main
-
-  # Output as JSON
-  tree-sitter-analyzer functions ./src/ --json
-
-Supported languages: Python, JavaScript/TypeScript, Java, Go"#
+    after_help = r#"Supported languages: Python, JavaScript/TypeScript, Java, Go"#
 )]
 struct Cli {
     #[command(subcommand)]

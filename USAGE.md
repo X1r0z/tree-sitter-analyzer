@@ -8,12 +8,12 @@ Command-line interface for analyzing code using tree-sitter AST parsing.
 cargo install --git https://github.com/X1r0z/tree-sitter-analyzer
 ```
 
-After installation, the `tree-sitter-analyzer` command will be available.
+After installation, the `tsa` command will be available.
 
 ## Basic Usage
 
 ```bash
-tree-sitter-analyzer <command> <path> [options]
+tsa <command> <path> [options]
 ```
 
 ### Supported Languages
@@ -37,13 +37,13 @@ By default, output is in human-readable format. Use `--json` or `--yaml` flag fo
 
 ```bash
 # Human-readable output
-tree-sitter-analyzer functions ./src/
+tsa functions ./src/
 
 # JSON output
-tree-sitter-analyzer functions ./src/ --json
+tsa functions ./src/ --json
 
 # YAML output
-tree-sitter-analyzer functions ./src/ --yaml
+tsa functions ./src/ --yaml
 ```
 
 ## Commands
@@ -55,7 +55,7 @@ tree-sitter-analyzer functions ./src/ --yaml
 Extract all function/method definitions from source code.
 
 ```bash
-tree-sitter-analyzer functions <path> [-q QUERY] [--body] [--json] [--yaml]
+tsa functions <path> [-q QUERY] [--body] [--json] [--yaml]
 ```
 
 | Option | Description |
@@ -67,22 +67,22 @@ Examples:
 
 ```bash
 # List all functions in a directory
-tree-sitter-analyzer functions ./src/
+tsa functions ./src/
 
 # Filter functions containing "get"
-tree-sitter-analyzer functions ./src/ -q get
+tsa functions ./src/ -q get
 
 # Filter functions starting with "get_" using regex
-tree-sitter-analyzer functions ./src/ -q "^get_"
+tsa functions ./src/ -q "^get_"
 
 # Include function bodies
-tree-sitter-analyzer functions ./src/ --body
+tsa functions ./src/ --body
 
 # Output as JSON
-tree-sitter-analyzer functions ./src/ --json
+tsa functions ./src/ --json
 
 # Output as YAML
-tree-sitter-analyzer functions ./src/ --yaml
+tsa functions ./src/ --yaml
 ```
 
 #### `classes` - Extract Class Definitions
@@ -90,7 +90,7 @@ tree-sitter-analyzer functions ./src/ --yaml
 Extract all class/struct/interface definitions.
 
 ```bash
-tree-sitter-analyzer classes <path> [-q QUERY] [--json] [--yaml]
+tsa classes <path> [-q QUERY] [--json] [--yaml]
 ```
 
 | Option | Description |
@@ -101,13 +101,13 @@ Examples:
 
 ```bash
 # List all classes in a directory
-tree-sitter-analyzer classes ./src/
+tsa classes ./src/
 
 # Filter classes containing "Handler"
-tree-sitter-analyzer classes ./src/ -q Handler
+tsa classes ./src/ -q Handler
 
 # Filter classes ending with "Service" using regex
-tree-sitter-analyzer classes ./src/ -q "Service$"
+tsa classes ./src/ -q "Service$"
 ```
 
 #### `fields` - Get Class Fields
@@ -115,7 +115,7 @@ tree-sitter-analyzer classes ./src/ -q "Service$"
 Get all fields of a specific class.
 
 ```bash
-tree-sitter-analyzer fields <path> -c CLASS_NAME [--json] [--yaml]
+tsa fields <path> -c CLASS_NAME [--json] [--yaml]
 ```
 
 | Option | Description |
@@ -126,7 +126,7 @@ Examples:
 
 ```bash
 # Search across a project
-tree-sitter-analyzer fields ./src/ -c DatabaseConfig
+tsa fields ./src/ -c DatabaseConfig
 ```
 
 #### `imports` - Extract Import Statements
@@ -134,7 +134,7 @@ tree-sitter-analyzer fields ./src/ -c DatabaseConfig
 Extract all import statements from source code.
 
 ```bash
-tree-sitter-analyzer imports <path> [-q QUERY] [--json] [--yaml]
+tsa imports <path> [-q QUERY] [--json] [--yaml]
 ```
 
 | Option | Description |
@@ -145,13 +145,13 @@ Examples:
 
 ```bash
 # List all imports in a directory
-tree-sitter-analyzer imports ./src/
+tsa imports ./src/
 
 # Find imports containing "json"
-tree-sitter-analyzer imports ./src/ -q json
+tsa imports ./src/ -q json
 
 # Find imports matching "^(os|sys)$" using regex
-tree-sitter-analyzer imports ./src/ -q "^(os|sys)$"
+tsa imports ./src/ -q "^(os|sys)$"
 ```
 
 #### `variables` - Extract Variable Declarations
@@ -159,7 +159,7 @@ tree-sitter-analyzer imports ./src/ -q "^(os|sys)$"
 Extract all variable declarations with scope information.
 
 ```bash
-tree-sitter-analyzer variables <path> [-q QUERY] [--json] [--yaml]
+tsa variables <path> [-q QUERY] [--json] [--yaml]
 ```
 
 | Option | Description |
@@ -170,13 +170,13 @@ Examples:
 
 ```bash
 # List all variables in a directory
-tree-sitter-analyzer variables ./src/
+tsa variables ./src/
 
 # Find variables containing "config"
-tree-sitter-analyzer variables ./src/ -q config
+tsa variables ./src/ -q config
 
 # Find variables matching uppercase pattern using regex
-tree-sitter-analyzer variables ./src/ -q "^[A-Z_]+$"
+tsa variables ./src/ -q "^[A-Z_]+$"
 ```
 
 ### Inheritance Analysis
@@ -186,7 +186,7 @@ tree-sitter-analyzer variables ./src/ -q "^[A-Z_]+$"
 Get all parent classes (superclasses) of a specific class.
 
 ```bash
-tree-sitter-analyzer super-classes <path> -c CLASS_NAME [--json] [--yaml]
+tsa super-classes <path> -c CLASS_NAME [--json] [--yaml]
 ```
 
 | Option | Description |
@@ -197,7 +197,7 @@ Examples:
 
 ```bash
 # Find parent classes
-tree-sitter-analyzer super-classes ./src/ -c AdminUser
+tsa super-classes ./src/ -c AdminUser
 ```
 
 #### `sub-classes` - Get Child Classes
@@ -205,7 +205,7 @@ tree-sitter-analyzer super-classes ./src/ -c AdminUser
 Get all child classes (subclasses) that inherit from a specific class.
 
 ```bash
-tree-sitter-analyzer sub-classes <path> -c CLASS_NAME [--json] [--yaml]
+tsa sub-classes <path> -c CLASS_NAME [--json] [--yaml]
 ```
 
 | Option | Description |
@@ -216,7 +216,7 @@ Examples:
 
 ```bash
 # Find child classes across a project
-tree-sitter-analyzer sub-classes ./src/ -c BaseModel
+tsa sub-classes ./src/ -c BaseModel
 ```
 
 ### Call Graph Analysis
@@ -226,7 +226,7 @@ tree-sitter-analyzer sub-classes ./src/ -c BaseModel
 Find all functions that call a specific function.
 
 ```bash
-tree-sitter-analyzer callers <path> -f FUNCTION [-c CLASS_NAME] [--json] [--yaml]
+tsa callers <path> -f FUNCTION [-c CLASS_NAME] [--json] [--yaml]
 ```
 
 | Option | Description |
@@ -238,10 +238,10 @@ Examples:
 
 ```bash
 # Find all callers of a function
-tree-sitter-analyzer callers ./src/ -f process_data
+tsa callers ./src/ -f process_data
 
 # Find callers of a method within a class
-tree-sitter-analyzer callers ./src/ -f save -c DatabaseHandler
+tsa callers ./src/ -f save -c DatabaseHandler
 ```
 
 #### `callees` - Find Called Functions
@@ -249,7 +249,7 @@ tree-sitter-analyzer callers ./src/ -f save -c DatabaseHandler
 Find all functions called by a specific function.
 
 ```bash
-tree-sitter-analyzer callees <path> -f FUNCTION [-c CLASS_NAME] [--json] [--yaml]
+tsa callees <path> -f FUNCTION [-c CLASS_NAME] [--json] [--yaml]
 ```
 
 | Option | Description |
@@ -261,10 +261,10 @@ Examples:
 
 ```bash
 # Find all functions called by main
-tree-sitter-analyzer callees ./src/ -f main
+tsa callees ./src/ -f main
 
 # Find callees of a method
-tree-sitter-analyzer callees ./src/ -f initialize -c Application
+tsa callees ./src/ -f initialize -c Application
 ```
 
 ### Function-Level Analysis
@@ -274,7 +274,7 @@ tree-sitter-analyzer callees ./src/ -f initialize -c Application
 Get the complete source code of a specific function.
 
 ```bash
-tree-sitter-analyzer definition <path> -f FUNCTION [-c CLASS_NAME] [--json] [--yaml]
+tsa definition <path> -f FUNCTION [-c CLASS_NAME] [--json] [--yaml]
 ```
 
 | Option | Description |
@@ -286,10 +286,10 @@ Examples:
 
 ```bash
 # Get function definition
-tree-sitter-analyzer definition ./src/ -f parse_config
+tsa definition ./src/ -f parse_config
 
 # Get method definition from a class
-tree-sitter-analyzer definition ./src/ -f connect -c Database
+tsa definition ./src/ -f connect -c Database
 ```
 
 #### `function-variables` - Get Variables in Function
@@ -297,7 +297,7 @@ tree-sitter-analyzer definition ./src/ -f connect -c Database
 Get all variables declared within a specific function.
 
 ```bash
-tree-sitter-analyzer function-variables <path> -f FUNCTION [-c CLASS_NAME] [--json] [--yaml]
+tsa function-variables <path> -f FUNCTION [-c CLASS_NAME] [--json] [--yaml]
 ```
 
 | Option | Description |
@@ -309,7 +309,7 @@ Examples:
 
 ```bash
 # Get variables in a function
-tree-sitter-analyzer function-variables ./src/ -f process_request
+tsa function-variables ./src/ -f process_request
 ```
 
 #### `function-strings` - Get Strings in Function
@@ -317,7 +317,7 @@ tree-sitter-analyzer function-variables ./src/ -f process_request
 Get all string literals within a specific function.
 
 ```bash
-tree-sitter-analyzer function-strings <path> -f FUNCTION [-c CLASS_NAME] [--json] [--yaml]
+tsa function-strings <path> -f FUNCTION [-c CLASS_NAME] [--json] [--yaml]
 ```
 
 | Option | Description |
@@ -329,7 +329,7 @@ Examples:
 
 ```bash
 # Get string literals in a function
-tree-sitter-analyzer function-strings ./src/ -f handle_request
+tsa function-strings ./src/ -f handle_request
 ```
 
 ### Symbol Reference Tracking
@@ -339,7 +339,7 @@ tree-sitter-analyzer function-strings ./src/ -f handle_request
 Find all references to a specific identifier.
 
 ```bash
-tree-sitter-analyzer symbols <path> -n NAME [--json] [--yaml]
+tsa symbols <path> -n NAME [--json] [--yaml]
 ```
 
 | Option | Description |
@@ -350,5 +350,5 @@ Examples:
 
 ```bash
 # Find all references to a symbol
-tree-sitter-analyzer symbols ./src/ -n CONFIG_PATH
+tsa symbols ./src/ -n CONFIG_PATH
 ```

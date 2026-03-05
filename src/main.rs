@@ -2,7 +2,6 @@ mod analyzer;
 mod languages;
 mod nodes;
 mod output;
-mod parallel;
 mod parser;
 mod project;
 mod utils;

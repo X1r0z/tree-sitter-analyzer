@@ -5,8 +5,7 @@ use rayon::prelude::*;
 
 use crate::analyzer::CodeAnalyzer;
 use crate::nodes::*;
-use crate::parallel::{run_parallel, sort_by_file_line};
-use crate::utils::{find_files, is_simple_query, match_query, rg_search_files};
+use crate::utils::{find_files, is_simple_query, match_query, rg_search_files, sort_by_file_line};
 
 pub struct ProjectAnalyzer {
     pub files: Vec<String>,
@@ -35,21 +34,24 @@ impl ProjectAnalyzer {
             return Vec::new();
         }
         let q = query.to_string();
-        run_parallel(&candidate_files, |f| {
-            let mut analyzer = match CodeAnalyzer::new(f) {
-                Ok(a) => a,
-                Err(_) => return Vec::new(),
-            };
-            let funcs = analyzer.get_functions();
-            if q.is_empty() {
-                funcs
-            } else {
-                funcs
-                    .into_iter()
-                    .filter(|func| match_query(&func.name, &q))
-                    .collect()
-            }
-        })
+        candidate_files
+            .par_iter()
+            .flat_map(|f| {
+                let mut analyzer = match CodeAnalyzer::new(f) {
+                    Ok(a) => a,
+                    Err(_) => return Vec::new(),
+                };
+                let funcs = analyzer.get_functions();
+                if q.is_empty() {
+                    funcs
+                } else {
+                    funcs
+                        .into_iter()
+                        .filter(|func| match_query(&func.name, &q))
+                        .collect()
+                }
+            })
+            .collect()
     }
 
     pub fn get_classes(&self, query: &str) -> Vec<ClassInfo> {
@@ -58,21 +60,24 @@ impl ProjectAnalyzer {
             return Vec::new();
         }
         let q = query.to_string();
-        run_parallel(&candidate_files, |f| {
-            let mut analyzer = match CodeAnalyzer::new(f) {
-                Ok(a) => a,
-                Err(_) => return Vec::new(),
-            };
-            let classes = analyzer.get_classes();
-            if q.is_empty() {
-                classes
-            } else {
-                classes
-                    .into_iter()
-                    .filter(|class| match_query(&class.name, &q))
-                    .collect()
-            }
-        })
+        candidate_files
+            .par_iter()
+            .flat_map(|f| {
+                let mut analyzer = match CodeAnalyzer::new(f) {
+                    Ok(a) => a,
+                    Err(_) => return Vec::new(),
+                };
+                let classes = analyzer.get_classes();
+                if q.is_empty() {
+                    classes
+                } else {
+                    classes
+                        .into_iter()
+                        .filter(|class| match_query(&class.name, &q))
+                        .collect()
+                }
+            })
+            .collect()
     }
 
     pub fn get_fields(&self, class_name: &str) -> Vec<FieldInfo> {
@@ -81,13 +86,16 @@ impl ProjectAnalyzer {
             return Vec::new();
         }
         let cn = class_name.to_string();
-        run_parallel(&candidate_files, |f| {
-            let mut analyzer = match CodeAnalyzer::new(f) {
-                Ok(a) => a,
-                Err(_) => return Vec::new(),
-            };
-            analyzer.get_fields(&cn)
-        })
+        candidate_files
+            .par_iter()
+            .flat_map(|f| {
+                let mut analyzer = match CodeAnalyzer::new(f) {
+                    Ok(a) => a,
+                    Err(_) => return Vec::new(),
+                };
+                analyzer.get_fields(&cn)
+            })
+            .collect()
     }
 
     pub fn get_imports(&self, query: &str) -> Vec<ImportInfo> {
@@ -96,21 +104,24 @@ impl ProjectAnalyzer {
             return Vec::new();
         }
         let q = query.to_string();
-        run_parallel(&candidate_files, |f| {
-            let mut analyzer = match CodeAnalyzer::new(f) {
-                Ok(a) => a,
-                Err(_) => return Vec::new(),
-            };
-            let imports = analyzer.get_imports();
-            if q.is_empty() {
-                imports
-            } else {
-                imports
-                    .into_iter()
-                    .filter(|import| match_query(&import.module, &q))
-                    .collect()
-            }
-        })
+        candidate_files
+            .par_iter()
+            .flat_map(|f| {
+                let mut analyzer = match CodeAnalyzer::new(f) {
+                    Ok(a) => a,
+                    Err(_) => return Vec::new(),
+                };
+                let imports = analyzer.get_imports();
+                if q.is_empty() {
+                    imports
+                } else {
+                    imports
+                        .into_iter()
+                        .filter(|import| match_query(&import.module, &q))
+                        .collect()
+                }
+            })
+            .collect()
     }
 
     pub fn get_variables(&self, query: &str) -> Vec<VariableInfo> {
@@ -119,20 +130,23 @@ impl ProjectAnalyzer {
             return Vec::new();
         }
         let q = query.to_string();
-        run_parallel(&candidate_files, |f| {
-            let mut analyzer = match CodeAnalyzer::new(f) {
-                Ok(a) => a,
-                Err(_) => return Vec::new(),
-            };
-            let vars = analyzer.get_variables();
-            if q.is_empty() {
-                vars
-            } else {
-                vars.into_iter()
-                    .filter(|var| match_query(&var.name, &q))
-                    .collect()
-            }
-        })
+        candidate_files
+            .par_iter()
+            .flat_map(|f| {
+                let mut analyzer = match CodeAnalyzer::new(f) {
+                    Ok(a) => a,
+                    Err(_) => return Vec::new(),
+                };
+                let vars = analyzer.get_variables();
+                if q.is_empty() {
+                    vars
+                } else {
+                    vars.into_iter()
+                        .filter(|var| match_query(&var.name, &q))
+                        .collect()
+                }
+            })
+            .collect()
     }
 
     pub fn get_callers(
@@ -146,24 +160,27 @@ impl ProjectAnalyzer {
         }
         let fn_name = function_name.to_string();
         let cn = class_name.map(|s| s.to_string());
-        let mut results = run_parallel(&candidate_files, |f| {
-            let mut analyzer = match CodeAnalyzer::new(f) {
-                Ok(a) => a,
-                Err(_) => return Vec::new(),
-            };
-            analyzer
-                .get_function_callers(&fn_name, cn.as_deref())
-                .into_iter()
-                .map(|(caller, line)| {
-                    serde_json::json!({
-                        "caller": caller,
-                        "line": line,
-                        "file": f,
-                        "target_class": cn.as_deref(),
+        let mut results: Vec<serde_json::Value> = candidate_files
+            .par_iter()
+            .flat_map(|f| {
+                let mut analyzer = match CodeAnalyzer::new(f) {
+                    Ok(a) => a,
+                    Err(_) => return Vec::new(),
+                };
+                analyzer
+                    .get_function_callers(&fn_name, cn.as_deref())
+                    .into_iter()
+                    .map(|(caller, line)| {
+                        serde_json::json!({
+                            "caller": caller,
+                            "line": line,
+                            "file": f,
+                            "target_class": cn.as_deref(),
+                        })
                     })
-                })
-                .collect()
-        });
+                    .collect()
+            })
+            .collect();
         sort_by_file_line(&mut results);
         results
     }
@@ -193,24 +210,27 @@ impl ProjectAnalyzer {
 
         let fn_name = function_name.to_string();
         let cn = class_name.map(|s| s.to_string());
-        let mut results = run_parallel(&relevant_files, |f| {
-            let mut analyzer = match CodeAnalyzer::new(f) {
-                Ok(a) => a,
-                Err(_) => return Vec::new(),
-            };
-            analyzer
-                .get_function_callees(&fn_name, cn.as_deref())
-                .into_iter()
-                .map(|(callee, line, callee_class)| {
-                    serde_json::json!({
-                        "callee": callee,
-                        "line": line,
-                        "file": f,
-                        "class_name": callee_class,
+        let mut results: Vec<serde_json::Value> = relevant_files
+            .par_iter()
+            .flat_map(|f| {
+                let mut analyzer = match CodeAnalyzer::new(f) {
+                    Ok(a) => a,
+                    Err(_) => return Vec::new(),
+                };
+                analyzer
+                    .get_function_callees(&fn_name, cn.as_deref())
+                    .into_iter()
+                    .map(|(callee, line, callee_class)| {
+                        serde_json::json!({
+                            "callee": callee,
+                            "line": line,
+                            "file": f,
+                            "class_name": callee_class,
+                        })
                     })
-                })
-                .collect()
-        });
+                    .collect()
+            })
+            .collect();
         sort_by_file_line(&mut results);
         results
     }
@@ -226,13 +246,16 @@ impl ProjectAnalyzer {
         }
         let fn_name = name.to_string();
         let cn = class_name.map(|s| s.to_string());
-        run_parallel(&candidate_files, |f| {
-            let mut analyzer = match CodeAnalyzer::new(f) {
-                Ok(a) => a,
-                Err(_) => return Vec::new(),
-            };
-            analyzer.get_all_functions_by_name(&fn_name, cn.as_deref())
-        })
+        candidate_files
+            .par_iter()
+            .flat_map(|f| {
+                let mut analyzer = match CodeAnalyzer::new(f) {
+                    Ok(a) => a,
+                    Err(_) => return Vec::new(),
+                };
+                analyzer.get_all_functions_by_name(&fn_name, cn.as_deref())
+            })
+            .collect()
     }
 
     pub fn get_function_variables(
@@ -246,23 +269,26 @@ impl ProjectAnalyzer {
         }
         let fn_name = function_name.to_string();
         let cn = class_name.map(|s| s.to_string());
-        let mut results = run_parallel(&candidate_files, |f| {
-            let mut analyzer = match CodeAnalyzer::new(f) {
-                Ok(a) => a,
-                Err(_) => return Vec::new(),
-            };
-            analyzer
-                .get_function_variables(&fn_name, cn.as_deref())
-                .into_iter()
-                .map(|var| {
-                    serde_json::json!({
-                        "name": var.name,
-                        "line": var.location.start_line,
-                        "file": f,
+        let mut results: Vec<serde_json::Value> = candidate_files
+            .par_iter()
+            .flat_map(|f| {
+                let mut analyzer = match CodeAnalyzer::new(f) {
+                    Ok(a) => a,
+                    Err(_) => return Vec::new(),
+                };
+                analyzer
+                    .get_function_variables(&fn_name, cn.as_deref())
+                    .into_iter()
+                    .map(|var| {
+                        serde_json::json!({
+                            "name": var.name,
+                            "line": var.location.start_line,
+                            "file": f,
+                        })
                     })
-                })
-                .collect()
-        });
+                    .collect()
+            })
+            .collect();
         sort_by_file_line(&mut results);
         results
     }
@@ -278,23 +304,26 @@ impl ProjectAnalyzer {
         }
         let fn_name = function_name.to_string();
         let cn = class_name.map(|s| s.to_string());
-        let mut results = run_parallel(&candidate_files, |f| {
-            let mut analyzer = match CodeAnalyzer::new(f) {
-                Ok(a) => a,
-                Err(_) => return Vec::new(),
-            };
-            analyzer
-                .get_function_strings(&fn_name, cn.as_deref())
-                .into_iter()
-                .map(|s| {
-                    serde_json::json!({
-                        "value": s.value,
-                        "line": s.location.start_line,
-                        "file": f,
+        let mut results: Vec<serde_json::Value> = candidate_files
+            .par_iter()
+            .flat_map(|f| {
+                let mut analyzer = match CodeAnalyzer::new(f) {
+                    Ok(a) => a,
+                    Err(_) => return Vec::new(),
+                };
+                analyzer
+                    .get_function_strings(&fn_name, cn.as_deref())
+                    .into_iter()
+                    .map(|s| {
+                        serde_json::json!({
+                            "value": s.value,
+                            "line": s.location.start_line,
+                            "file": f,
+                        })
                     })
-                })
-                .collect()
-        });
+                    .collect()
+            })
+            .collect();
         sort_by_file_line(&mut results);
         results
     }
@@ -305,13 +334,16 @@ impl ProjectAnalyzer {
             return Vec::new();
         }
         let symbol = name.to_string();
-        run_parallel(&candidate_files, |f| {
-            let mut analyzer = match CodeAnalyzer::new(f) {
-                Ok(a) => a,
-                Err(_) => return Vec::new(),
-            };
-            analyzer.find_symbols(&symbol)
-        })
+        candidate_files
+            .par_iter()
+            .flat_map(|f| {
+                let mut analyzer = match CodeAnalyzer::new(f) {
+                    Ok(a) => a,
+                    Err(_) => return Vec::new(),
+                };
+                analyzer.find_symbols(&symbol)
+            })
+            .collect()
     }
 
     pub fn get_super_classes(&self, class_name: &str) -> Vec<ClassInfo> {
@@ -335,13 +367,19 @@ impl ProjectAnalyzer {
                 visited.insert(parent_name.clone());
                 let candidate_files = self.filter_by_text(parent_name);
                 let pn = parent_name.clone();
-                let found: Vec<ClassInfo> = run_parallel(&candidate_files, |f| {
-                    let mut analyzer = match CodeAnalyzer::new(f) {
-                        Ok(a) => a,
-                        Err(_) => return Vec::new(),
-                    };
-                    analyzer.get_class_by_name(&pn).into_iter().collect()
-                });
+                let found: Vec<ClassInfo> = candidate_files
+                    .par_iter()
+                    .flat_map(|f| {
+                        let mut analyzer = match CodeAnalyzer::new(f) {
+                            Ok(a) => a,
+                            Err(_) => return Vec::new(),
+                        };
+                        analyzer
+                            .get_class_by_name(&pn)
+                            .into_iter()
+                            .collect::<Vec<_>>()
+                    })
+                    .collect();
                 if let Some(parent) = found.into_iter().next() {
                     result.push(parent.clone());
                     queue.push_back(parent);
@@ -361,17 +399,20 @@ impl ProjectAnalyzer {
         while let Some(current_parent) = queue.pop_front() {
             let candidate_files = self.filter_by_text(&current_parent);
             let cp = current_parent.clone();
-            let found: Vec<ClassInfo> = run_parallel(&candidate_files, |f| {
-                let mut analyzer = match CodeAnalyzer::new(f) {
-                    Ok(a) => a,
-                    Err(_) => return Vec::new(),
-                };
-                analyzer
-                    .get_classes()
-                    .into_iter()
-                    .filter(|cls| cls.super_classes.contains(&cp))
-                    .collect()
-            });
+            let found: Vec<ClassInfo> = candidate_files
+                .par_iter()
+                .flat_map(|f| {
+                    let mut analyzer = match CodeAnalyzer::new(f) {
+                        Ok(a) => a,
+                        Err(_) => return Vec::new(),
+                    };
+                    analyzer
+                        .get_classes()
+                        .into_iter()
+                        .filter(|cls| cls.super_classes.contains(&cp))
+                        .collect::<Vec<_>>()
+                })
+                .collect();
 
             for cls in found {
                 if visited.insert(cls.name.clone()) {

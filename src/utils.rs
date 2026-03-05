@@ -63,6 +63,16 @@ pub fn rg_search_files(text: &str, path: &str) -> Option<Vec<String>> {
     Some(files)
 }
 
+pub fn sort_by_file_line(results: &mut [serde_json::Value]) {
+    results.sort_by(|a, b| {
+        let fa = a["file"].as_str().unwrap_or("");
+        let fb = b["file"].as_str().unwrap_or("");
+        let la = a["line"].as_u64().unwrap_or(0);
+        let lb = b["line"].as_u64().unwrap_or(0);
+        fa.cmp(fb).then(la.cmp(&lb))
+    });
+}
+
 pub fn match_query(name: &str, query: &str) -> bool {
     if query.is_empty() {
         return true;

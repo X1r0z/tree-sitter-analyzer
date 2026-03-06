@@ -178,10 +178,11 @@ impl CodeAnalyzer {
             .parser
             .run_call_query_matches(self.parser.lang_info.call_query);
         let mut calls = Vec::new();
+        let mut js_alias_events_by_function: HashMap<usize, Vec<crate::parser::JsAliasEvent>> =
+            HashMap::new();
         for m in &call_matches {
             let call_node = m.call;
-            let caller = self.parser.find_enclosing_function(call_node);
-            let caller_class_name = self.parser.find_enclosing_class(call_node);
+            let (caller, caller_class_name) = self.parser.find_enclosing_context(call_node);
             let mut callee = String::new();
             let mut is_method = false;
             let mut obj_name: Option<String> = None;
@@ -255,11 +256,18 @@ impl CodeAnalyzer {
                         .map(|n| n.kind() == "identifier")
                         .unwrap_or(false)
                 {
-                    let resolved = self
-                        .parser
-                        .resolve_js_identifier_call_targets(call_node, &callee);
-                    if !resolved.is_empty() {
-                        resolved_callees = resolved;
+                    if let Some(func_node) = self.parser.find_enclosing_function_node(call_node) {
+                        let alias_events = js_alias_events_by_function
+                            .entry(func_node.id())
+                            .or_insert_with(|| self.parser.build_js_alias_events(func_node));
+                        let resolved = self.parser.resolve_js_identifier_call_targets_from_events(
+                            alias_events,
+                            call_node.start_byte(),
+                            &callee,
+                        );
+                        if !resolved.is_empty() {
+                            resolved_callees = resolved;
+                        }
                     }
                 }
 
@@ -276,19 +284,87 @@ impl CodeAnalyzer {
             }
         }
 
-        // Build indices
+        self.cache.set_calls(calls);
+    }
+
+    fn ensure_calls_by_callee(&mut self) {
+        self.ensure_calls();
+        if self.cache.calls_by_callee().is_some() {
+            return;
+        }
         let mut by_callee: HashMap<String, Vec<usize>> = HashMap::new();
-        let mut by_caller: HashMap<String, Vec<usize>> = HashMap::new();
-        for (index, call) in calls.iter().enumerate() {
+        for (index, call) in self.cache.calls().unwrap_or(&[]).iter().enumerate() {
             by_callee
                 .entry(call.callee.clone())
                 .or_default()
                 .push(index);
-            if let Some(ref c) = call.caller {
-                by_caller.entry(c.clone()).or_default().push(index);
+        }
+        self.cache.set_calls_by_callee(by_callee);
+    }
+
+    fn ensure_calls_by_caller(&mut self) {
+        self.ensure_calls();
+        if self.cache.calls_by_caller().is_some() {
+            return;
+        }
+        let mut by_caller: HashMap<String, Vec<usize>> = HashMap::new();
+        for (index, call) in self.cache.calls().unwrap_or(&[]).iter().enumerate() {
+            if let Some(ref caller) = call.caller {
+                by_caller.entry(caller.clone()).or_default().push(index);
             }
         }
-        self.cache.set_calls(calls, by_callee, by_caller);
+        self.cache.set_calls_by_caller(by_caller);
+    }
+
+    fn matches_call_target_class(&mut self, call: &CallInfo, class_name: &str) -> bool {
+        if call.object_name.as_deref() == Some(class_name) {
+            return true;
+        }
+        if call.object_name.is_none() {
+            return call.caller_class_name.as_deref() == Some(class_name);
+        }
+        if matches!(
+            call.object_name.as_deref(),
+            Some("self") | Some("this") | Some("cls")
+        ) {
+            return call.caller_class_name.as_deref() == Some(class_name);
+        }
+        if let (Some(object_name), Some(caller_class_name)) = (
+            call.object_name.as_deref(),
+            call.caller_class_name.as_deref(),
+        ) {
+            if let Some(attr_name) = Self::extract_instance_attr(object_name) {
+                for field in self.get_fields(caller_class_name) {
+                    if field.name != attr_name {
+                        continue;
+                    }
+                    if Self::type_matches_class(field.field_type.as_deref(), class_name) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    fn extract_instance_attr(object_name: &str) -> Option<String> {
+        for prefix in ["self.", "this.", "cls."] {
+            if let Some(rest) = object_name.strip_prefix(prefix) {
+                if !rest.is_empty() {
+                    return Some(rest.split('.').next().unwrap_or(rest).to_string());
+                }
+            }
+        }
+        None
+    }
+
+    fn type_matches_class(field_type: Option<&str>, class_name: &str) -> bool {
+        let Some(field_type) = field_type else {
+            return false;
+        };
+        field_type
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .any(|token| !token.is_empty() && token == class_name)
     }
 
     pub fn get_functions(&mut self) -> Vec<FunctionInfo> {
@@ -310,6 +386,10 @@ impl CodeAnalyzer {
                 f.name == name && (class_name.is_none() || f.class_name.as_deref() == class_name)
             })
             .cloned()
+    }
+
+    pub fn has_function_by_name(&self, name: &str, class_name: Option<&str>) -> bool {
+        self.parser.has_function_named(name, class_name)
     }
 
     pub fn get_function_definition_by_name(
@@ -385,9 +465,9 @@ impl CodeAnalyzer {
         function_name: &str,
         class_name: Option<&str>,
     ) -> Vec<(String, usize)> {
-        self.ensure_calls();
+        self.ensure_calls_by_callee();
         let by_callee = self.cache.calls_by_callee().unwrap();
-        let calls = self.cache.calls().unwrap();
+        let calls = self.cache.calls().unwrap().to_vec();
 
         let mut target_function = function_name;
         let mut target_object: Option<&str> = None;
@@ -399,28 +479,27 @@ impl CodeAnalyzer {
 
         let mut callers = Vec::new();
         let mut seen: HashSet<(String, usize)> = HashSet::new();
-        if let Some(candidate_call_indices) = by_callee.get(target_function) {
-            for &call_index in candidate_call_indices {
-                let call = &calls[call_index];
-                if let Some(to) = target_object {
-                    if call.object_name.as_deref() != Some(to) {
-                        continue;
-                    }
+        let candidate_call_indices = by_callee.get(target_function).cloned().unwrap_or_default();
+        for call_index in candidate_call_indices {
+            let call = calls[call_index].clone();
+            if let Some(to) = target_object {
+                if call.object_name.as_deref() != Some(to) {
+                    continue;
                 }
-                if let Some(cn) = class_name {
-                    if !self.parser.matches_call_target_class(call, cn) {
-                        continue;
-                    }
+            }
+            if let Some(cn) = class_name {
+                if !self.matches_call_target_class(&call, cn) {
+                    continue;
                 }
-                let caller = call
-                    .caller
-                    .clone()
-                    .unwrap_or_else(|| "<module>".to_string());
-                let line = call.location.start_line;
-                let key = (caller.clone(), line);
-                if seen.insert(key) {
-                    callers.push((caller, line));
-                }
+            }
+            let caller = call
+                .caller
+                .clone()
+                .unwrap_or_else(|| "<module>".to_string());
+            let line = call.location.start_line;
+            let key = (caller.clone(), line);
+            if seen.insert(key) {
+                callers.push((caller, line));
             }
         }
 
@@ -442,38 +521,13 @@ impl CodeAnalyzer {
         function_name: &str,
         class_name: Option<&str>,
     ) -> Vec<(String, usize, Option<String>)> {
-        let funcs = self.get_all_functions_by_name(function_name, class_name);
-        self.ensure_calls();
+        self.ensure_calls_by_caller();
         let by_caller = self.cache.calls_by_caller().unwrap();
         let calls = self.cache.calls().unwrap();
 
         let mut callees = Vec::new();
         let mut seen: HashSet<(String, Option<String>)> = HashSet::new();
-
-        if !funcs.is_empty() {
-            for func in &funcs {
-                if let Some(caller_call_indices) = by_caller.get(&func.name) {
-                    for &call_index in caller_call_indices {
-                        let call = &calls[call_index];
-                        if call.caller_class_name != func.class_name {
-                            continue;
-                        }
-                        let mut callee_name = call.callee.clone();
-                        if let Some(ref obj) = call.object_name {
-                            callee_name = format!("{}.{}", obj, callee_name);
-                        }
-                        let key = (callee_name.clone(), func.class_name.clone());
-                        if seen.insert(key) {
-                            callees.push((
-                                callee_name,
-                                call.location.start_line,
-                                func.class_name.clone(),
-                            ));
-                        }
-                    }
-                }
-            }
-        } else if let Some(caller_call_indices) = by_caller.get(function_name) {
+        if let Some(caller_call_indices) = by_caller.get(function_name) {
             for &call_index in caller_call_indices {
                 let call = &calls[call_index];
                 if class_name.is_some() && call.caller_class_name.as_deref() != class_name {
@@ -525,8 +579,8 @@ impl CodeAnalyzer {
                     "context": context,
                 }));
             }
-            for i in (0..node.child_count()).rev() {
-                if let Some(child) = node.child((i) as u32) {
+            for i in (0..node.named_child_count()).rev() {
+                if let Some(child) = node.named_child(i as u32) {
                     stack.push(child);
                 }
             }

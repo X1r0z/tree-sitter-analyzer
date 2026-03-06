@@ -26,6 +26,12 @@ pub(crate) struct CallQueryMatch<'a> {
     pub(crate) object: Option<Node<'a>>,
 }
 
+pub(crate) struct JsAliasEvent {
+    pub(crate) start_byte: usize,
+    pub(crate) name: String,
+    pub(crate) targets: Vec<String>,
+}
+
 #[allow(dead_code)]
 impl BaseParser {
     pub(crate) fn new(file_path: &str) -> anyhow::Result<Self> {
@@ -180,6 +186,53 @@ impl BaseParser {
         .unwrap_or_default()
     }
 
+    pub(crate) fn has_function_named(&self, function_name: &str, class_name: Option<&str>) -> bool {
+        self.with_query(self.lang_info.function_query, |query| {
+            let capture_names = query.capture_names();
+            let Some(function_index) = capture_names
+                .iter()
+                .position(|name| *name == "function")
+                .map(|idx| idx as u32)
+            else {
+                return false;
+            };
+            let Some(name_index) = capture_names
+                .iter()
+                .position(|name| *name == "name")
+                .map(|idx| idx as u32)
+            else {
+                return false;
+            };
+
+            let mut cursor = QueryCursor::new();
+            let mut matches = cursor.matches(query, self.tree.root_node(), self.source.as_slice());
+            while let Some(m) = matches.next() {
+                let mut function_node = None;
+                let mut name_node = None;
+                for cap in m.captures {
+                    if cap.index == function_index {
+                        function_node = Some(cap.node);
+                    } else if cap.index == name_index {
+                        name_node = Some(cap.node);
+                    }
+                }
+                let (Some(function_node), Some(name_node)) = (function_node, name_node) else {
+                    continue;
+                };
+                if !self.node_eq_str(name_node, function_name) {
+                    continue;
+                }
+                if class_name.is_none()
+                    || self.find_enclosing_class(function_node).as_deref() == class_name
+                {
+                    return true;
+                }
+            }
+            false
+        })
+        .unwrap_or(false)
+    }
+
     pub(crate) fn run_call_query_matches(&self, query_str: &str) -> Vec<CallQueryMatch<'_>> {
         self.with_query(query_str, |query| {
             let capture_names = query.capture_names();
@@ -252,30 +305,7 @@ impl BaseParser {
     }
 
     pub(crate) fn find_enclosing_function(&self, node: Node) -> Option<String> {
-        let mut current = node.parent();
-        let anonymous_types = ["arrow_function", "func_literal"];
-        while let Some(cur) = current {
-            if Self::is_function_like(cur.kind()) {
-                if let Some(name_node) = cur.child_by_field_name("name") {
-                    return Some(self.node_text(name_node));
-                }
-                if anonymous_types.contains(&cur.kind()) || cur.kind() == "function_expression" {
-                    return self.infer_anonymous_function_name(cur);
-                }
-                for i in 0..cur.child_count() {
-                    let child = cur.child((i) as u32).unwrap();
-                    if matches!(
-                        child.kind(),
-                        "identifier" | "property_identifier" | "field_identifier"
-                    ) {
-                        return Some(self.node_text(child));
-                    }
-                }
-                return None;
-            }
-            current = cur.parent();
-        }
-        None
+        self.find_enclosing_context(node).0
     }
 
     pub(crate) fn find_enclosing_function_node<'a>(&self, node: Node<'a>) -> Option<Node<'a>> {
@@ -328,50 +358,87 @@ impl BaseParser {
     }
 
     pub(crate) fn find_enclosing_class(&self, node: Node) -> Option<String> {
+        self.find_enclosing_context(node).1
+    }
+
+    pub(crate) fn find_enclosing_context(&self, node: Node) -> (Option<String>, Option<String>) {
         if self.language == "go" && node.kind() == "method_declaration" {
             if let Some(rc) = self.extract_go_receiver_type(node) {
-                return Some(rc);
+                let function_name = self.function_name_from_node(node);
+                return (function_name, Some(rc));
             }
         }
 
         let mut current = node.parent();
+        let mut function_name: Option<String> = None;
+        let mut class_name: Option<String> = None;
         while let Some(cur) = current {
-            if self.language == "go" && cur.kind() == "method_declaration" {
-                if let Some(rc) = self.extract_go_receiver_type(cur) {
-                    return Some(rc);
-                }
+            if function_name.is_none() && Self::is_function_like(cur.kind()) {
+                function_name = self.function_name_from_node(cur);
             }
-            if matches!(
-                cur.kind(),
-                "class_definition"
-                    | "class_declaration"
-                    | "class_body"
-                    | "interface_declaration"
-                    | "enum_declaration"
-                    | "record_declaration"
-                    | "annotation_type_declaration"
-            ) {
-                if let Some(name_node) = cur.child_by_field_name("name") {
-                    let class_name = self.node_text(name_node);
-                    if !class_name.is_empty() {
-                        return Some(class_name);
-                    }
-                }
-                for i in 0..cur.child_count() {
-                    let child = cur.child((i) as u32).unwrap();
-                    if matches!(child.kind(), "identifier" | "type_identifier" | "name") {
-                        let class_name = self.node_text(child);
-                        if !class_name.is_empty() {
-                            return Some(class_name);
-                        }
-                    }
-                }
+
+            if self.language == "go" && class_name.is_none() && cur.kind() == "method_declaration" {
+                class_name = self.extract_go_receiver_type(cur);
+            }
+
+            if class_name.is_none()
+                && matches!(
+                    cur.kind(),
+                    "class_definition"
+                        | "class_declaration"
+                        | "class_body"
+                        | "interface_declaration"
+                        | "enum_declaration"
+                        | "record_declaration"
+                        | "annotation_type_declaration"
+                )
+            {
+                class_name = self.class_name_from_node(cur);
                 // Some nodes like Java `class_body` don't carry the class name.
                 // Keep walking upward to find the owning class declaration.
                 current = cur.parent();
                 continue;
             }
             current = cur.parent();
+        }
+        (function_name, class_name)
+    }
+
+    fn function_name_from_node(&self, node: Node) -> Option<String> {
+        let anonymous_types = ["arrow_function", "func_literal"];
+        if let Some(name_node) = node.child_by_field_name("name") {
+            return Some(self.node_text(name_node));
+        }
+        if anonymous_types.contains(&node.kind()) || node.kind() == "function_expression" {
+            return self.infer_anonymous_function_name(node);
+        }
+        for i in 0..node.child_count() {
+            let child = node.child((i) as u32).unwrap();
+            if matches!(
+                child.kind(),
+                "identifier" | "property_identifier" | "field_identifier"
+            ) {
+                return Some(self.node_text(child));
+            }
+        }
+        None
+    }
+
+    fn class_name_from_node(&self, node: Node) -> Option<String> {
+        if let Some(name_node) = node.child_by_field_name("name") {
+            let class_name = self.node_text(name_node);
+            if !class_name.is_empty() {
+                return Some(class_name);
+            }
+        }
+        for i in 0..node.child_count() {
+            let child = node.child((i) as u32).unwrap();
+            if matches!(child.kind(), "identifier" | "type_identifier" | "name") {
+                let class_name = self.node_text(child);
+                if !class_name.is_empty() {
+                    return Some(class_name);
+                }
+            }
         }
         None
     }
@@ -508,26 +575,36 @@ impl BaseParser {
             return Vec::new();
         };
 
+        let events = self.build_js_alias_events(func_node);
+        self.resolve_js_identifier_call_targets_from_events(
+            &events,
+            call_node.start_byte(),
+            identifier_name,
+        )
+    }
+
+    pub(crate) fn build_js_alias_events(&self, func_node: Node<'_>) -> Vec<JsAliasEvent> {
         let mut aliases: HashMap<String, Vec<String>> = HashMap::new();
-        let call_start = call_node.start_byte();
+        let mut events = Vec::new();
 
         fn add_alias(
             aliases: &mut HashMap<String, Vec<String>>,
             name: Option<String>,
             targets: impl IntoIterator<Item = String>,
-        ) {
-            let Some(name) = name else {
-                return;
-            };
+        ) -> Option<(String, Vec<String>)> {
+            let name = name?;
             if name.is_empty() {
-                return;
+                return None;
             }
-            let entry = aliases.entry(name).or_default();
+            let entry = aliases.entry(name.clone()).or_default();
             for target in targets {
                 if !target.is_empty() {
                     entry.push(target);
                 }
             }
+            entry.sort_unstable();
+            entry.dedup();
+            Some((name, entry.clone()))
         }
 
         let extract_loop_var = |node: Node<'_>| -> Option<String> {
@@ -554,10 +631,6 @@ impl BaseParser {
 
         let mut stack = vec![func_node];
         while let Some(node) = stack.pop() {
-            if node.id() == call_node.id() || node.start_byte() >= call_start {
-                continue;
-            }
-
             if node.kind() == "variable_declarator" {
                 let name_node = node.child_by_field_name("name");
                 let value_node = node.child_by_field_name("value");
@@ -565,14 +638,30 @@ impl BaseParser {
                     if name_node.kind() == "identifier" {
                         let name = self.node_text(name_node);
                         if value_node.kind() == "identifier" {
-                            add_alias(&mut aliases, Some(name), [self.node_text(value_node)]);
+                            if let Some((name, targets)) =
+                                add_alias(&mut aliases, Some(name), [self.node_text(value_node)])
+                            {
+                                events.push(JsAliasEvent {
+                                    start_byte: node.start_byte(),
+                                    name,
+                                    targets,
+                                });
+                            }
                         } else if value_node.kind() == "array" {
                             let targets = (0..value_node.named_child_count())
                                 .filter_map(|i| value_node.named_child(i as u32))
                                 .filter(|c| c.kind() == "identifier")
                                 .map(|c| self.node_text(c))
                                 .collect::<Vec<_>>();
-                            add_alias(&mut aliases, Some(name), targets);
+                            if let Some((name, targets)) =
+                                add_alias(&mut aliases, Some(name), targets)
+                            {
+                                events.push(JsAliasEvent {
+                                    start_byte: node.start_byte(),
+                                    name,
+                                    targets,
+                                });
+                            }
                         }
                     }
                 }
@@ -584,9 +673,23 @@ impl BaseParser {
                         let loop_var = extract_loop_var(left_node);
                         let iterable = self.node_text(right_node);
                         if let Some(targets) = aliases.get(&iterable).cloned() {
-                            add_alias(&mut aliases, loop_var, targets);
-                        } else {
-                            add_alias(&mut aliases, loop_var, [iterable]);
+                            if let Some((name, targets)) =
+                                add_alias(&mut aliases, loop_var, targets)
+                            {
+                                events.push(JsAliasEvent {
+                                    start_byte: node.start_byte(),
+                                    name,
+                                    targets,
+                                });
+                            }
+                        } else if let Some((name, targets)) =
+                            add_alias(&mut aliases, loop_var, [iterable])
+                        {
+                            events.push(JsAliasEvent {
+                                start_byte: node.start_byte(),
+                                name,
+                                targets,
+                            });
                         }
                     }
                 }
@@ -594,16 +697,26 @@ impl BaseParser {
 
             for i in (0..node.child_count()).rev() {
                 if let Some(child) = node.child(i as u32) {
-                    if child.start_byte() < call_start {
-                        stack.push(child);
-                    }
+                    stack.push(child);
                 }
             }
         }
 
-        for targets in aliases.values_mut() {
-            targets.sort_unstable();
-            targets.dedup();
+        events
+    }
+
+    pub(crate) fn resolve_js_identifier_call_targets_from_events(
+        &self,
+        events: &[JsAliasEvent],
+        call_start: usize,
+        identifier_name: &str,
+    ) -> Vec<String> {
+        let mut aliases: HashMap<&str, &[String]> = HashMap::new();
+        for event in events {
+            if event.start_byte >= call_start {
+                break;
+            }
+            aliases.insert(event.name.as_str(), event.targets.as_slice());
         }
 
         let mut visited: HashSet<String> = HashSet::new();
@@ -615,8 +728,8 @@ impl BaseParser {
             if !visited.insert(current.clone()) {
                 continue;
             }
-            if let Some(targets) = aliases.get(&current) {
-                for target in targets {
+            if let Some(targets) = aliases.get(current.as_str()) {
+                for target in *targets {
                     queue.push_back(target.clone());
                 }
             } else if !resolved.iter().any(|existing| existing == &current) {
@@ -1409,56 +1522,5 @@ impl BaseParser {
         });
         let target = candidates[0];
         self.extract_field_infos(target, class_name)
-    }
-
-    pub(crate) fn matches_call_target_class(&self, call: &CallInfo, class_name: &str) -> bool {
-        if call.object_name.as_deref() == Some(class_name) {
-            return true;
-        }
-        if call.object_name.is_none() {
-            return call.caller_class_name.as_deref() == Some(class_name);
-        }
-        if matches!(
-            call.object_name.as_deref(),
-            Some("self") | Some("this") | Some("cls")
-        ) {
-            return call.caller_class_name.as_deref() == Some(class_name);
-        }
-        if let (Some(object_name), Some(caller_class_name)) = (
-            call.object_name.as_deref(),
-            call.caller_class_name.as_deref(),
-        ) {
-            if let Some(attr_name) = self.extract_instance_attr(object_name) {
-                for field in self.get_fields_from_class_node(caller_class_name) {
-                    if field.name != attr_name {
-                        continue;
-                    }
-                    if Self::type_matches_class(field.field_type.as_deref(), class_name) {
-                        return true;
-                    }
-                }
-            }
-        }
-        false
-    }
-
-    fn extract_instance_attr(&self, object_name: &str) -> Option<String> {
-        for prefix in ["self.", "this.", "cls."] {
-            if let Some(rest) = object_name.strip_prefix(prefix) {
-                if !rest.is_empty() {
-                    return Some(rest.split('.').next().unwrap_or(rest).to_string());
-                }
-            }
-        }
-        None
-    }
-
-    fn type_matches_class(field_type: Option<&str>, class_name: &str) -> bool {
-        let Some(field_type) = field_type else {
-            return false;
-        };
-        field_type
-            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-            .any(|token| !token.is_empty() && token == class_name)
     }
 }

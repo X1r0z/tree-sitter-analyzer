@@ -64,14 +64,15 @@ impl AnalyzerCache {
         self.calls.is_some()
     }
 
-    pub(crate) fn set_calls(
-        &mut self,
-        calls: Vec<CallInfo>,
-        by_callee: HashMap<String, Vec<usize>>,
-        by_caller: HashMap<String, Vec<usize>>,
-    ) {
+    pub(crate) fn set_calls(&mut self, calls: Vec<CallInfo>) {
         self.calls = Some(calls);
+    }
+
+    pub(crate) fn set_calls_by_callee(&mut self, by_callee: HashMap<String, Vec<usize>>) {
         self.calls_by_callee = Some(by_callee);
+    }
+
+    pub(crate) fn set_calls_by_caller(&mut self, by_caller: HashMap<String, Vec<usize>>) {
         self.calls_by_caller = Some(by_caller);
     }
 

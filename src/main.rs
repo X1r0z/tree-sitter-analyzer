@@ -1,7 +1,6 @@
 mod analyzer;
 mod languages;
 mod nodes;
-mod output;
 mod parser;
 mod project;
 mod utils;
@@ -12,7 +11,6 @@ use std::process;
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
 
-use crate::output::print_pretty;
 use crate::project::ProjectAnalyzer;
 
 #[derive(Parser)]
@@ -39,12 +37,6 @@ enum Commands {
         /// Include function body
         #[arg(long)]
         body: bool,
-        /// Output in JSON format
-        #[arg(long)]
-        json: bool,
-        /// Output in YAML format
-        #[arg(long)]
-        yaml: bool,
     },
     /// Extract all class/struct/interface definitions
     Classes {
@@ -53,12 +45,6 @@ enum Commands {
         /// Filter by class name (regex match)
         #[arg(short, long)]
         query: Option<String>,
-        /// Output in JSON format
-        #[arg(long)]
-        json: bool,
-        /// Output in YAML format
-        #[arg(long)]
-        yaml: bool,
     },
     /// Get all fields of a specific class
     Fields {
@@ -67,12 +53,6 @@ enum Commands {
         /// Class name to get fields for
         #[arg(short, long)]
         class_name: String,
-        /// Output in JSON format
-        #[arg(long)]
-        json: bool,
-        /// Output in YAML format
-        #[arg(long)]
-        yaml: bool,
     },
     /// Extract all import statements
     Imports {
@@ -81,12 +61,6 @@ enum Commands {
         /// Filter by module name (regex match)
         #[arg(short, long)]
         query: Option<String>,
-        /// Output in JSON format
-        #[arg(long)]
-        json: bool,
-        /// Output in YAML format
-        #[arg(long)]
-        yaml: bool,
     },
     /// Find functions that call a specific function
     Callers {
@@ -98,12 +72,6 @@ enum Commands {
         /// Class name to filter methods
         #[arg(short, long)]
         class_name: Option<String>,
-        /// Output in JSON format
-        #[arg(long)]
-        json: bool,
-        /// Output in YAML format
-        #[arg(long)]
-        yaml: bool,
     },
     /// Find functions called by a specific function
     Callees {
@@ -115,12 +83,6 @@ enum Commands {
         /// Class name to filter methods
         #[arg(short, long)]
         class_name: Option<String>,
-        /// Output in JSON format
-        #[arg(long)]
-        json: bool,
-        /// Output in YAML format
-        #[arg(long)]
-        yaml: bool,
     },
     /// Find all references to a specific identifier
     Symbols {
@@ -129,12 +91,6 @@ enum Commands {
         /// Identifier name to search for
         #[arg(short, long)]
         name: String,
-        /// Output in JSON format
-        #[arg(long)]
-        json: bool,
-        /// Output in YAML format
-        #[arg(long)]
-        yaml: bool,
     },
     /// Get the complete source code of a function
     Definition {
@@ -146,12 +102,6 @@ enum Commands {
         /// Class name to filter methods
         #[arg(short, long)]
         class_name: Option<String>,
-        /// Output in JSON format
-        #[arg(long)]
-        json: bool,
-        /// Output in YAML format
-        #[arg(long)]
-        yaml: bool,
     },
     /// Get all parent classes of a specific class
     #[command(name = "super-classes")]
@@ -161,12 +111,6 @@ enum Commands {
         /// Class name to find parents for
         #[arg(short, long)]
         class_name: String,
-        /// Output in JSON format
-        #[arg(long)]
-        json: bool,
-        /// Output in YAML format
-        #[arg(long)]
-        yaml: bool,
     },
     /// Get all child classes that inherit from a class
     #[command(name = "sub-classes")]
@@ -176,12 +120,6 @@ enum Commands {
         /// Class name to find children for
         #[arg(short, long)]
         class_name: String,
-        /// Output in JSON format
-        #[arg(long)]
-        json: bool,
-        /// Output in YAML format
-        #[arg(long)]
-        yaml: bool,
     },
 }
 
@@ -201,120 +139,40 @@ fn resolve_path(path: &str) -> String {
     }
 }
 
-fn output_result(result: &Value, use_json: bool, use_yaml: bool) {
-    if use_json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(result).unwrap_or_default()
-        );
-    } else if use_yaml {
-        println!("{}", serde_yaml::to_string(result).unwrap_or_default());
-    } else {
-        print_pretty(result);
-    }
-}
-
 fn run() -> i32 {
     let cli = Cli::parse();
 
-    let (result, use_json, use_yaml) = match cli.command {
-        Commands::Functions {
-            path,
-            query,
-            body,
-            json,
-            yaml,
-        } => {
-            let result = cmd_functions(&path, query.as_deref().unwrap_or(""), body);
-            (result, json, yaml)
+    let result = match cli.command {
+        Commands::Functions { path, query, body } => {
+            cmd_functions(&path, query.as_deref().unwrap_or(""), body)
         }
-        Commands::Classes {
-            path,
-            query,
-            json,
-            yaml,
-        } => {
-            let result = cmd_classes(&path, query.as_deref().unwrap_or(""));
-            (result, json, yaml)
-        }
-        Commands::Fields {
-            path,
-            class_name,
-            json,
-            yaml,
-        } => {
-            let result = cmd_fields(&path, &class_name);
-            (result, json, yaml)
-        }
-        Commands::Imports {
-            path,
-            query,
-            json,
-            yaml,
-        } => {
-            let result = cmd_imports(&path, query.as_deref().unwrap_or(""));
-            (result, json, yaml)
-        }
+        Commands::Classes { path, query } => cmd_classes(&path, query.as_deref().unwrap_or("")),
+        Commands::Fields { path, class_name } => cmd_fields(&path, &class_name),
+        Commands::Imports { path, query } => cmd_imports(&path, query.as_deref().unwrap_or("")),
         Commands::Callers {
             path,
             function,
             class_name,
-            json,
-            yaml,
-        } => {
-            let result = cmd_callers(&path, &function, class_name.as_deref());
-            (result, json, yaml)
-        }
+        } => cmd_callers(&path, &function, class_name.as_deref()),
         Commands::Callees {
             path,
             function,
             class_name,
-            json,
-            yaml,
-        } => {
-            let result = cmd_callees(&path, &function, class_name.as_deref());
-            (result, json, yaml)
-        }
-        Commands::Symbols {
-            path,
-            name,
-            json,
-            yaml,
-        } => {
-            let result = cmd_symbols(&path, &name);
-            (result, json, yaml)
-        }
+        } => cmd_callees(&path, &function, class_name.as_deref()),
+        Commands::Symbols { path, name } => cmd_symbols(&path, &name),
         Commands::Definition {
             path,
             function,
             class_name,
-            json,
-            yaml,
-        } => {
-            let result = cmd_definition(&path, &function, class_name.as_deref());
-            (result, json, yaml)
-        }
-        Commands::SuperClasses {
-            path,
-            class_name,
-            json,
-            yaml,
-        } => {
-            let result = cmd_super_classes(&path, &class_name);
-            (result, json, yaml)
-        }
-        Commands::SubClasses {
-            path,
-            class_name,
-            json,
-            yaml,
-        } => {
-            let result = cmd_sub_classes(&path, &class_name);
-            (result, json, yaml)
-        }
+        } => cmd_definition(&path, &function, class_name.as_deref()),
+        Commands::SuperClasses { path, class_name } => cmd_super_classes(&path, &class_name),
+        Commands::SubClasses { path, class_name } => cmd_sub_classes(&path, &class_name),
     };
 
-    output_result(&result, use_json, use_yaml);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&result).unwrap_or_default()
+    );
     if result.get("error").is_some() {
         1
     } else {

@@ -37,12 +37,6 @@ tsa callers ./src/ --function process_data
 
 # Get function definition
 tsa definition ./src/ --function main
-
-# Output as JSON
-tsa functions ./src/ --json
-
-# Output as YAML
-tsa functions ./src/ --yaml
 ```
 
 See [USAGE.md](USAGE.md) for complete documentation.

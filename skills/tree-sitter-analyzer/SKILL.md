@@ -94,19 +94,19 @@ tsa <command> <path> [options]
 
 ### Output Formats
 
-Default output is human-readable. Add `--json` for structured JSON output.
+Default output is structured JSON.
 
-When using `--json`, pipe through `jq` to reduce context and extract only what you need:
+Pipe through `jq` to reduce context and extract only what you need:
 
 ```bash
 # Names only
-tsa functions ./src/ --json | jq -r '.functions[].name'
+tsa functions ./src/ | jq -r '.functions[].name'
 
 # Location tuples
-tsa classes ./src/ --json | jq -r '.classes[] | "\(.name)\t\(.file):\(.start_line)"'
+tsa classes ./src/ | jq -r '.classes[] | "\(.name)\t\(.file):\(.start_line)"'
 
 # Caller summary
-tsa callers ./src/ -f process_data --json | jq -r '.callers[] | "\(.caller)\t\(.file):\(.line)"'
+tsa callers ./src/ -f process_data | jq -r '.callers[] | "\(.caller)\t\(.file):\(.line)"'
 ```
 
 Full JSON output schemas for each command: see `references/OUTPUT.md`.
@@ -116,7 +116,7 @@ Full JSON output schemas for each command: see `references/OUTPUT.md`.
 ### `functions` — Extract function/method definitions
 
 ```bash
-tsa functions <path> [-q QUERY] [--body] [--json]
+tsa functions <path> [-q QUERY] [--body]
 ```
 
 | Option | Description |
@@ -125,13 +125,13 @@ tsa functions <path> [-q QUERY] [--body] [--json]
 | `--body` | Include function body |
 
 ```bash
-tsa functions ./src/ -q "^get_" --json
+tsa functions ./src/ -q "^get_"
 ```
 
 ### `classes` — Extract class/struct/interface definitions
 
 ```bash
-tsa classes <path> [-q QUERY] [--json]
+tsa classes <path> [-q QUERY]
 ```
 
 | Option | Description |
@@ -139,13 +139,13 @@ tsa classes <path> [-q QUERY] [--json]
 | `-q, --query` | Filter by name (regex) |
 
 ```bash
-tsa classes ./src/ -q "Service$" --json
+tsa classes ./src/ -q "Service$"
 ```
 
 ### `fields` — Get class fields
 
 ```bash
-tsa fields <path> -c CLASS_NAME [--json]
+tsa fields <path> -c CLASS_NAME
 ```
 
 | Option | Description |
@@ -153,13 +153,13 @@ tsa fields <path> -c CLASS_NAME [--json]
 | `-c, --class-name` | Class name (required) |
 
 ```bash
-tsa fields ./src/ -c DatabaseConfig --json
+tsa fields ./src/ -c DatabaseConfig
 ```
 
 ### `imports` — Extract import statements
 
 ```bash
-tsa imports <path> [-q QUERY] [--json]
+tsa imports <path> [-q QUERY]
 ```
 
 | Option | Description |
@@ -167,13 +167,13 @@ tsa imports <path> [-q QUERY] [--json]
 | `-q, --query` | Filter by module name (regex) |
 
 ```bash
-tsa imports ./src/ -q "^(os|sys)$" --json
+tsa imports ./src/ -q "^(os|sys)$"
 ```
 
 ### `callers` — Find who calls a function
 
 ```bash
-tsa callers <path> -f FUNCTION [-c CLASS_NAME] [--json]
+tsa callers <path> -f FUNCTION [-c CLASS_NAME]
 ```
 
 | Option | Description |
@@ -182,13 +182,13 @@ tsa callers <path> -f FUNCTION [-c CLASS_NAME] [--json]
 | `-c, --class-name` | Scope to a method in this class |
 
 ```bash
-tsa callers ./src/ -f save -c DatabaseHandler --json
+tsa callers ./src/ -f save -c DatabaseHandler
 ```
 
 ### `callees` — Find what a function calls
 
 ```bash
-tsa callees <path> -f FUNCTION [-c CLASS_NAME] [--json]
+tsa callees <path> -f FUNCTION [-c CLASS_NAME]
 ```
 
 | Option | Description |
@@ -197,13 +197,13 @@ tsa callees <path> -f FUNCTION [-c CLASS_NAME] [--json]
 | `-c, --class-name` | Scope to a method in this class |
 
 ```bash
-tsa callees ./src/ -f initialize -c Application --json
+tsa callees ./src/ -f initialize -c Application
 ```
 
 ### `definition` — Get function source code
 
 ```bash
-tsa definition <path> -f FUNCTION [-c CLASS_NAME] [--json]
+tsa definition <path> -f FUNCTION [-c CLASS_NAME]
 ```
 
 | Option | Description |
@@ -212,13 +212,13 @@ tsa definition <path> -f FUNCTION [-c CLASS_NAME] [--json]
 | `-c, --class-name` | Scope to a method in this class |
 
 ```bash
-tsa definition ./src/ -f parse_config --json
+tsa definition ./src/ -f parse_config
 ```
 
 ### `symbols` — Find all references to an identifier
 
 ```bash
-tsa symbols <path> -n NAME [--json]
+tsa symbols <path> -n NAME
 ```
 
 | Option | Description |
@@ -226,13 +226,13 @@ tsa symbols <path> -n NAME [--json]
 | `-n, --name` | Identifier name (required) |
 
 ```bash
-tsa symbols ./src/ -n CONFIG_PATH --json
+tsa symbols ./src/ -n CONFIG_PATH
 ```
 
 ### `super-classes` — Get parent classes
 
 ```bash
-tsa super-classes <path> -c CLASS_NAME [--json]
+tsa super-classes <path> -c CLASS_NAME
 ```
 
 | Option | Description |
@@ -240,13 +240,13 @@ tsa super-classes <path> -c CLASS_NAME [--json]
 | `-c, --class-name` | Class name (required) |
 
 ```bash
-tsa super-classes ./src/ -c AdminUser --json
+tsa super-classes ./src/ -c AdminUser
 ```
 
 ### `sub-classes` — Get child classes
 
 ```bash
-tsa sub-classes <path> -c CLASS_NAME [--json]
+tsa sub-classes <path> -c CLASS_NAME
 ```
 
 | Option | Description |
@@ -254,7 +254,7 @@ tsa sub-classes <path> -c CLASS_NAME [--json]
 | `-c, --class-name` | Class name (required) |
 
 ```bash
-tsa sub-classes ./src/ -c BaseModel --json
+tsa sub-classes ./src/ -c BaseModel
 ```
 
 ## Typical Workflows
@@ -262,33 +262,33 @@ tsa sub-classes ./src/ -c BaseModel --json
 ### Inventory a repository
 
 ```bash
-tsa functions /path/to/project --json | jq -r '.functions[] | "\(.name)\t\(.file):\(.start_line)"'
-tsa classes /path/to/project --json | jq -r '.classes[] | "\(.name)\t\(.file):\(.start_line)"'
-tsa imports /path/to/project --json | jq -r '.imports[] | "\(.module)\t\(.file):\(.line)"'
+tsa functions /path/to/project | jq -r '.functions[] | "\(.name)\t\(.file):\(.start_line)"'
+tsa classes /path/to/project | jq -r '.classes[] | "\(.name)\t\(.file):\(.start_line)"'
+tsa imports /path/to/project | jq -r '.imports[] | "\(.module)\t\(.file):\(.line)"'
 ```
 
 ### Impact analysis (who calls X / what does X call)
 
 ```bash
-tsa callers /path/to/project -f process_data --json
-tsa callees /path/to/project -f process_data --json
+tsa callers /path/to/project -f process_data
+tsa callees /path/to/project -f process_data
 ```
 
 ### Trace a symbol through a project
 
 ```bash
-tsa symbols /path/to/project -n CONFIG_PATH --json
+tsa symbols /path/to/project -n CONFIG_PATH
 ```
 
 ### Inspect a function in detail
 
 ```bash
-tsa definition /path/to/project -f main --json
+tsa definition /path/to/project -f main
 ```
 
 ### Map class hierarchy
 
 ```bash
-tsa super-classes /path/to/project -c AdminUser --json
-tsa sub-classes /path/to/project -c BaseModel --json
+tsa super-classes /path/to/project -c AdminUser
+tsa sub-classes /path/to/project -c BaseModel
 ```

@@ -26,26 +26,6 @@ tsa <command> <path> [options]
 | Java | `.java` |
 | Go | `.go` |
 
-### Output Formats
-
-By default, output is in human-readable format. Use `--json` or `--yaml` flag for structured output.
-
-| Option | Description |
-|--------|-------------|
-| `--json` | Output in JSON format |
-| `--yaml` | Output in YAML format |
-
-```bash
-# Human-readable output
-tsa functions ./src/
-
-# JSON output
-tsa functions ./src/ --json
-
-# YAML output
-tsa functions ./src/ --yaml
-```
-
 ## Commands
 
 ### Code Structure
@@ -55,7 +35,7 @@ tsa functions ./src/ --yaml
 Extract all function/method definitions from source code.
 
 ```bash
-tsa functions <path> [-q QUERY] [--body] [--json] [--yaml]
+tsa functions <path> [-q QUERY] [--body]
 ```
 
 | Option | Description |
@@ -77,12 +57,6 @@ tsa functions ./src/ -q "^get_"
 
 # Include function bodies
 tsa functions ./src/ --body
-
-# Output as JSON
-tsa functions ./src/ --json
-
-# Output as YAML
-tsa functions ./src/ --yaml
 ```
 
 #### `classes` - Extract Class Definitions
@@ -90,7 +64,7 @@ tsa functions ./src/ --yaml
 Extract all class/struct/interface definitions.
 
 ```bash
-tsa classes <path> [-q QUERY] [--json] [--yaml]
+tsa classes <path> [-q QUERY]
 ```
 
 | Option | Description |
@@ -115,7 +89,7 @@ tsa classes ./src/ -q "Service$"
 Get all fields of a specific class.
 
 ```bash
-tsa fields <path> -c CLASS_NAME [--json] [--yaml]
+tsa fields <path> -c CLASS_NAME
 ```
 
 | Option | Description |
@@ -134,7 +108,7 @@ tsa fields ./src/ -c DatabaseConfig
 Extract all import statements from source code.
 
 ```bash
-tsa imports <path> [-q QUERY] [--json] [--yaml]
+tsa imports <path> [-q QUERY]
 ```
 
 | Option | Description |
@@ -161,7 +135,7 @@ tsa imports ./src/ -q "^(os|sys)$"
 Get all parent classes (superclasses) of a specific class.
 
 ```bash
-tsa super-classes <path> -c CLASS_NAME [--json] [--yaml]
+tsa super-classes <path> -c CLASS_NAME
 ```
 
 | Option | Description |
@@ -180,7 +154,7 @@ tsa super-classes ./src/ -c AdminUser
 Get all child classes (subclasses) that inherit from a specific class.
 
 ```bash
-tsa sub-classes <path> -c CLASS_NAME [--json] [--yaml]
+tsa sub-classes <path> -c CLASS_NAME
 ```
 
 | Option | Description |
@@ -201,7 +175,7 @@ tsa sub-classes ./src/ -c BaseModel
 Find all functions that call a specific function.
 
 ```bash
-tsa callers <path> -f FUNCTION [-c CLASS_NAME] [--json] [--yaml]
+tsa callers <path> -f FUNCTION [-c CLASS_NAME]
 ```
 
 | Option | Description |
@@ -224,7 +198,7 @@ tsa callers ./src/ -f save -c DatabaseHandler
 Find all functions called by a specific function.
 
 ```bash
-tsa callees <path> -f FUNCTION [-c CLASS_NAME] [--json] [--yaml]
+tsa callees <path> -f FUNCTION [-c CLASS_NAME]
 ```
 
 | Option | Description |
@@ -249,7 +223,7 @@ tsa callees ./src/ -f initialize -c Application
 Get the complete source code of a specific function.
 
 ```bash
-tsa definition <path> -f FUNCTION [-c CLASS_NAME] [--json] [--yaml]
+tsa definition <path> -f FUNCTION [-c CLASS_NAME]
 ```
 
 | Option | Description |
@@ -274,7 +248,7 @@ tsa definition ./src/ -f connect -c Database
 Find all references to a specific identifier.
 
 ```bash
-tsa symbols <path> -n NAME [--json] [--yaml]
+tsa symbols <path> -n NAME
 ```
 
 | Option | Description |

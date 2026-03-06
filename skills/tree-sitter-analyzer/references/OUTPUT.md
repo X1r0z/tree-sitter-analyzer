@@ -1,6 +1,6 @@
 # JSON Output Formats
 
-All commands support `--json` for structured output. Every response shares a common envelope:
+All commands output structured JSON by default. Every response shares a common envelope:
 
 ```json
 {

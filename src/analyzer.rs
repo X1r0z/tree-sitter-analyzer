@@ -41,7 +41,7 @@ impl CodeAnalyzer {
         func_pairs.sort_by_key(|(f, _)| (f.start_byte(), std::cmp::Reverse(f.end_byte())));
 
         let mut functions = Vec::new();
-        let mut func_ranges: Vec<(usize, usize)> = Vec::new();
+        let mut active_ranges: Vec<usize> = Vec::new();
 
         for (func_node, name_node) in func_pairs {
             let name = self.parser.node_text(name_node);
@@ -50,11 +50,17 @@ impl CodeAnalyzer {
             }
             let start = func_node.start_byte();
             let end = func_node.end_byte();
-            let is_nested = func_ranges.iter().any(|&(s, e)| s < start && end <= e);
-            if is_nested {
+            while let Some(&active_end) = active_ranges.last() {
+                if start >= active_end {
+                    active_ranges.pop();
+                } else {
+                    break;
+                }
+            }
+            if !active_ranges.is_empty() {
                 continue;
             }
-            func_ranges.push((start, end));
+            active_ranges.push(end);
             let class_name = self.parser.find_enclosing_class(func_node);
             functions.push(FunctionInfo {
                 name,
@@ -87,15 +93,19 @@ impl CodeAnalyzer {
 
     fn classes(&mut self) -> &[ClassInfo] {
         if self.classes_cache.is_none() {
-            let mut methods_by_class: HashMap<String, HashSet<String>> = HashMap::new();
+            let mut methods_by_class: HashMap<String, Vec<String>> = HashMap::new();
             if self.parser.language == "go" {
                 for func in self.functions() {
                     if let Some(ref cn) = func.class_name {
                         methods_by_class
                             .entry(cn.clone())
                             .or_default()
-                            .insert(func.name.clone());
+                            .push(func.name.clone());
                     }
+                }
+                for methods in methods_by_class.values_mut() {
+                    methods.sort_unstable();
+                    methods.dedup();
                 }
             }
 
@@ -106,7 +116,7 @@ impl CodeAnalyzer {
             class_pairs.sort_by_key(|(c, _)| (c.start_byte(), std::cmp::Reverse(c.end_byte())));
 
             let mut classes = Vec::new();
-            let mut class_ranges: Vec<(usize, usize)> = Vec::new();
+            let mut active_ranges: Vec<usize> = Vec::new();
 
             for (class_node, name_node) in class_pairs {
                 let name = self.parser.node_text(name_node);
@@ -115,19 +125,25 @@ impl CodeAnalyzer {
                 }
                 let start = class_node.start_byte();
                 let end = class_node.end_byte();
-                let is_nested = class_ranges.iter().any(|&(s, e)| s < start && end <= e);
+                while let Some(&active_end) = active_ranges.last() {
+                    if start >= active_end {
+                        active_ranges.pop();
+                    } else {
+                        break;
+                    }
+                }
+                let is_nested = !active_ranges.is_empty();
                 if is_nested && self.parser.language != "java" {
                     continue;
                 }
-                class_ranges.push((start, end));
+                active_ranges.push(end);
 
                 let mut methods = self.parser.extract_methods_from_class(class_node);
                 if self.parser.language == "go" {
                     if let Some(go_methods) = methods_by_class.get(&name) {
-                        let mut all: HashSet<String> = methods.drain(..).collect();
-                        all.extend(go_methods.iter().cloned());
-                        methods = all.into_iter().collect();
-                        methods.sort();
+                        methods.extend(go_methods.iter().cloned());
+                        methods.sort_unstable();
+                        methods.dedup();
                     }
                 }
                 let fields = self.parser.extract_fields_from_class(class_node);
@@ -154,11 +170,7 @@ impl CodeAnalyzer {
 
             let mut imports = Vec::new();
             for node in module_nodes {
-                let text = self
-                    .parser
-                    .node_text(node)
-                    .trim_matches(|c| c == '"' || c == '\'')
-                    .to_string();
+                let text = self.parser.node_text_unquoted(node).into_owned();
                 imports.push(ImportInfo {
                     module: text,
                     location: self.parser.node_location(node),
@@ -545,14 +557,14 @@ impl CodeAnalyzer {
             all_classes.iter().map(|c| (c.name.as_str(), c)).collect();
 
         let target = match class_map.get(class_name) {
-            Some(c) => (*c).clone(),
+            Some(c) => *c,
             None => return Vec::new(),
         };
 
         let mut result = Vec::new();
         let mut visited: HashSet<String> = HashSet::new();
         visited.insert(class_name.to_string());
-        let mut queue: VecDeque<ClassInfo> = VecDeque::new();
+        let mut queue: VecDeque<&ClassInfo> = VecDeque::new();
         queue.push_back(target);
 
         while let Some(current) = queue.pop_front() {
@@ -563,7 +575,7 @@ impl CodeAnalyzer {
                 visited.insert(parent_name.clone());
                 if let Some(&parent_class) = class_map.get(parent_name.as_str()) {
                     result.push(parent_class.clone());
-                    queue.push_back(parent_class.clone());
+                    queue.push_back(parent_class);
                 }
             }
         }
@@ -572,13 +584,13 @@ impl CodeAnalyzer {
 
     pub fn get_sub_classes(&mut self, class_name: &str) -> Vec<ClassInfo> {
         let all_classes = self.classes();
-        let mut inheritance_map: HashMap<String, Vec<ClassInfo>> = HashMap::new();
-        for cls in all_classes {
+        let mut inheritance_map: HashMap<&str, Vec<usize>> = HashMap::new();
+        for (index, cls) in all_classes.iter().enumerate() {
             for parent in &cls.super_classes {
                 inheritance_map
-                    .entry(parent.clone())
+                    .entry(parent.as_str())
                     .or_default()
-                    .push(cls.clone());
+                    .push(index);
             }
         }
 
@@ -589,8 +601,9 @@ impl CodeAnalyzer {
         queue.push_back(class_name.to_string());
 
         while let Some(current_name) = queue.pop_front() {
-            if let Some(children) = inheritance_map.get(&current_name) {
-                for child in children {
+            if let Some(children) = inheritance_map.get(current_name.as_str()) {
+                for &child_index in children {
+                    let child = &all_classes[child_index];
                     if visited.insert(child.name.clone()) {
                         result.push(child.clone());
                         queue.push_back(child.name.clone());
@@ -621,11 +634,11 @@ impl CodeAnalyzer {
             return Vec::new();
         };
 
-        let mut aliases: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut aliases: HashMap<String, Vec<String>> = HashMap::new();
         let call_start = call_node.start_byte();
 
         fn add_alias(
-            aliases: &mut HashMap<String, HashSet<String>>,
+            aliases: &mut HashMap<String, Vec<String>>,
             name: Option<String>,
             targets: impl IntoIterator<Item = String>,
         ) {
@@ -638,7 +651,7 @@ impl CodeAnalyzer {
             let entry = aliases.entry(name).or_default();
             for target in targets {
                 if !target.is_empty() {
-                    entry.insert(target);
+                    entry.push(target);
                 }
             }
         }
@@ -700,11 +713,11 @@ impl CodeAnalyzer {
                     if right_node.kind() == "identifier" {
                         let loop_var = extract_loop_var(left_node);
                         let iterable = self.parser.node_text(right_node);
-                        let targets = aliases
-                            .get(&iterable)
-                            .cloned()
-                            .unwrap_or_else(|| HashSet::from([iterable]));
-                        add_alias(&mut aliases, loop_var, targets.into_iter());
+                        if let Some(targets) = aliases.get(&iterable).cloned() {
+                            add_alias(&mut aliases, loop_var, targets);
+                        } else {
+                            add_alias(&mut aliases, loop_var, [iterable]);
+                        }
                     }
                 }
             }
@@ -718,8 +731,13 @@ impl CodeAnalyzer {
             }
         }
 
-        let mut resolved: HashSet<String> = HashSet::new();
+        for targets in aliases.values_mut() {
+            targets.sort_unstable();
+            targets.dedup();
+        }
+
         let mut visited: HashSet<String> = HashSet::new();
+        let mut resolved: Vec<String> = Vec::new();
         let mut queue: VecDeque<String> = VecDeque::new();
         queue.push_back(identifier_name.to_string());
 
@@ -731,14 +749,13 @@ impl CodeAnalyzer {
                 for target in targets {
                     queue.push_back(target.clone());
                 }
-            } else {
-                resolved.insert(current);
+            } else if !resolved.iter().any(|existing| existing == &current) {
+                resolved.push(current);
             }
         }
 
-        let mut out: Vec<String> = resolved.into_iter().collect();
-        out.sort();
-        out
+        resolved.sort_unstable();
+        resolved
     }
 
     fn is_python_property(&self, function_name: &str, class_name: Option<&str>) -> bool {
@@ -752,7 +769,7 @@ impl CodeAnalyzer {
                 if let Some(definition_node) = definition_node {
                     if definition_node.kind() == "function_definition" {
                         if let Some(name_node) = definition_node.child_by_field_name("name") {
-                            if self.parser.node_text(name_node) == function_name {
+                            if self.parser.node_eq_str(name_node, function_name) {
                                 if let Some(expected_class) = class_name {
                                     if self.parser.find_enclosing_class(definition_node).as_deref()
                                         != Some(expected_class)
@@ -765,7 +782,7 @@ impl CodeAnalyzer {
                                         continue;
                                     };
                                     if child.kind() == "decorator"
-                                        && self.parser.node_text_utf8(child).trim() == "@property"
+                                        && self.parser.node_trimmed_eq_str(child, "@property")
                                     {
                                         return true;
                                     }

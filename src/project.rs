@@ -180,13 +180,12 @@ impl ProjectAnalyzer {
         class_name: Option<&str>,
     ) -> Vec<serde_json::Value> {
         let func_defs = self.get_all_functions_by_name(function_name, class_name);
-        let files_set: HashSet<&str> = self.files.iter().map(|s| s.as_str()).collect();
 
         let mut relevant_files: Vec<String> = Vec::new();
         let mut seen_files: HashSet<String> = HashSet::new();
         for func in &func_defs {
             let fp = &func.location.file;
-            if files_set.contains(fp.as_str()) && seen_files.insert(fp.clone()) {
+            if seen_files.insert(fp.clone()) {
                 relevant_files.push(fp.clone());
             }
         }
@@ -400,12 +399,25 @@ impl ProjectAnalyzer {
         let matched_files: Vec<String> = if let Some(rg_files) =
             rg_search_files(text, &self.path, None)
         {
-            let rg_set: HashSet<String> = rg_files.into_iter().collect();
-            self.files
-                .iter()
-                .filter(|f| rg_set.contains(f.as_str()))
-                .cloned()
-                .collect()
+            let mut rg_files = rg_files;
+            rg_files.sort();
+            rg_files.dedup();
+
+            let mut matched = Vec::new();
+            let mut files_idx = 0usize;
+            let mut rg_idx = 0usize;
+            while files_idx < self.files.len() && rg_idx < rg_files.len() {
+                match self.files[files_idx].cmp(&rg_files[rg_idx]) {
+                    std::cmp::Ordering::Less => files_idx += 1,
+                    std::cmp::Ordering::Greater => rg_idx += 1,
+                    std::cmp::Ordering::Equal => {
+                        matched.push(self.files[files_idx].clone());
+                        files_idx += 1;
+                        rg_idx += 1;
+                    }
+                }
+            }
+            matched
         } else {
             self.files
                 .par_iter()

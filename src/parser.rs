@@ -1,4 +1,5 @@
-use std::collections::{HashMap, HashSet};
+use std::borrow::Cow;
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
@@ -53,11 +54,35 @@ impl BaseParser {
     }
 
     pub(crate) fn node_text(&self, node: Node) -> String {
-        String::from_utf8_lossy(&self.source[node.start_byte()..node.end_byte()]).to_string()
+        self.node_text_cow(node).into_owned()
     }
 
     pub(crate) fn node_bytes<'a>(&'a self, node: Node) -> &'a [u8] {
         &self.source[node.start_byte()..node.end_byte()]
+    }
+
+    pub(crate) fn node_text_cow<'a>(&'a self, node: Node) -> Cow<'a, str> {
+        String::from_utf8_lossy(self.node_bytes(node))
+    }
+
+    pub(crate) fn node_eq_str(&self, node: Node, text: &str) -> bool {
+        self.node_bytes(node) == text.as_bytes()
+    }
+
+    pub(crate) fn node_trimmed_eq_str(&self, node: Node, text: &str) -> bool {
+        self.node_text_cow(node).trim() == text
+    }
+
+    pub(crate) fn node_text_unquoted(&self, node: Node) -> Cow<'_, str> {
+        let bytes = self.node_bytes(node);
+        if bytes.len() >= 2 {
+            let first = bytes[0];
+            let last = bytes[bytes.len() - 1];
+            if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
+                return String::from_utf8_lossy(&bytes[1..bytes.len() - 1]);
+            }
+        }
+        self.node_text_cow(node)
     }
 
     pub(crate) fn node_text_utf8(&self, node: Node) -> String {
@@ -70,42 +95,6 @@ impl BaseParser {
             start_line: node.start_position().row + 1,
             end_line: node.end_position().row + 1,
         }
-    }
-
-    pub(crate) fn run_query(&self, query_str: &str) -> HashMap<String, Vec<Node<'_>>> {
-        self.with_query(query_str, |query| {
-            let mut cursor = QueryCursor::new();
-            let mut matches = cursor.matches(query, self.tree.root_node(), self.source.as_slice());
-
-            let mut result: HashMap<String, Vec<Node>> = HashMap::new();
-            while let Some(m) = matches.next() {
-                for cap in m.captures {
-                    let name = query.capture_names()[cap.index as usize];
-                    result.entry(name.to_string()).or_default().push(cap.node);
-                }
-            }
-            result
-        })
-        .unwrap_or_default()
-    }
-
-    pub(crate) fn run_query_matches(&self, query_str: &str) -> Vec<HashMap<String, Node<'_>>> {
-        self.with_query(query_str, |query| {
-            let mut cursor = QueryCursor::new();
-            let mut matches = cursor.matches(query, self.tree.root_node(), self.source.as_slice());
-
-            let mut results = Vec::new();
-            while let Some(m) = matches.next() {
-                let mut match_dict = HashMap::new();
-                for cap in m.captures {
-                    let name = query.capture_names()[cap.index as usize];
-                    match_dict.insert(name.to_string(), cap.node);
-                }
-                results.push(match_dict);
-            }
-            results
-        })
-        .unwrap_or_default()
     }
 
     fn with_query<T>(&self, query_str: &str, f: impl FnOnce(&Query) -> T) -> Option<T> {
@@ -310,14 +299,14 @@ impl BaseParser {
                     key_node.kind(),
                     "identifier" | "property_identifier" | "string"
                 ) {
-                    let text = self.node_text(key_node);
+                    let text = self.node_text_cow(key_node);
                     return Some(text.trim_matches(|c| c == '"' || c == '\'').to_string());
                 }
             }
             "export_statement" => {
                 for i in 0..parent.child_count() {
                     let child = parent.child((i) as u32).unwrap();
-                    if self.node_text(child) == "default" {
+                    if self.node_eq_str(child, "default") {
                         return Some("<default_export>".to_string());
                     }
                 }
@@ -470,19 +459,21 @@ impl BaseParser {
                 }
             }
             _ => {
-                let id_types = [
-                    "identifier",
-                    "property_identifier",
-                    "private_property_identifier",
-                    "field_identifier",
-                ];
-                let attr_types = ["attribute", "member_expression", "selector_expression"];
                 let mut ids = Vec::new();
                 for i in 0..node.child_count() {
                     let child = node.child((i) as u32).unwrap();
-                    if id_types.contains(&child.kind()) {
+                    if matches!(
+                        child.kind(),
+                        "identifier"
+                            | "property_identifier"
+                            | "private_property_identifier"
+                            | "field_identifier"
+                    ) {
                         ids.push(self.node_text(child));
-                    } else if attr_types.contains(&child.kind()) {
+                    } else if matches!(
+                        child.kind(),
+                        "attribute" | "member_expression" | "selector_expression"
+                    ) {
                         obj_name = Some(self.node_text(child));
                     }
                 }
@@ -497,51 +488,19 @@ impl BaseParser {
         (callee, obj_name)
     }
 
-    pub(crate) fn find_capture_in_call(
-        &self,
-        call_node: Node,
-        capture_name: &str,
-    ) -> Option<Node<'_>> {
-        let ts_lang = get_language(&self.language)?;
-        let query = Query::new(&ts_lang, self.lang_info.call_query).ok()?;
-        let mut cursor = QueryCursor::new();
-        let mut matches = cursor.matches(&query, self.tree.root_node(), self.source.as_slice());
-
-        while let Some(m) = matches.next() {
-            let mut has_call = false;
-            let mut result = None;
-            for cap in m.captures {
-                let name = query.capture_names()[cap.index as usize];
-                if name == "call" && cap.node.id() == call_node.id() {
-                    has_call = true;
-                }
-                if name == capture_name {
-                    result = Some(cap.node);
-                }
-            }
-            if has_call {
-                return result;
-            }
-        }
-        None
-    }
-
     pub(crate) fn extract_methods_from_class(&self, class_node: Node) -> Vec<String> {
-        let method_types: HashSet<&str> = [
-            "function_definition",
-            "method_definition",
-            "method_declaration",
-            "constructor_declaration",
-            "method_elem",
-            "method_spec",
-        ]
-        .into_iter()
-        .collect();
-
         let mut methods = Vec::new();
         let mut stack = vec![class_node];
         while let Some(node) = stack.pop() {
-            if method_types.contains(node.kind()) {
+            if matches!(
+                node.kind(),
+                "function_definition"
+                    | "method_definition"
+                    | "method_declaration"
+                    | "constructor_declaration"
+                    | "method_elem"
+                    | "method_spec"
+            ) {
                 for i in 0..node.child_count() {
                     let child = node.child((i) as u32).unwrap();
                     if matches!(
@@ -581,42 +540,27 @@ impl BaseParser {
 
         let fields: Vec<FieldInfo> = Vec::new();
         let seen: HashSet<String> = HashSet::new();
-        let field_types: HashSet<&str> = ["field_definition", "field_declaration"]
-            .into_iter()
-            .collect();
-        let class_types: HashSet<&str> = [
-            "class_definition",
-            "class_declaration",
-            "class",
-            "interface_declaration",
-            "enum_declaration",
-            "record_declaration",
-            "annotation_type_declaration",
-        ]
-        .into_iter()
-        .collect();
-        let method_types: HashSet<&str> = [
-            "function_definition",
-            "method_definition",
-            "method_declaration",
-            "constructor_declaration",
-        ]
-        .into_iter()
-        .collect();
-
         struct WalkCtx<'a> {
             analyzer: &'a BaseParser,
             class_node_id: usize,
             class_name: String,
             fields: Vec<FieldInfo>,
             seen: HashSet<String>,
-            field_types: HashSet<&'static str>,
-            class_types: HashSet<&'static str>,
-            method_types: HashSet<&'static str>,
         }
 
         fn walk(ctx: &mut WalkCtx, node: Node, inside_method: bool) {
-            if node.id() != ctx.class_node_id && ctx.class_types.contains(node.kind()) {
+            if node.id() != ctx.class_node_id
+                && matches!(
+                    node.kind(),
+                    "class_definition"
+                        | "class_declaration"
+                        | "class"
+                        | "interface_declaration"
+                        | "enum_declaration"
+                        | "record_declaration"
+                        | "annotation_type_declaration"
+                )
+            {
                 let nested_name = node
                     .child_by_field_name("name")
                     .map(|n| ctx.analyzer.node_text(n))
@@ -626,7 +570,13 @@ impl BaseParser {
                 }
             }
 
-            if ctx.method_types.contains(node.kind()) {
+            if matches!(
+                node.kind(),
+                "function_definition"
+                    | "method_definition"
+                    | "method_declaration"
+                    | "constructor_declaration"
+            ) {
                 if ctx.analyzer.language != "python" {
                     return;
                 }
@@ -638,7 +588,7 @@ impl BaseParser {
                 return;
             }
 
-            if ctx.field_types.contains(node.kind()) {
+            if matches!(node.kind(), "field_definition" | "field_declaration") {
                 let mut names = Vec::new();
                 let mut field_type: Option<String> = None;
 
@@ -724,7 +674,7 @@ impl BaseParser {
                                 let obj_node = left_node.child_by_field_name("object");
                                 let attr_node = left_node.child_by_field_name("attribute");
                                 if let (Some(obj), Some(attr)) = (obj_node, attr_node) {
-                                    if ctx.analyzer.node_text(obj) == "self" {
+                                    if ctx.analyzer.node_eq_str(obj, "self") {
                                         name = ctx.analyzer.node_text(attr);
                                     }
                                 }
@@ -758,9 +708,6 @@ impl BaseParser {
             class_name: class_name.to_string(),
             fields,
             seen,
-            field_types,
-            class_types,
-            method_types,
         };
         walk(&mut ctx, class_node, false);
         ctx.fields
@@ -833,7 +780,7 @@ impl BaseParser {
                     Some(n) => n,
                     None => continue,
                 };
-                if self.node_text(name_node) != "constructor" {
+                if !self.node_eq_str(name_node, "constructor") {
                     continue;
                 }
                 let params = match member.child_by_field_name("parameters") {
@@ -910,7 +857,7 @@ impl BaseParser {
                         let obj = left.child_by_field_name("object");
                         let prop = left.child_by_field_name("property");
                         if let (Some(obj), Some(prop)) = (obj, prop) {
-                            if self.node_text(obj) == "this" {
+                            if self.node_eq_str(obj, "this") {
                                 let name = self.node_text(prop);
                                 if !name.is_empty() && seen.insert(name.clone()) {
                                     fields.push(FieldInfo {
@@ -1234,7 +1181,7 @@ impl BaseParser {
         let mut candidates: Vec<Node> = Vec::new();
 
         for (class_node, name_node) in matches {
-            if self.node_text(name_node) != class_name {
+            if !self.node_eq_str(name_node, class_name) {
                 continue;
             }
             candidates.push(class_node);

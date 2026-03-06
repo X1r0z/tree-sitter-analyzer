@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::path::Path;
 
 use regex::Regex;
@@ -9,7 +8,6 @@ pub fn find_files(path: &str, language: Option<&str>) -> Vec<String> {
     let extensions = language
         .and_then(get_language_extensions)
         .unwrap_or_else(get_supported_extensions);
-    let ext_set: HashSet<&str> = extensions.iter().copied().collect();
 
     let mut files = Vec::new();
     let walker = ignore::WalkBuilder::new(path)
@@ -22,7 +20,7 @@ pub fn find_files(path: &str, language: Option<&str>) -> Vec<String> {
         if p.is_file() {
             if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
                 let dotted = format!(".{}", ext);
-                if ext_set.contains(dotted.as_str()) {
+                if extensions.contains(&dotted.as_str()) {
                     if let Ok(canonical) = p.canonicalize() {
                         files.push(canonical.to_string_lossy().to_string());
                     }

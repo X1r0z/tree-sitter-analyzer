@@ -42,6 +42,27 @@ impl FunctionInfo {
     }
 }
 
+#[derive(Debug, Clone, Eq, Hash, PartialEq)]
+pub(crate) struct FunctionKey {
+    pub(crate) file: String,
+    pub(crate) name: String,
+    pub(crate) class_name: Option<String>,
+    pub(crate) start_line: usize,
+    pub(crate) end_line: usize,
+}
+
+impl FunctionKey {
+    pub(crate) fn from_function(function: &FunctionInfo) -> Self {
+        Self {
+            file: function.location.file.clone(),
+            name: function.name.clone(),
+            class_name: function.class_name.clone(),
+            start_line: function.location.start_line,
+            end_line: function.location.end_line,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClassInfo {
     pub name: String,

@@ -1,4 +1,4 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 
 use rayon::prelude::*;
@@ -44,6 +44,44 @@ impl ProjectAnalyzer {
 
     pub fn find_functions_with_bodies(&self, query: &str) -> Vec<FunctionInfo> {
         self.collect_functions(query, true)
+    }
+
+    pub fn hydrate_function_bodies(&self, candidates: Vec<FunctionInfo>) -> Vec<FunctionInfo> {
+        if candidates.is_empty() {
+            return Vec::new();
+        }
+
+        let mut candidate_keys_by_file: HashMap<String, HashSet<FunctionKey>> = HashMap::new();
+        for candidate in &candidates {
+            candidate_keys_by_file
+                .entry(candidate.location.file.clone())
+                .or_default()
+                .insert(FunctionKey::from_function(candidate));
+        }
+
+        let resolved: HashMap<FunctionKey, FunctionInfo> = candidate_keys_by_file
+            .par_iter()
+            .flat_map(|(file, expected)| {
+                self.analyze_file(file, |analyzer| analyzer.functions_with_bodies())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|function| {
+                        let key = FunctionKey::from_function(&function);
+                        expected.contains(&key).then_some((key, function))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+
+        candidates
+            .into_iter()
+            .filter_map(|candidate| {
+                resolved
+                    .get(&FunctionKey::from_function(&candidate))
+                    .cloned()
+                    .or(Some(candidate))
+            })
+            .collect()
     }
 
     fn collect_functions(&self, query: &str, include_body: bool) -> Vec<FunctionInfo> {

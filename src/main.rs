@@ -8,6 +8,7 @@ mod parser;
 mod project;
 mod utils;
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::process;
 
@@ -286,22 +287,39 @@ fn cmd_functions(
     include_body: bool,
 ) -> Value {
     let real_path = resolve_path(path);
-    if !include_body {
-        if let Ok(Some(db)) = DbProjectAnalyzer::from_current_dir_if_compatible(
-            &real_path,
-            language.map(LanguageFilter::as_str),
-        ) {
-            match db.find_functions(query) {
-                Ok(functions) => {
-                    return json!({
-                        "path": real_path,
-                        "files_searched": db.file_count(),
-                        "count": functions.len(),
-                        "functions": functions.iter().map(|f| f.to_json_value(false, true)).collect::<Vec<_>>(),
-                    });
+    if let Ok(Some(db)) = DbProjectAnalyzer::from_current_dir_if_compatible(
+        &real_path,
+        language.map(LanguageFilter::as_str),
+    ) {
+        match db.find_functions(query) {
+            Ok(functions) => {
+                if include_body {
+                    return match ProjectAnalyzer::new_with_language(
+                        &real_path,
+                        language.map(LanguageFilter::as_str),
+                    ) {
+                        Ok(project) => {
+                            let files_searched = unique_function_file_count(&functions);
+                            let functions = project.hydrate_function_bodies(functions);
+                            json!({
+                                "path": real_path,
+                                "files_searched": files_searched,
+                                "count": functions.len(),
+                                "functions": functions.iter().map(|f| f.to_json_value(true, true)).collect::<Vec<_>>(),
+                            })
+                        }
+                        Err(e) => json!({"error": e.to_string()}),
+                    };
                 }
-                Err(e) => return json!({"error": e.to_string()}),
+
+                return json!({
+                    "path": real_path,
+                    "files_searched": db.file_count(),
+                    "count": functions.len(),
+                    "functions": functions.iter().map(|f| f.to_json_value(false, true)).collect::<Vec<_>>(),
+                });
             }
+            Err(e) => return json!({"error": e.to_string()}),
         }
     }
     match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
@@ -526,6 +544,45 @@ fn cmd_definition(
     class_name: Option<&str>,
 ) -> Value {
     let real_path = resolve_path(path);
+    if let Ok(Some(db)) = DbProjectAnalyzer::from_current_dir_if_compatible(
+        &real_path,
+        language.map(LanguageFilter::as_str),
+    ) {
+        match db.find_functions(function_name) {
+            Ok(functions) => {
+                let functions: Vec<_> = functions
+                    .into_iter()
+                    .filter(|function| {
+                        function.name == function_name
+                            && (class_name.is_none()
+                                || function.class_name.as_deref() == class_name)
+                    })
+                    .collect();
+                if functions.is_empty() {
+                    return json!({"error": format!("Function '{}' not found", function_name)});
+                }
+                return match ProjectAnalyzer::new_with_language(
+                    &real_path,
+                    language.map(LanguageFilter::as_str),
+                ) {
+                    Ok(project) => {
+                        let files_searched = unique_function_file_count(&functions);
+                        let functions = project.hydrate_function_bodies(functions);
+                        json!({
+                            "path": real_path,
+                            "files_searched": files_searched,
+                            "count": functions.len(),
+                            "class_name": class_name,
+                            "functions": functions.iter().map(|f| f.to_json_value(true, true)).collect::<Vec<_>>(),
+                        })
+                    }
+                    Err(e) => json!({"error": e.to_string()}),
+                };
+            }
+            Err(e) => return json!({"error": e.to_string()}),
+        }
+    }
+
     match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
         Ok(project) => {
             let functions = project.find_function_definitions(function_name, class_name);
@@ -615,6 +672,14 @@ fn cmd_sub_classes(path: &str, language: Option<LanguageFilter>, class_name: &st
 fn cmd_index(path: &str, language: Option<LanguageFilter>) -> Value {
     let real_path = resolve_path(path);
     build_index(&real_path, language.map(LanguageFilter::as_str))
+}
+
+fn unique_function_file_count(functions: &[crate::nodes::FunctionInfo]) -> usize {
+    functions
+        .iter()
+        .map(|function| function.location.file.as_str())
+        .collect::<HashSet<_>>()
+        .len()
 }
 
 fn main() {

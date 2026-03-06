@@ -71,9 +71,11 @@ impl CodeAnalyzer {
     }
 
     fn build_functions(&self, include_body: bool) -> Vec<FunctionInfo> {
-        let mut func_pairs =
-            self.parser
-                .run_query_pairs(self.parser.lang_info.function_query, "function", "name");
+        let mut func_pairs = self.parser.query_capture_pairs(
+            self.parser.lang_info.function_query,
+            "function",
+            "name",
+        );
         func_pairs.sort_by_key(|(f, _)| (f.start_byte(), std::cmp::Reverse(f.end_byte())));
 
         let mut functions = Vec::new();
@@ -97,12 +99,12 @@ impl CodeAnalyzer {
                 continue;
             }
             active_ranges.push(end);
-            let class_name = self.parser.find_enclosing_class(func_node);
+            let class_name = self.parser.find_enclosing_class_name(func_node);
             functions.push(FunctionInfo {
                 name,
                 location: self.parser.node_location(func_node),
                 body: if include_body {
-                    self.parser.node_text_utf8(func_node)
+                    self.parser.node_text(func_node)
                 } else {
                     String::new()
                 },
@@ -148,7 +150,7 @@ impl CodeAnalyzer {
 
             let matches =
                 self.parser
-                    .run_query_pairs(self.parser.lang_info.class_query, "class", "name");
+                    .query_capture_pairs(self.parser.lang_info.class_query, "class", "name");
             let mut class_pairs = matches;
             class_pairs.sort_by_key(|(c, _)| (c.start_byte(), std::cmp::Reverse(c.end_byte())));
 
@@ -175,7 +177,7 @@ impl CodeAnalyzer {
                 }
                 active_ranges.push(end);
 
-                let mut methods = self.parser.extract_methods_from_class(class_node);
+                let mut methods = self.parser.extract_method_names_from_class(class_node);
                 if self.parser.language == "go" {
                     if let Some(go_methods) = methods_by_class.get(&name) {
                         methods.extend(go_methods.iter().cloned());
@@ -183,8 +185,8 @@ impl CodeAnalyzer {
                         methods.dedup();
                     }
                 }
-                let fields = self.parser.extract_fields_from_class(class_node);
-                let super_classes = self.parser.extract_super_classes(class_node);
+                let fields = self.parser.extract_field_names_from_class(class_node);
+                let super_classes = self.parser.extract_super_class_names(class_node);
 
                 classes.push(ClassInfo {
                     name,
@@ -203,7 +205,7 @@ impl CodeAnalyzer {
         if self.cache.imports().is_none() {
             let module_nodes = self
                 .parser
-                .run_query_capture(self.parser.lang_info.import_query, "module");
+                .query_capture_nodes(self.parser.lang_info.import_query, "module");
 
             let mut imports = Vec::new();
             for node in module_nodes {
@@ -225,7 +227,7 @@ impl CodeAnalyzer {
 
         let mut call_matches = self
             .parser
-            .run_call_query_matches(self.parser.lang_info.call_query);
+            .query_call_matches(self.parser.lang_info.call_query);
         let is_js_like = matches!(
             self.parser.language.as_str(),
             "javascript" | "typescript" | "tsx"
@@ -241,9 +243,8 @@ impl CodeAnalyzer {
         };
         for m in &call_matches {
             let call_node = m.call;
-            let (caller, caller_class_name, enclosing_function_node) = self
-                .parser
-                .find_enclosing_context_with_function_node(call_node);
+            let (caller, caller_class_name, enclosing_function_node) =
+                self.parser.find_enclosing_context(call_node);
             let mut callee = String::new();
             let mut is_method = false;
             let mut obj_name: Option<String> = None;
@@ -287,7 +288,7 @@ impl CodeAnalyzer {
                         "attribute" | "member_expression" | "selector_expression"
                     ) {
                         is_method = true;
-                        let (c, o) = self.parser.parse_attribute_node(func_node);
+                        let (c, o) = self.parser.extract_attribute_parts(func_node);
                         callee = c;
                         obj_name = o;
                     }
@@ -320,7 +321,7 @@ impl CodeAnalyzer {
                         if let Some(resolvers) = js_alias_resolvers_by_function.as_mut() {
                             let resolver = resolvers.entry(func_node.id()).or_insert_with(|| {
                                 JsAliasResolverState::new(
-                                    self.parser.build_js_alias_events(func_node),
+                                    self.parser.build_js_alias_event_stream(func_node),
                                 )
                             });
                             let resolved = resolver.resolve(call_node.start_byte(), &callee);
@@ -390,7 +391,7 @@ impl CodeAnalyzer {
         if self.parser.language != "python" || self.cache.python_properties().is_some() {
             return;
         }
-        let (properties, callers) = self.parser.build_python_property_index();
+        let (properties, callers) = self.parser.build_python_property_indexes();
         self.cache.set_python_properties(properties, callers);
     }
 
@@ -522,7 +523,7 @@ impl CodeAnalyzer {
 
         let mut fields = Vec::new();
         if self.classes().iter().any(|cls| cls.name == class_name) {
-            fields.extend(self.parser.get_fields_from_class_node(class_name));
+            fields.extend(self.parser.find_field_infos_by_class_name(class_name));
         }
         self.cache
             .insert_fields(class_name.to_string(), fields.clone());
@@ -656,7 +657,7 @@ impl CodeAnalyzer {
             if node.is_named() && self.parser.node_bytes(node) == name_bytes {
                 let context = node
                     .parent()
-                    .map(|p| self.parser.node_text_utf8(p))
+                    .map(|p| self.parser.node_text(p))
                     .unwrap_or_default();
                 refs.push(serde_json::json!({
                     "type": node.kind(),

@@ -8,7 +8,6 @@ A code analysis toolkit using [tree-sitter](https://tree-sitter.github.io/tree-s
 - **Inheritance Analysis** - Extract class inheritance relationships, including parent classes and child classes
 - **Call Graph Analysis** - Build call graphs showing caller-callee relationships
 - **Import Analysis** - Extract import statements and dependencies
-- **Variable Tracking** - Identify variable declarations with scope information
 - **Symbol Reference Tracking** - Find all references to a specific symbol
 
 ## Supported Languages
@@ -58,7 +57,7 @@ See [USAGE.md](USAGE.md) for complete documentation.
 | `classes` | Extract all class/struct/interface definitions |
 | `fields` | Extract all field definitions |
 | `imports` | Extract all import statements |
-| `variables` | Extract all variable declarations |
+| `definition` | Get the complete source code of a function |
 
 ### Inheritance Analysis
 
@@ -73,14 +72,6 @@ See [USAGE.md](USAGE.md) for complete documentation.
 |------|-------------|
 | `callers` | Find functions that call a specific function |
 | `callees` | Find functions called by a specific function |
-
-### Function-Level Analysis
-
-| Tool | Description |
-|------|-------------|
-| `definition` | Get the complete source code of a function |
-| `function-variables` | Get all variables declared in a function |
-| `function-strings` | Get all string literals in a function |
 
 ### Symbol Reference Tracking
 

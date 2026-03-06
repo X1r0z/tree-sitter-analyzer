@@ -38,9 +38,8 @@ tree-sitter-analyzer (tsa) is particularly powerful for security audits because 
 - **Taint source tracing** — Identify functions that handle user input (e.g., `request.GET`, `req.body`, `Scanner.nextLine`), then use `callers` to trace how tainted data propagates through the codebase
 - **Sink reachability** — Start from a dangerous sink function, use `callers` recursively to build the call chain back to entry points and determine if user-controlled data can reach it
 - **Attack surface mapping** — Use `functions` + `classes` to inventory all public API endpoints, handlers, and entry points; then use `callees` to map what internal functions each endpoint reaches
-- **Hardcoded secrets/config** — Use `function-strings` to extract all string literals inside sensitive functions (e.g., database connection, authentication) to find hardcoded credentials, keys, or tokens
 - **Privilege analysis** — Use `sub-classes` to find all implementations of permission/auth base classes; use `fields` to inspect their configuration
-- **Dependency mapping** — Use `imports` to audit which modules import dangerous libraries; use `symbols` to find every reference to security-critical variables
+- **Dependency mapping** — Use `imports` to audit which modules import dangerous libraries; use `symbols` to find every reference to security-critical identifiers
 
 ### Codebase Onboarding & Refactoring
 
@@ -67,12 +66,9 @@ Only use Grep instead of tree-sitter-analyzer (tsa) when:
 | Who calls function X? | `callers <path> -f X` |
 | Get function source code | `definition <path> -f X` |
 | List imports / find a module | `imports <path> [-q pattern]` |
-| List variables | `variables <path> [-q pattern]` |
 | Find all references to symbol | `symbols <path> -n NAME` |
 | Parent classes of X | `super-classes <path> -c X` |
 | Child classes of X | `sub-classes <path> -c X` |
-| Variables inside function X | `function-variables <path> -f X` |
-| String literals inside function X | `function-strings <path> -f X` |
 
 ## Installation
 
@@ -174,20 +170,6 @@ tsa imports <path> [-q QUERY] [--json]
 tsa imports ./src/ -q "^(os|sys)$" --json
 ```
 
-### `variables` — Extract variable declarations
-
-```bash
-tsa variables <path> [-q QUERY] [--json]
-```
-
-| Option | Description |
-|--------|-------------|
-| `-q, --query` | Filter by name (regex) |
-
-```bash
-tsa variables ./src/ -q "^[A-Z_]+$" --json
-```
-
 ### `callers` — Find who calls a function
 
 ```bash
@@ -231,36 +213,6 @@ tsa definition <path> -f FUNCTION [-c CLASS_NAME] [--json]
 
 ```bash
 tsa definition ./src/ -f parse_config --json
-```
-
-### `function-variables` — Variables inside a function
-
-```bash
-tsa function-variables <path> -f FUNCTION [-c CLASS_NAME] [--json]
-```
-
-| Option | Description |
-|--------|-------------|
-| `-f, --function` | Function name (required) |
-| `-c, --class-name` | Scope to a method in this class |
-
-```bash
-tsa function-variables ./src/ -f process_request --json
-```
-
-### `function-strings` — String literals inside a function
-
-```bash
-tsa function-strings <path> -f FUNCTION [-c CLASS_NAME] [--json]
-```
-
-| Option | Description |
-|--------|-------------|
-| `-f, --function` | Function name (required) |
-| `-c, --class-name` | Scope to a method in this class |
-
-```bash
-tsa function-strings ./src/ -f handle_request --json
 ```
 
 ### `symbols` — Find all references to an identifier
@@ -332,8 +284,6 @@ tsa symbols /path/to/project -n CONFIG_PATH --json
 
 ```bash
 tsa definition /path/to/project -f main --json
-tsa function-variables /path/to/project -f main --json
-tsa function-strings /path/to/project -f main --json
 ```
 
 ### Map class hierarchy

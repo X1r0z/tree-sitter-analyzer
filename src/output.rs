@@ -109,26 +109,6 @@ pub fn print_pretty(result: &Value) {
             }
         }
     }
-
-    if let Some(variables) = result.get("variables").and_then(|v| v.as_array()) {
-        for v in variables {
-            let name = v.get("name").and_then(|n| n.as_str()).unwrap_or("");
-            let line = v.get("line").and_then(|l| l.as_u64()).unwrap_or(0);
-            let file = v.get("file").and_then(|fi| fi.as_str()).unwrap_or("");
-            let scope = v.get("scope").and_then(|s| s.as_str());
-            let scope_info = match scope {
-                Some(s) => format!(" (scope: {})", s),
-                None => " (global)".to_string(),
-            };
-
-            if file.is_empty() {
-                println!("  {}{} - L{}", name, scope_info, line);
-            } else {
-                println!("  {}{} - {}:L{}", name, scope_info, file, line);
-            }
-        }
-    }
-
     if let Some(callers) = result.get("callers").and_then(|c| c.as_array()) {
         let func = result
             .get("function")
@@ -189,26 +169,6 @@ pub fn print_pretty(result: &Value) {
             }
         }
     }
-
-    if let Some(strings) = result.get("strings").and_then(|s| s.as_array()) {
-        for s in strings {
-            let value = s.get("value").and_then(|v| v.as_str()).unwrap_or("");
-            let line = s.get("line").and_then(|l| l.as_u64()).unwrap_or(0);
-            let file = s.get("file").and_then(|fi| fi.as_str()).unwrap_or("");
-            let display_value = if value.len() > 50 {
-                format!("{}...", &value[..50])
-            } else {
-                value.to_string()
-            };
-
-            if file.is_empty() {
-                println!("  {} - L{}", display_value, line);
-            } else {
-                println!("  {} - {}:L{}", display_value, file, line);
-            }
-        }
-    }
-
     if let Some(super_classes) = result.get("super_classes").and_then(|s| s.as_array()) {
         let class_name = result
             .get("class_name")

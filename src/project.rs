@@ -123,32 +123,6 @@ impl ProjectAnalyzer {
             })
             .collect()
     }
-
-    pub fn get_variables(&self, query: &str) -> Vec<VariableInfo> {
-        let candidate_files = self.filter_candidates(query);
-        if candidate_files.is_empty() {
-            return Vec::new();
-        }
-        let q = query.to_string();
-        candidate_files
-            .par_iter()
-            .flat_map(|f| {
-                let mut analyzer = match CodeAnalyzer::new(f) {
-                    Ok(a) => a,
-                    Err(_) => return Vec::new(),
-                };
-                let vars = analyzer.get_variables();
-                if q.is_empty() {
-                    vars
-                } else {
-                    vars.into_iter()
-                        .filter(|var| match_query(&var.name, &q))
-                        .collect()
-                }
-            })
-            .collect()
-    }
-
     pub fn get_callers(
         &self,
         function_name: &str,
@@ -256,76 +230,6 @@ impl ProjectAnalyzer {
                 analyzer.get_all_functions_by_name(&fn_name, cn.as_deref())
             })
             .collect()
-    }
-
-    pub fn get_function_variables(
-        &self,
-        function_name: &str,
-        class_name: Option<&str>,
-    ) -> Vec<serde_json::Value> {
-        let candidate_files = self.filter_by_text(function_name);
-        if candidate_files.is_empty() {
-            return Vec::new();
-        }
-        let fn_name = function_name.to_string();
-        let cn = class_name.map(|s| s.to_string());
-        let mut results: Vec<serde_json::Value> = candidate_files
-            .par_iter()
-            .flat_map(|f| {
-                let mut analyzer = match CodeAnalyzer::new(f) {
-                    Ok(a) => a,
-                    Err(_) => return Vec::new(),
-                };
-                analyzer
-                    .get_function_variables(&fn_name, cn.as_deref())
-                    .into_iter()
-                    .map(|var| {
-                        serde_json::json!({
-                            "name": var.name,
-                            "line": var.location.start_line,
-                            "file": f,
-                        })
-                    })
-                    .collect()
-            })
-            .collect();
-        sort_by_file_line(&mut results);
-        results
-    }
-
-    pub fn get_function_strings(
-        &self,
-        function_name: &str,
-        class_name: Option<&str>,
-    ) -> Vec<serde_json::Value> {
-        let candidate_files = self.filter_by_text(function_name);
-        if candidate_files.is_empty() {
-            return Vec::new();
-        }
-        let fn_name = function_name.to_string();
-        let cn = class_name.map(|s| s.to_string());
-        let mut results: Vec<serde_json::Value> = candidate_files
-            .par_iter()
-            .flat_map(|f| {
-                let mut analyzer = match CodeAnalyzer::new(f) {
-                    Ok(a) => a,
-                    Err(_) => return Vec::new(),
-                };
-                analyzer
-                    .get_function_strings(&fn_name, cn.as_deref())
-                    .into_iter()
-                    .map(|s| {
-                        serde_json::json!({
-                            "value": s.value,
-                            "line": s.location.start_line,
-                            "file": f,
-                        })
-                    })
-                    .collect()
-            })
-            .collect();
-        sort_by_file_line(&mut results);
-        results
     }
 
     pub fn find_symbols(&self, name: &str) -> Vec<serde_json::Value> {

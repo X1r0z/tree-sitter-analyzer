@@ -154,31 +154,6 @@ tsa imports ./src/ -q json
 tsa imports ./src/ -q "^(os|sys)$"
 ```
 
-#### `variables` - Extract Variable Declarations
-
-Extract all variable declarations with scope information.
-
-```bash
-tsa variables <path> [-q QUERY] [--json] [--yaml]
-```
-
-| Option | Description |
-|--------|-------------|
-| `-q, --query` | Filter by variable name (regex match) |
-
-Examples:
-
-```bash
-# List all variables in a directory
-tsa variables ./src/
-
-# Find variables containing "config"
-tsa variables ./src/ -q config
-
-# Find variables matching uppercase pattern using regex
-tsa variables ./src/ -q "^[A-Z_]+$"
-```
-
 ### Inheritance Analysis
 
 #### `super-classes` - Get Parent Classes
@@ -290,46 +265,6 @@ tsa definition ./src/ -f parse_config
 
 # Get method definition from a class
 tsa definition ./src/ -f connect -c Database
-```
-
-#### `function-variables` - Get Variables in Function
-
-Get all variables declared within a specific function.
-
-```bash
-tsa function-variables <path> -f FUNCTION [-c CLASS_NAME] [--json] [--yaml]
-```
-
-| Option | Description |
-|--------|-------------|
-| `-f, --function` | Function name to analyze (required) |
-| `-c, --class-name` | Class name to filter methods |
-
-Examples:
-
-```bash
-# Get variables in a function
-tsa function-variables ./src/ -f process_request
-```
-
-#### `function-strings` - Get Strings in Function
-
-Get all string literals within a specific function.
-
-```bash
-tsa function-strings <path> -f FUNCTION [-c CLASS_NAME] [--json] [--yaml]
-```
-
-| Option | Description |
-|--------|-------------|
-| `-f, --function` | Function name to analyze (required) |
-| `-c, --class-name` | Class name to filter methods |
-
-Examples:
-
-```bash
-# Get string literals in a function
-tsa function-strings ./src/ -f handle_request
 ```
 
 ### Symbol Reference Tracking

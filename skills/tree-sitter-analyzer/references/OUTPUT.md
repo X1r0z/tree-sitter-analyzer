@@ -141,29 +141,6 @@ Array key: `imports`
 }
 ```
 
-## `variables`
-
-Array key: `variables`
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | string | Variable name |
-| `line` | int | Line number |
-| `scope` | string\|null | Enclosing function (null = module-level) |
-| `file` | string | File path |
-
-```json
-{
-  "path": "/path/to/project",
-  "files_searched": 42,
-  "count": 2,
-  "variables": [
-    {"name": "CONFIG_PATH", "line": 3, "scope": null, "file": "/path/to/project/src/config.py"},
-    {"name": "payload", "line": 18, "scope": "main", "file": "/path/to/project/src/app.py"}
-  ]
-}
-```
-
 ## `super-classes`
 
 Array key: `super_classes`
@@ -304,53 +281,6 @@ Array key: `functions`
       "file": "/path/to/project/src/app.py",
       "body": "def main():\n    config = load_config(CONFIG_PATH)\n    return process_data(config)\n"
     }
-  ]
-}
-```
-
-## `function-variables`
-
-Array key: `variables`
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | string | Variable name |
-| `line` | int | Line number |
-| `file` | string | File path |
-
-```json
-{
-  "path": "/path/to/project",
-  "files_searched": 42,
-  "function": "main",
-  "class_name": null,
-  "count": 2,
-  "variables": [
-    {"name": "config", "line": 11, "file": "/path/to/project/src/app.py"},
-    {"name": "result", "line": 12, "file": "/path/to/project/src/app.py"}
-  ]
-}
-```
-
-## `function-strings`
-
-Array key: `strings`
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `value` | string | String literal content |
-| `line` | int | Line number |
-| `file` | string | File path |
-
-```json
-{
-  "path": "/path/to/project",
-  "files_searched": 42,
-  "function": "main",
-  "class_name": null,
-  "count": 1,
-  "strings": [
-    {"value": "starting...", "line": 15, "file": "/path/to/project/src/app.py"}
   ]
 }
 ```

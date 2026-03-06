@@ -88,20 +88,6 @@ enum Commands {
         #[arg(long)]
         yaml: bool,
     },
-    /// Extract all variable declarations
-    Variables {
-        /// Directory path
-        path: String,
-        /// Filter by variable name (regex match)
-        #[arg(short, long)]
-        query: Option<String>,
-        /// Output in JSON format
-        #[arg(long)]
-        json: bool,
-        /// Output in YAML format
-        #[arg(long)]
-        yaml: bool,
-    },
     /// Find functions that call a specific function
     Callers {
         /// Directory path
@@ -155,42 +141,6 @@ enum Commands {
         /// Directory path
         path: String,
         /// Function name to retrieve
-        #[arg(short, long)]
-        function: String,
-        /// Class name to filter methods
-        #[arg(short, long)]
-        class_name: Option<String>,
-        /// Output in JSON format
-        #[arg(long)]
-        json: bool,
-        /// Output in YAML format
-        #[arg(long)]
-        yaml: bool,
-    },
-    /// Get all variables declared in a function
-    #[command(name = "function-variables")]
-    FunctionVariables {
-        /// Directory path
-        path: String,
-        /// Function name to analyze
-        #[arg(short, long)]
-        function: String,
-        /// Class name to filter methods
-        #[arg(short, long)]
-        class_name: Option<String>,
-        /// Output in JSON format
-        #[arg(long)]
-        json: bool,
-        /// Output in YAML format
-        #[arg(long)]
-        yaml: bool,
-    },
-    /// Get all string literals in a function
-    #[command(name = "function-strings")]
-    FunctionStrings {
-        /// Directory path
-        path: String,
-        /// Function name to analyze
         #[arg(short, long)]
         function: String,
         /// Class name to filter methods
@@ -305,15 +255,6 @@ fn run() -> i32 {
             let result = cmd_imports(&path, query.as_deref().unwrap_or(""));
             (result, json, yaml)
         }
-        Commands::Variables {
-            path,
-            query,
-            json,
-            yaml,
-        } => {
-            let result = cmd_variables(&path, query.as_deref().unwrap_or(""));
-            (result, json, yaml)
-        }
         Commands::Callers {
             path,
             function,
@@ -351,26 +292,6 @@ fn run() -> i32 {
             yaml,
         } => {
             let result = cmd_definition(&path, &function, class_name.as_deref());
-            (result, json, yaml)
-        }
-        Commands::FunctionVariables {
-            path,
-            function,
-            class_name,
-            json,
-            yaml,
-        } => {
-            let result = cmd_function_variables(&path, &function, class_name.as_deref());
-            (result, json, yaml)
-        }
-        Commands::FunctionStrings {
-            path,
-            function,
-            class_name,
-            json,
-            yaml,
-        } => {
-            let result = cmd_function_strings(&path, &function, class_name.as_deref());
             (result, json, yaml)
         }
         Commands::SuperClasses {
@@ -466,22 +387,6 @@ fn cmd_imports(path: &str, query: &str) -> Value {
     }
 }
 
-fn cmd_variables(path: &str, query: &str) -> Value {
-    let real_path = resolve_path(path);
-    match ProjectAnalyzer::new(&real_path) {
-        Ok(project) => {
-            let variables = project.get_variables(query);
-            json!({
-                "path": real_path,
-                "files_searched": project.files.len(),
-                "count": variables.len(),
-                "variables": variables.iter().map(|v| v.to_json_value(true)).collect::<Vec<_>>(),
-            })
-        }
-        Err(e) => json!({"error": e.to_string()}),
-    }
-}
-
 fn cmd_callers(path: &str, function_name: &str, class_name: Option<&str>) -> Value {
     let real_path = resolve_path(path);
     match ProjectAnalyzer::new(&real_path) {
@@ -549,50 +454,6 @@ fn cmd_definition(path: &str, function_name: &str, class_name: Option<&str>) -> 
                 "class_name": class_name,
                 "count": functions.len(),
                 "functions": functions.iter().map(|f| f.to_json_value(true, true)).collect::<Vec<_>>(),
-            })
-        }
-        Err(e) => json!({"error": e.to_string()}),
-    }
-}
-
-fn cmd_function_variables(path: &str, function_name: &str, class_name: Option<&str>) -> Value {
-    let real_path = resolve_path(path);
-    match ProjectAnalyzer::new(&real_path) {
-        Ok(project) => {
-            let functions = project.get_all_functions_by_name(function_name, class_name);
-            if functions.is_empty() {
-                return json!({"error": format!("Function '{}' not found", function_name)});
-            }
-            let variables = project.get_function_variables(function_name, class_name);
-            json!({
-                "path": real_path,
-                "files_searched": project.files.len(),
-                "function": function_name,
-                "class_name": class_name,
-                "count": variables.len(),
-                "variables": variables,
-            })
-        }
-        Err(e) => json!({"error": e.to_string()}),
-    }
-}
-
-fn cmd_function_strings(path: &str, function_name: &str, class_name: Option<&str>) -> Value {
-    let real_path = resolve_path(path);
-    match ProjectAnalyzer::new(&real_path) {
-        Ok(project) => {
-            let functions = project.get_all_functions_by_name(function_name, class_name);
-            if functions.is_empty() {
-                return json!({"error": format!("Function '{}' not found", function_name)});
-            }
-            let strings = project.get_function_strings(function_name, class_name);
-            json!({
-                "path": real_path,
-                "files_searched": project.files.len(),
-                "function": function_name,
-                "class_name": class_name,
-                "count": strings.len(),
-                "strings": strings,
             })
         }
         Err(e) => json!({"error": e.to_string()}),

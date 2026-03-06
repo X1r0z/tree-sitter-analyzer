@@ -84,27 +84,6 @@ pub struct CallInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VariableInfo {
-    pub name: String,
-    pub location: Location,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub scope: Option<String>,
-}
-
-impl VariableInfo {
-    pub fn to_json_value(&self, include_file: bool) -> Value {
-        let mut map = serde_json::Map::new();
-        map.insert("name".into(), json!(self.name));
-        map.insert("line".into(), json!(self.location.start_line));
-        map.insert("scope".into(), json!(self.scope));
-        if include_file {
-            map.insert("file".into(), json!(self.location.file));
-        }
-        Value::Object(map)
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportInfo {
     pub module: String,
     pub location: Location,
@@ -114,25 +93,6 @@ impl ImportInfo {
     pub fn to_json_value(&self, include_file: bool) -> Value {
         let mut map = serde_json::Map::new();
         map.insert("module".into(), json!(self.module));
-        map.insert("line".into(), json!(self.location.start_line));
-        if include_file {
-            map.insert("file".into(), json!(self.location.file));
-        }
-        Value::Object(map)
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StringLiteral {
-    pub value: String,
-    pub location: Location,
-}
-
-#[allow(dead_code)]
-impl StringLiteral {
-    pub fn to_json_value(&self, include_file: bool) -> Value {
-        let mut map = serde_json::Map::new();
-        map.insert("value".into(), json!(self.value));
         map.insert("line".into(), json!(self.location.start_line));
         if include_file {
             map.insert("file".into(), json!(self.location.file));

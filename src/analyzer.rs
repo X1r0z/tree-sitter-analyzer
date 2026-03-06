@@ -13,8 +13,6 @@ pub struct CodeAnalyzer {
     calls_by_callee: Option<HashMap<String, Vec<CallInfo>>>,
     calls_by_caller: Option<HashMap<String, Vec<CallInfo>>>,
     imports_cache: Option<Vec<ImportInfo>>,
-    variables_cache: Option<Vec<VariableInfo>>,
-    strings_cache: Option<Vec<StringLiteral>>,
     fields_cache: HashMap<String, Vec<FieldInfo>>,
 }
 
@@ -30,8 +28,6 @@ impl CodeAnalyzer {
             calls_by_callee: None,
             calls_by_caller: None,
             imports_cache: None,
-            variables_cache: None,
-            strings_cache: None,
             fields_cache: HashMap::new(),
         })
     }
@@ -338,46 +334,6 @@ impl CodeAnalyzer {
         imports
     }
 
-    pub fn get_variables(&mut self) -> Vec<VariableInfo> {
-        if let Some(ref cached) = self.variables_cache {
-            return cached.clone();
-        }
-
-        let captures = self.parser.run_query(self.parser.lang_info.variable_query);
-        let name_nodes = captures.get("name").cloned().unwrap_or_default();
-
-        let mut variables = Vec::new();
-        for node in name_nodes {
-            let scope = self.parser.find_enclosing_function(node);
-            variables.push(VariableInfo {
-                name: self.parser.node_text(node),
-                location: self.parser.node_location(node),
-                scope,
-            });
-        }
-        self.variables_cache = Some(variables.clone());
-        variables
-    }
-
-    pub fn get_strings(&mut self) -> Vec<StringLiteral> {
-        if let Some(ref cached) = self.strings_cache {
-            return cached.clone();
-        }
-
-        let captures = self.parser.run_query(self.parser.lang_info.string_query);
-        let string_nodes = captures.get("string").cloned().unwrap_or_default();
-
-        let mut strings = Vec::new();
-        for node in string_nodes {
-            strings.push(StringLiteral {
-                value: self.parser.node_text_utf8(node),
-                location: self.parser.node_location(node),
-            });
-        }
-        self.strings_cache = Some(strings.clone());
-        strings
-    }
-
     pub fn get_function_callers(
         &mut self,
         function_name: &str,
@@ -485,46 +441,6 @@ impl CodeAnalyzer {
             }
         }
         callees
-    }
-
-    pub fn get_function_variables(
-        &mut self,
-        function_name: &str,
-        class_name: Option<&str>,
-    ) -> Vec<VariableInfo> {
-        let funcs = self.get_all_functions_by_name(function_name, class_name);
-        let all_vars = self.get_variables();
-        let mut fn_vars = Vec::new();
-        for func in &funcs {
-            for v in &all_vars {
-                if v.location.start_line >= func.location.start_line
-                    && v.location.start_line <= func.location.end_line
-                {
-                    fn_vars.push(v.clone());
-                }
-            }
-        }
-        fn_vars
-    }
-
-    pub fn get_function_strings(
-        &mut self,
-        function_name: &str,
-        class_name: Option<&str>,
-    ) -> Vec<StringLiteral> {
-        let funcs = self.get_all_functions_by_name(function_name, class_name);
-        let all_strings = self.get_strings();
-        let mut fn_strings = Vec::new();
-        for func in &funcs {
-            for s in &all_strings {
-                if s.location.start_line >= func.location.start_line
-                    && s.location.start_line <= func.location.end_line
-                {
-                    fn_strings.push(s.clone());
-                }
-            }
-        }
-        fn_strings
     }
 
     pub fn find_symbols(&mut self, name: &str) -> Vec<serde_json::Value> {

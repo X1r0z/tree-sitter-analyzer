@@ -4,6 +4,7 @@ description: >
   Structural code analysis via tree-sitter AST (functions, classes, imports, call graph, inheritance, symbol references).
   Use for "who calls X?", "what does X call?", "where is X defined?", "list functions/classes", "class fields/methods",
   "subclasses/superclasses", "find symbol references", and any structural code understanding across files or directories.
+  Supports optional project indexing with `tsa index` for repeated queries on the same repository.
   Prefer over Grep for code understanding — Grep is for exact literal text matches only.
   Supports Python, JavaScript/TypeScript, Java, Go.
 allowed-tools: Bash(tsa:*)
@@ -29,6 +30,7 @@ Use this skill whenever you need answers about code structure or relationships:
 - **Symbol tracking** — "Find all references to this identifier across the project"
 - **Inventory** — "List all functions/classes/imports in this directory"
 - **Impact analysis** — "If I change this function, what else is affected?"
+- **Repeated project queries** — When you'll ask several structural questions about the same repo, build an index first with `tsa index`
 
 ### Code Auditing & Security Review
 
@@ -59,6 +61,7 @@ Only use Grep instead of tree-sitter-analyzer (tsa) when:
 
 | Question | Command |
 |----------|---------|
+| Speed up repeated queries in a repo | `index <path> [-l LANGUAGE]` |
 | List all functions/methods | `functions <path>` |
 | List all classes/interfaces | `classes <path>` |
 | What fields does class X have? | `fields <path> -c X` |
@@ -81,6 +84,15 @@ cargo install --git https://github.com/X1r0z/tree-sitter-analyzer
 ```bash
 tsa <command> <path> [options]
 ```
+
+If you expect multiple queries against the same project, build the cache first:
+
+```bash
+tsa index .
+tsa index . -l java
+```
+
+`tsa index` writes `tsa.db` to the current working directory. When a compatible cache is present, `functions`, `classes`, `fields`, `imports`, `callers`, `callees`, `super-classes`, and `sub-classes` use it automatically. `definition` and `symbols` still analyze source files directly.
 
 ### Supported Languages
 
@@ -114,6 +126,14 @@ tsa callers ./src/ -f process_data | jq -r '.callers[] | "\(.caller)\t\(.file):\
 Full JSON output schemas for each command: see `references/OUTPUT.md`.
 
 ## Commands
+
+### `index` — Build a persistent project cache
+
+```bash
+tsa index <path> [-l LANGUAGE]
+```
+
+Use this before running multiple structural queries against the same codebase.
 
 ### `functions` — Extract function/method definitions
 

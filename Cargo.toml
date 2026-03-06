@@ -26,6 +26,11 @@ ignore = "0.4"
 anyhow = "1"
 which = "8.0.1"
 streaming-iterator = "0.1"
+indicatif = "0.18.4"
+rusqlite = { version = "0.38.0", features = ["bundled"] }
+
+[dev-dependencies]
+tempfile = "3"
 
 [profile.release]
 opt-level = 3

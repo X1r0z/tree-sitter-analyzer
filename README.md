@@ -4,11 +4,12 @@ A code analysis toolkit using [tree-sitter](https://tree-sitter.github.io/tree-s
 
 ## Features
 
-- **Function/Class Extraction** - Extract all function/method and class/struct/interface/field definitions
+- **Code Structure Extraction** - Extract all function/method and class/struct/interface/field definitions
 - **Inheritance Analysis** - Extract class inheritance relationships, including parent classes and child classes
 - **Call Graph Analysis** - Build call graphs showing caller-callee relationships
 - **Import Analysis** - Extract import statements and dependencies
 - **Symbol Reference Tracking** - Find all references to a specific symbol
+- **Project Indexing** - Build a persistent `tsa.db` cache for faster repeated project queries
 
 ## Supported Languages
 
@@ -34,6 +35,12 @@ cargo install --git https://github.com/X1r0z/tree-sitter-analyzer
 # List all classes in a directory
 tsa classes ./src/
 
+# Build an index for all supported languages in the current project
+tsa index .
+
+# Build an index for Java files only
+tsa index . -l java
+
 # Only analyze Python files
 tsa functions ./src/ -l python
 
@@ -46,9 +53,7 @@ tsa definition ./src/ --function main
 
 See [USAGE.md](USAGE.md) for complete documentation.
 
-## Modules
-
-### Code Structure
+## Tools
 
 | Tool | Description |
 |------|-------------|
@@ -56,27 +61,13 @@ See [USAGE.md](USAGE.md) for complete documentation.
 | `classes` | Extract all class/struct/interface definitions |
 | `fields` | Extract all field definitions |
 | `imports` | Extract all import statements |
-| `definition` | Extract source code of a function |
-
-### Inheritance Analysis
-
-| Tool | Description |
-|------|-------------|
-| `super-classes` | Get all parent classes of a specific class |
-| `sub-classes` | Get all child classes that inherit from a specific class |
-
-### Call Graph Analysis
-
-| Tool | Description |
-|------|-------------|
 | `callers` | Find functions that call a specific function |
 | `callees` | Find functions called by a specific function |
-
-### Symbol Reference Tracking
-
-| Tool | Description |
-|------|-------------|
 | `symbols` | Find all references to a specific symbol |
+| `definition` | Extract source code of a function |
+| `super-classes` | Get all parent classes of a specific class |
+| `sub-classes` | Get all child classes that inherit from a specific class |
+| `index` | Build a persistent project index in `./tsa.db` |
 
 ## Development
 

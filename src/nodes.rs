@@ -128,3 +128,27 @@ impl FieldInfo {
         Value::Object(map)
     }
 }
+
+#[derive(Debug, Clone)]
+pub struct PythonPropertyInfo {
+    pub name: String,
+    pub class_name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PythonPropertyCallerInfo {
+    pub property_name: String,
+    pub caller: String,
+    pub line: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct AnalyzerSnapshot {
+    pub functions: Vec<FunctionInfo>,
+    pub classes: Vec<ClassInfo>,
+    pub fields: Vec<FieldInfo>,
+    pub calls: Vec<CallInfo>,
+    pub imports: Vec<ImportInfo>,
+    pub python_properties: Vec<PythonPropertyInfo>,
+    pub python_property_callers: Vec<PythonPropertyCallerInfo>,
+}

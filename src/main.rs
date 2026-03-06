@@ -1,5 +1,7 @@
 mod analyzer;
 mod cache;
+mod db;
+mod index;
 mod languages;
 mod nodes;
 mod parser;
@@ -12,6 +14,8 @@ use std::process;
 use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::{json, Value};
 
+use crate::db::DbProjectAnalyzer;
+use crate::index::build_index;
 use crate::project::ProjectAnalyzer;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -177,6 +181,14 @@ enum Commands {
         #[arg(short, long)]
         class_name: String,
     },
+    /// Build a persistent project index in ./tsa.db
+    Index {
+        /// Directory path
+        path: String,
+        /// Only index files for a single language
+        #[arg(short = 'l', long, value_enum)]
+        language: Option<LanguageFilter>,
+    },
 }
 
 fn resolve_path(path: &str) -> String {
@@ -253,6 +265,7 @@ fn run() -> i32 {
             language,
             class_name,
         } => cmd_sub_classes(&path, language, &class_name),
+        Commands::Index { path, language } => cmd_index(&path, language),
     };
 
     println!(
@@ -273,6 +286,24 @@ fn cmd_functions(
     include_body: bool,
 ) -> Value {
     let real_path = resolve_path(path);
+    if !include_body {
+        if let Ok(Some(db)) = DbProjectAnalyzer::from_current_dir_if_compatible(
+            &real_path,
+            language.map(LanguageFilter::as_str),
+        ) {
+            match db.find_functions(query) {
+                Ok(functions) => {
+                    return json!({
+                        "path": real_path,
+                        "files_searched": db.file_count(),
+                        "count": functions.len(),
+                        "functions": functions.iter().map(|f| f.to_json_value(false, true)).collect::<Vec<_>>(),
+                    });
+                }
+                Err(e) => return json!({"error": e.to_string()}),
+            }
+        }
+    }
     match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
         Ok(project) => {
             let functions = if include_body {
@@ -293,6 +324,22 @@ fn cmd_functions(
 
 fn cmd_classes(path: &str, language: Option<LanguageFilter>, query: &str) -> Value {
     let real_path = resolve_path(path);
+    if let Ok(Some(db)) = DbProjectAnalyzer::from_current_dir_if_compatible(
+        &real_path,
+        language.map(LanguageFilter::as_str),
+    ) {
+        match db.find_classes(query) {
+            Ok(classes) => {
+                return json!({
+                    "path": real_path,
+                    "files_searched": db.file_count(),
+                    "count": classes.len(),
+                    "classes": classes.iter().map(|c| c.to_json_value(true)).collect::<Vec<_>>(),
+                });
+            }
+            Err(e) => return json!({"error": e.to_string()}),
+        }
+    }
     match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
         Ok(project) => {
             let classes = project.find_classes(query);
@@ -309,6 +356,23 @@ fn cmd_classes(path: &str, language: Option<LanguageFilter>, query: &str) -> Val
 
 fn cmd_fields(path: &str, language: Option<LanguageFilter>, class_name: &str) -> Value {
     let real_path = resolve_path(path);
+    if let Ok(Some(db)) = DbProjectAnalyzer::from_current_dir_if_compatible(
+        &real_path,
+        language.map(LanguageFilter::as_str),
+    ) {
+        match db.find_fields(class_name) {
+            Ok(fields) => {
+                return json!({
+                    "path": real_path,
+                    "files_searched": db.file_count(),
+                    "count": fields.len(),
+                    "class_name": class_name,
+                    "fields": fields.iter().map(|f| f.to_json_value(true)).collect::<Vec<_>>(),
+                });
+            }
+            Err(e) => return json!({"error": e.to_string()}),
+        }
+    }
     match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
         Ok(project) => {
             let fields = project.find_fields(class_name);
@@ -326,6 +390,22 @@ fn cmd_fields(path: &str, language: Option<LanguageFilter>, class_name: &str) ->
 
 fn cmd_imports(path: &str, language: Option<LanguageFilter>, query: &str) -> Value {
     let real_path = resolve_path(path);
+    if let Ok(Some(db)) = DbProjectAnalyzer::from_current_dir_if_compatible(
+        &real_path,
+        language.map(LanguageFilter::as_str),
+    ) {
+        match db.find_imports(query) {
+            Ok(imports) => {
+                return json!({
+                    "path": real_path,
+                    "files_searched": db.file_count(),
+                    "count": imports.len(),
+                    "imports": imports.iter().map(|i| i.to_json_value(true)).collect::<Vec<_>>(),
+                });
+            }
+            Err(e) => return json!({"error": e.to_string()}),
+        }
+    }
     match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
         Ok(project) => {
             let imports = project.find_imports(query);
@@ -347,6 +427,24 @@ fn cmd_callers(
     class_name: Option<&str>,
 ) -> Value {
     let real_path = resolve_path(path);
+    if let Ok(Some(db)) = DbProjectAnalyzer::from_current_dir_if_compatible(
+        &real_path,
+        language.map(LanguageFilter::as_str),
+    ) {
+        match db.find_callers(function_name, class_name) {
+            Ok(callers) => {
+                return json!({
+                    "path": real_path,
+                    "files_searched": db.file_count(),
+                    "count": callers.len(),
+                    "function": function_name,
+                    "class_name": class_name,
+                    "callers": callers,
+                });
+            }
+            Err(e) => return json!({"error": e.to_string()}),
+        }
+    }
     match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
         Ok(project) => {
             let callers = project.find_callers(function_name, class_name);
@@ -370,6 +468,24 @@ fn cmd_callees(
     class_name: Option<&str>,
 ) -> Value {
     let real_path = resolve_path(path);
+    if let Ok(Some(db)) = DbProjectAnalyzer::from_current_dir_if_compatible(
+        &real_path,
+        language.map(LanguageFilter::as_str),
+    ) {
+        match db.find_callees(function_name, class_name) {
+            Ok(callees) => {
+                return json!({
+                    "path": real_path,
+                    "files_searched": db.file_count(),
+                    "count": callees.len(),
+                    "function": function_name,
+                    "class_name": class_name,
+                    "callees": callees,
+                });
+            }
+            Err(e) => return json!({"error": e.to_string()}),
+        }
+    }
     match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
         Ok(project) => {
             let callees = project.find_callees(function_name, class_name);
@@ -430,6 +546,23 @@ fn cmd_definition(
 
 fn cmd_super_classes(path: &str, language: Option<LanguageFilter>, class_name: &str) -> Value {
     let real_path = resolve_path(path);
+    if let Ok(Some(db)) = DbProjectAnalyzer::from_current_dir_if_compatible(
+        &real_path,
+        language.map(LanguageFilter::as_str),
+    ) {
+        match db.find_super_classes(class_name) {
+            Ok(super_classes) => {
+                return json!({
+                    "path": real_path,
+                    "files_searched": db.file_count(),
+                    "count": super_classes.len(),
+                    "class_name": class_name,
+                    "super_classes": super_classes.iter().map(|c| c.to_json_value(true)).collect::<Vec<_>>(),
+                });
+            }
+            Err(e) => return json!({"error": e.to_string()}),
+        }
+    }
     match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
         Ok(project) => {
             let super_classes = project.find_super_classes(class_name);
@@ -447,6 +580,23 @@ fn cmd_super_classes(path: &str, language: Option<LanguageFilter>, class_name: &
 
 fn cmd_sub_classes(path: &str, language: Option<LanguageFilter>, class_name: &str) -> Value {
     let real_path = resolve_path(path);
+    if let Ok(Some(db)) = DbProjectAnalyzer::from_current_dir_if_compatible(
+        &real_path,
+        language.map(LanguageFilter::as_str),
+    ) {
+        match db.find_sub_classes(class_name) {
+            Ok(sub_classes) => {
+                return json!({
+                    "path": real_path,
+                    "files_searched": db.file_count(),
+                    "count": sub_classes.len(),
+                    "class_name": class_name,
+                    "sub_classes": sub_classes.iter().map(|c| c.to_json_value(true)).collect::<Vec<_>>(),
+                });
+            }
+            Err(e) => return json!({"error": e.to_string()}),
+        }
+    }
     match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
         Ok(project) => {
             let sub_classes = project.find_sub_classes(class_name);
@@ -460,6 +610,11 @@ fn cmd_sub_classes(path: &str, language: Option<LanguageFilter>, class_name: &st
         }
         Err(e) => json!({"error": e.to_string()}),
     }
+}
+
+fn cmd_index(path: &str, language: Option<LanguageFilter>) -> Value {
+    let real_path = resolve_path(path);
+    build_index(&real_path, language.map(LanguageFilter::as_str))
 }
 
 fn main() {

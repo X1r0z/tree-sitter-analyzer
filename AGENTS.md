@@ -9,10 +9,12 @@
 
 ## Architecture
 - **src/main.rs** - CLI entry point using clap derive API, command dispatch, output formatting
-- **src/parser.rs** - BaseParser: core tree-sitter AST parsing, query execution, extraction of functions/classes/calls/imports/fields
-- **src/analyzer.rs** - CodeAnalyzer: high-level single-file analysis facade wrapping BaseParser + AnalyzerCache
+- **src/parser/** - Language-specific parsers (mod.rs: BaseParser trait/core; python.rs, javascript.rs, java.rs, go.rs)
+- **src/analyzer.rs** - CodeAnalyzer: single-file analysis facade wrapping BaseParser + AnalyzerCache
 - **src/cache.rs** - AnalyzerCache: lazy memoization of parsed results behind Mutex
 - **src/project.rs** - ProjectAnalyzer: multi-file parallel analysis using Rayon
+- **src/db.rs** - DbProjectAnalyzer: SQLite-backed persistent index (rusqlite) for querying indexed projects
+- **src/index.rs** - Index build/update logic with progress bar (indicatif)
 - **src/languages.rs** - Language configs: parser factories, tree-sitter queries, extension mapping
 - **src/nodes.rs** - Data structures (Location, FunctionInfo, ClassInfo, CallInfo, ImportInfo, FieldInfo, etc.)
 - **src/utils.rs** - File discovery (using `ignore` crate) and regex-based symbol filtering

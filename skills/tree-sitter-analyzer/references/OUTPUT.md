@@ -11,7 +11,33 @@ All commands output structured JSON by default. Every response shares a common e
 }
 ```
 
+For cached queries, `files_searched` is the number of indexed files considered for the request. For uncached queries, it is the number of source files scanned directly.
+
 ---
+
+## `index`
+
+Builds or rebuilds `tsa.db` in the current working directory.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `path` | string | Indexed project path |
+| `database` | string | Output database path |
+| `files_discovered` | int | Number of candidate source files found |
+| `indexed_files` | int | Number of files successfully indexed |
+| `failed_files` | int | Number of files that failed to index |
+| `errors` | string[] | Per-file indexing failures |
+
+```json
+{
+  "path": "/path/to/project",
+  "database": "/current/working/directory/tsa.db",
+  "files_discovered": 42,
+  "indexed_files": 42,
+  "failed_files": 0,
+  "errors": []
+}
+```
 
 ## `functions`
 

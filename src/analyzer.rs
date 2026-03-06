@@ -481,6 +481,66 @@ impl CodeAnalyzer {
         self.cached_imports().to_vec()
     }
 
+    pub fn snapshot_for_index(&mut self) -> AnalyzerSnapshot {
+        let functions = self.functions();
+        let classes = self.classes();
+
+        let mut fields = Vec::new();
+        for class in &classes {
+            fields.extend(self.fields(&class.name));
+        }
+
+        let calls = self.calls();
+        let imports = self.imports();
+
+        let mut python_properties = Vec::new();
+        let mut python_property_callers = Vec::new();
+        if self.parser.language == "python" {
+            self.ensure_python_property_index();
+            if let Some(properties) = self.cache.python_properties() {
+                python_properties = properties
+                    .iter()
+                    .map(|(name, class_name)| PythonPropertyInfo {
+                        name: name.clone(),
+                        class_name: class_name.clone(),
+                    })
+                    .collect();
+                python_properties.sort_by(|a, b| {
+                    a.name
+                        .cmp(&b.name)
+                        .then_with(|| a.class_name.cmp(&b.class_name))
+                });
+            }
+            if let Some(callers) = self.cache.python_property_callers() {
+                for (property_name, entries) in callers {
+                    for (caller, line) in entries {
+                        python_property_callers.push(PythonPropertyCallerInfo {
+                            property_name: property_name.clone(),
+                            caller: caller.clone(),
+                            line: *line,
+                        });
+                    }
+                }
+                python_property_callers.sort_by(|a, b| {
+                    a.property_name
+                        .cmp(&b.property_name)
+                        .then_with(|| a.caller.cmp(&b.caller))
+                        .then_with(|| a.line.cmp(&b.line))
+                });
+            }
+        }
+
+        AnalyzerSnapshot {
+            functions,
+            classes,
+            fields,
+            calls,
+            imports,
+            python_properties,
+            python_property_callers,
+        }
+    }
+
     pub fn find_function_callers(
         &mut self,
         function_name: &str,

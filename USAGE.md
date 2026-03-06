@@ -33,9 +33,40 @@ Global per-command filter:
 
 ## Commands
 
-### Code Structure
+### `index` - Build a Persistent Project Index
 
-#### `functions` - Extract Function Definitions
+Build a persistent SQLite cache in the current working directory as `tsa.db`.
+
+```bash
+tsa index <path> [-l LANGUAGE]
+```
+
+| Option | Description |
+|--------|-------------|
+| `-l, --language` | Only index files for a single language |
+
+Examples:
+
+```bash
+# Index all supported languages
+tsa index .
+
+# Index only Java files
+tsa index . -l java
+
+# Index another repository while writing tsa.db to the current directory
+tsa index /path/to/project -l python
+```
+
+Notes:
+
+- The cache file is always written to the current working directory as `tsa.db`
+- Indexing shows a progress bar with processed files and total files
+- If a compatible `tsa.db` is present, `functions`, `classes`, `fields`, `imports`, `callers`, `callees`, `super-classes`, and `sub-classes` use the cache automatically
+- If no compatible cache is found, queries fall back to direct AST analysis
+- `definition` and `symbols` currently bypass the cache and always analyze source files directly
+
+### `functions` - Extract Function Definitions
 
 Extract all function/method definitions from source code.
 
@@ -68,7 +99,13 @@ tsa functions ./src/ -q "^get_"
 tsa functions ./src/ --body
 ```
 
-#### `classes` - Extract Class Definitions
+Cache behavior:
+
+- Reads from `tsa.db` when a compatible cache exists
+- Falls back to AST parsing when no compatible cache exists
+- `--body` always performs direct AST analysis
+
+### `classes` - Extract Class Definitions
 
 Extract all class/struct/interface definitions.
 
@@ -94,7 +131,9 @@ tsa classes ./src/ -q Handler
 tsa classes ./src/ -q "Service$"
 ```
 
-#### `fields` - Get Class Fields
+When a compatible `tsa.db` exists, this command reads from the cache.
+
+### `fields` - Get Class Fields
 
 Get all fields of a specific class.
 
@@ -114,7 +153,9 @@ Examples:
 tsa fields ./src/ -c DatabaseConfig
 ```
 
-#### `imports` - Extract Import Statements
+When a compatible `tsa.db` exists, this command reads from the cache.
+
+### `imports` - Extract Import Statements
 
 Extract all import statements from source code.
 
@@ -140,75 +181,9 @@ tsa imports ./src/ -q json
 tsa imports ./src/ -q "^(os|sys)$"
 ```
 
-#### `definition` - Get Function Source Code
+When a compatible `tsa.db` exists, this command reads from the cache.
 
-Get the complete source code of a specific function.
-
-```bash
-tsa definition <path> [-l LANGUAGE] -f FUNCTION [-c CLASS_NAME]
-```
-
-| Option | Description |
-|--------|-------------|
-| `-l, --language` | Only analyze files for a single language |
-| `-f, --function` | Function name to retrieve (required) |
-| `-c, --class-name` | Class name to filter methods |
-
-Examples:
-
-```bash
-# Get function definition
-tsa definition ./src/ -f parse_config
-
-# Get method definition from a class
-tsa definition ./src/ -f connect -c Database
-```
-
-### Inheritance Analysis
-
-#### `super-classes` - Get Parent Classes
-
-Get all parent classes (superclasses) of a specific class.
-
-```bash
-tsa super-classes <path> [-l LANGUAGE] -c CLASS_NAME
-```
-
-| Option | Description |
-|--------|-------------|
-| `-l, --language` | Only analyze files for a single language |
-| `-c, --class-name` | Class name to find parents for (required) |
-
-Examples:
-
-```bash
-# Find parent classes
-tsa super-classes ./src/ -c AdminUser
-```
-
-#### `sub-classes` - Get Child Classes
-
-Get all child classes (subclasses) that inherit from a specific class.
-
-```bash
-tsa sub-classes <path> [-l LANGUAGE] -c CLASS_NAME
-```
-
-| Option | Description |
-|--------|-------------|
-| `-l, --language` | Only analyze files for a single language |
-| `-c, --class-name` | Class name to find children for (required) |
-
-Examples:
-
-```bash
-# Find child classes across a project
-tsa sub-classes ./src/ -c BaseModel
-```
-
-### Call Graph Analysis
-
-#### `callers` - Find Function Callers
+### `callers` - Find Function Callers
 
 Find all functions that call a specific function.
 
@@ -232,7 +207,9 @@ tsa callers ./src/ -f process_data
 tsa callers ./src/ -f save -c DatabaseHandler
 ```
 
-#### `callees` - Find Called Functions
+When a compatible `tsa.db` exists, this command reads from the cache.
+
+### `callees` - Find Called Functions
 
 Find all functions called by a specific function.
 
@@ -256,9 +233,9 @@ tsa callees ./src/ -f main
 tsa callees ./src/ -f initialize -c Application
 ```
 
-### Symbol Reference Tracking
+When a compatible `tsa.db` exists, this command reads from the cache.
 
-#### `symbols` - Find Symbol References
+### `symbols` - Find Symbol References
 
 Find all references to a specific identifier.
 
@@ -277,3 +254,75 @@ Examples:
 # Find all references to a symbol
 tsa symbols ./src/ -n CONFIG_PATH
 ```
+
+This command always performs direct AST analysis and does not use `tsa.db`.
+
+### `definition` - Get Function Source Code
+
+Get the complete source code of a specific function.
+
+```bash
+tsa definition <path> [-l LANGUAGE] -f FUNCTION [-c CLASS_NAME]
+```
+
+| Option | Description |
+|--------|-------------|
+| `-l, --language` | Only analyze files for a single language |
+| `-f, --function` | Function name to retrieve (required) |
+| `-c, --class-name` | Class name to filter methods |
+
+Examples:
+
+```bash
+# Get function definition
+tsa definition ./src/ -f parse_config
+
+# Get method definition from a class
+tsa definition ./src/ -f connect -c Database
+```
+
+This command always performs direct AST analysis and does not use `tsa.db`.
+
+### `super-classes` - Get Parent Classes
+
+Get all parent classes (superclasses) of a specific class.
+
+```bash
+tsa super-classes <path> [-l LANGUAGE] -c CLASS_NAME
+```
+
+| Option | Description |
+|--------|-------------|
+| `-l, --language` | Only analyze files for a single language |
+| `-c, --class-name` | Class name to find parents for (required) |
+
+Examples:
+
+```bash
+# Find parent classes
+tsa super-classes ./src/ -c AdminUser
+```
+
+When a compatible `tsa.db` exists, this command reads from the cache.
+
+### `sub-classes` - Get Child Classes
+
+Get all child classes (subclasses) that inherit from a specific class.
+
+```bash
+tsa sub-classes <path> [-l LANGUAGE] -c CLASS_NAME
+```
+
+| Option | Description |
+|--------|-------------|
+| `-l, --language` | Only analyze files for a single language |
+| `-c, --class-name` | Class name to find children for (required) |
+
+Examples:
+
+```bash
+# Find child classes across a project
+tsa sub-classes ./src/ -c BaseModel
+```
+
+When a compatible `tsa.db` exists, this command reads from the cache.

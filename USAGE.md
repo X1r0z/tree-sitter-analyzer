@@ -16,6 +16,11 @@ After installation, the `tsa` command will be available.
 tsa <command> <path> [options]
 ```
 
+Global per-command filter:
+
+- `-l, --language <LANGUAGE>`: only parse files for one language
+- Allowed values: `python`, `java`, `go`, `javascript`, `typescript`, `tsx`
+
 ### Supported Languages
 
 | Language | Extensions |
@@ -35,11 +40,12 @@ tsa <command> <path> [options]
 Extract all function/method definitions from source code.
 
 ```bash
-tsa functions <path> [-q QUERY] [--body]
+tsa functions <path> [-l LANGUAGE] [-q QUERY] [--body]
 ```
 
 | Option | Description |
 |--------|-------------|
+| `-l, --language` | Only analyze files for a single language |
 | `-q, --query` | Filter by function name (regex match) |
 | `--body` | Include function body in output |
 
@@ -48,6 +54,9 @@ Examples:
 ```bash
 # List all functions in a directory
 tsa functions ./src/
+
+# Only analyze TypeScript files
+tsa functions ./src/ -l typescript
 
 # Filter functions containing "get"
 tsa functions ./src/ -q get
@@ -64,11 +73,12 @@ tsa functions ./src/ --body
 Extract all class/struct/interface definitions.
 
 ```bash
-tsa classes <path> [-q QUERY]
+tsa classes <path> [-l LANGUAGE] [-q QUERY]
 ```
 
 | Option | Description |
 |--------|-------------|
+| `-l, --language` | Only analyze files for a single language |
 | `-q, --query` | Filter by class name (regex match) |
 
 Examples:
@@ -89,11 +99,12 @@ tsa classes ./src/ -q "Service$"
 Get all fields of a specific class.
 
 ```bash
-tsa fields <path> -c CLASS_NAME
+tsa fields <path> [-l LANGUAGE] -c CLASS_NAME
 ```
 
 | Option | Description |
 |--------|-------------|
+| `-l, --language` | Only analyze files for a single language |
 | `-c, --class-name` | Class name to get fields for (required) |
 
 Examples:
@@ -108,11 +119,12 @@ tsa fields ./src/ -c DatabaseConfig
 Extract all import statements from source code.
 
 ```bash
-tsa imports <path> [-q QUERY]
+tsa imports <path> [-l LANGUAGE] [-q QUERY]
 ```
 
 | Option | Description |
 |--------|-------------|
+| `-l, --language` | Only analyze files for a single language |
 | `-q, --query` | Filter by module name (regex match) |
 
 Examples:
@@ -128,6 +140,30 @@ tsa imports ./src/ -q json
 tsa imports ./src/ -q "^(os|sys)$"
 ```
 
+#### `definition` - Get Function Source Code
+
+Get the complete source code of a specific function.
+
+```bash
+tsa definition <path> [-l LANGUAGE] -f FUNCTION [-c CLASS_NAME]
+```
+
+| Option | Description |
+|--------|-------------|
+| `-l, --language` | Only analyze files for a single language |
+| `-f, --function` | Function name to retrieve (required) |
+| `-c, --class-name` | Class name to filter methods |
+
+Examples:
+
+```bash
+# Get function definition
+tsa definition ./src/ -f parse_config
+
+# Get method definition from a class
+tsa definition ./src/ -f connect -c Database
+```
+
 ### Inheritance Analysis
 
 #### `super-classes` - Get Parent Classes
@@ -135,11 +171,12 @@ tsa imports ./src/ -q "^(os|sys)$"
 Get all parent classes (superclasses) of a specific class.
 
 ```bash
-tsa super-classes <path> -c CLASS_NAME
+tsa super-classes <path> [-l LANGUAGE] -c CLASS_NAME
 ```
 
 | Option | Description |
 |--------|-------------|
+| `-l, --language` | Only analyze files for a single language |
 | `-c, --class-name` | Class name to find parents for (required) |
 
 Examples:
@@ -154,11 +191,12 @@ tsa super-classes ./src/ -c AdminUser
 Get all child classes (subclasses) that inherit from a specific class.
 
 ```bash
-tsa sub-classes <path> -c CLASS_NAME
+tsa sub-classes <path> [-l LANGUAGE] -c CLASS_NAME
 ```
 
 | Option | Description |
 |--------|-------------|
+| `-l, --language` | Only analyze files for a single language |
 | `-c, --class-name` | Class name to find children for (required) |
 
 Examples:
@@ -175,11 +213,12 @@ tsa sub-classes ./src/ -c BaseModel
 Find all functions that call a specific function.
 
 ```bash
-tsa callers <path> -f FUNCTION [-c CLASS_NAME]
+tsa callers <path> [-l LANGUAGE] -f FUNCTION [-c CLASS_NAME]
 ```
 
 | Option | Description |
 |--------|-------------|
+| `-l, --language` | Only analyze files for a single language |
 | `-f, --function` | Function name to find callers for (required) |
 | `-c, --class-name` | Class name to filter methods |
 
@@ -198,11 +237,12 @@ tsa callers ./src/ -f save -c DatabaseHandler
 Find all functions called by a specific function.
 
 ```bash
-tsa callees <path> -f FUNCTION [-c CLASS_NAME]
+tsa callees <path> [-l LANGUAGE] -f FUNCTION [-c CLASS_NAME]
 ```
 
 | Option | Description |
 |--------|-------------|
+| `-l, --language` | Only analyze files for a single language |
 | `-f, --function` | Function name to find callees for (required) |
 | `-c, --class-name` | Class name to filter methods |
 
@@ -216,31 +256,6 @@ tsa callees ./src/ -f main
 tsa callees ./src/ -f initialize -c Application
 ```
 
-### Function-Level Analysis
-
-#### `definition` - Get Function Source Code
-
-Get the complete source code of a specific function.
-
-```bash
-tsa definition <path> -f FUNCTION [-c CLASS_NAME]
-```
-
-| Option | Description |
-|--------|-------------|
-| `-f, --function` | Function name to retrieve (required) |
-| `-c, --class-name` | Class name to filter methods |
-
-Examples:
-
-```bash
-# Get function definition
-tsa definition ./src/ -f parse_config
-
-# Get method definition from a class
-tsa definition ./src/ -f connect -c Database
-```
-
 ### Symbol Reference Tracking
 
 #### `symbols` - Find Symbol References
@@ -248,11 +263,12 @@ tsa definition ./src/ -f connect -c Database
 Find all references to a specific identifier.
 
 ```bash
-tsa symbols <path> -n NAME
+tsa symbols <path> [-l LANGUAGE] -n NAME
 ```
 
 | Option | Description |
 |--------|-------------|
+| `-l, --language` | Only analyze files for a single language |
 | `-n, --name` | Identifier name to search for (required) |
 
 Examples:

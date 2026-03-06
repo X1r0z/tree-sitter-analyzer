@@ -3,10 +3,12 @@ use std::path::Path;
 
 use regex::Regex;
 
-use crate::languages::get_supported_extensions;
+use crate::languages::{get_language_extensions, get_supported_extensions};
 
-pub fn find_files(path: &str) -> Vec<String> {
-    let extensions = get_supported_extensions();
+pub fn find_files(path: &str, language: Option<&str>) -> Vec<String> {
+    let extensions = language
+        .and_then(get_language_extensions)
+        .unwrap_or_else(get_supported_extensions);
     let ext_set: HashSet<&str> = extensions.iter().copied().collect();
 
     let mut files = Vec::new();
@@ -33,9 +35,11 @@ pub fn find_files(path: &str) -> Vec<String> {
     files
 }
 
-pub fn rg_search_files(text: &str, path: &str) -> Option<Vec<String>> {
+pub fn rg_search_files(text: &str, path: &str, language: Option<&str>) -> Option<Vec<String>> {
     let rg = which::which("rg").ok()?;
-    let extensions = get_supported_extensions();
+    let extensions = language
+        .and_then(get_language_extensions)
+        .unwrap_or_else(get_supported_extensions);
 
     let mut cmd = std::process::Command::new(rg);
     cmd.args(["--files-with-matches", "--fixed-strings", "--no-ignore"]);

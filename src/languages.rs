@@ -138,3 +138,7 @@ pub fn get_language_info(name: &str) -> Option<&'static LanguageInfo> {
 pub fn get_supported_extensions() -> &'static [&'static str] {
     &SUPPORTED_EXTENSIONS
 }
+
+pub fn get_language_extensions(name: &str) -> Option<&'static [&'static str]> {
+    get_language_info(name).map(|info| info.extensions)
+}

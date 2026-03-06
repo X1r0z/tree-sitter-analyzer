@@ -20,6 +20,8 @@ A code analysis toolkit using [tree-sitter](https://tree-sitter.github.io/tree-s
 | Java | `.java` |
 | Go | `.go` |
 
+Use `-l, --language <LANGUAGE>` to restrict AST parsing to one language. Allowed values: `python`, `java`, `go`, `javascript`, `typescript`, `tsx`.
+
 ## Installation
 
 ```bash
@@ -31,6 +33,9 @@ cargo install --git https://github.com/X1r0z/tree-sitter-analyzer
 ```bash
 # List all classes in a directory
 tsa classes ./src/
+
+# Only analyze Python files
+tsa functions ./src/ -l python
 
 # Find all callers of a function
 tsa callers ./src/ --function process_data

@@ -8,10 +8,33 @@ mod utils;
 use std::path::Path;
 use std::process;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::{json, Value};
 
 use crate::project::ProjectAnalyzer;
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum LanguageFilter {
+    Python,
+    Java,
+    Go,
+    Javascript,
+    Typescript,
+    Tsx,
+}
+
+impl LanguageFilter {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Python => "python",
+            Self::Java => "java",
+            Self::Go => "go",
+            Self::Javascript => "javascript",
+            Self::Typescript => "typescript",
+            Self::Tsx => "tsx",
+        }
+    }
+}
 
 #[derive(Parser)]
 #[command(
@@ -31,6 +54,9 @@ enum Commands {
     Functions {
         /// Directory path
         path: String,
+        /// Only analyze files for a single language
+        #[arg(short = 'l', long, value_enum)]
+        language: Option<LanguageFilter>,
         /// Filter by function name (regex match)
         #[arg(short, long)]
         query: Option<String>,
@@ -42,6 +68,9 @@ enum Commands {
     Classes {
         /// Directory path
         path: String,
+        /// Only analyze files for a single language
+        #[arg(short = 'l', long, value_enum)]
+        language: Option<LanguageFilter>,
         /// Filter by class name (regex match)
         #[arg(short, long)]
         query: Option<String>,
@@ -50,6 +79,9 @@ enum Commands {
     Fields {
         /// Directory path
         path: String,
+        /// Only analyze files for a single language
+        #[arg(short = 'l', long, value_enum)]
+        language: Option<LanguageFilter>,
         /// Class name to get fields for
         #[arg(short, long)]
         class_name: String,
@@ -58,6 +90,9 @@ enum Commands {
     Imports {
         /// Directory path
         path: String,
+        /// Only analyze files for a single language
+        #[arg(short = 'l', long, value_enum)]
+        language: Option<LanguageFilter>,
         /// Filter by module name (regex match)
         #[arg(short, long)]
         query: Option<String>,
@@ -66,6 +101,9 @@ enum Commands {
     Callers {
         /// Directory path
         path: String,
+        /// Only analyze files for a single language
+        #[arg(short = 'l', long, value_enum)]
+        language: Option<LanguageFilter>,
         /// Function name to find callers for
         #[arg(short, long)]
         function: String,
@@ -77,6 +115,9 @@ enum Commands {
     Callees {
         /// Directory path
         path: String,
+        /// Only analyze files for a single language
+        #[arg(short = 'l', long, value_enum)]
+        language: Option<LanguageFilter>,
         /// Function name to find callees for
         #[arg(short, long)]
         function: String,
@@ -88,6 +129,9 @@ enum Commands {
     Symbols {
         /// Directory path
         path: String,
+        /// Only analyze files for a single language
+        #[arg(short = 'l', long, value_enum)]
+        language: Option<LanguageFilter>,
         /// Identifier name to search for
         #[arg(short, long)]
         name: String,
@@ -96,6 +140,9 @@ enum Commands {
     Definition {
         /// Directory path
         path: String,
+        /// Only analyze files for a single language
+        #[arg(short = 'l', long, value_enum)]
+        language: Option<LanguageFilter>,
         /// Function name to retrieve
         #[arg(short, long)]
         function: String,
@@ -108,6 +155,9 @@ enum Commands {
     SuperClasses {
         /// Directory path
         path: String,
+        /// Only analyze files for a single language
+        #[arg(short = 'l', long, value_enum)]
+        language: Option<LanguageFilter>,
         /// Class name to find parents for
         #[arg(short, long)]
         class_name: String,
@@ -117,6 +167,9 @@ enum Commands {
     SubClasses {
         /// Directory path
         path: String,
+        /// Only analyze files for a single language
+        #[arg(short = 'l', long, value_enum)]
+        language: Option<LanguageFilter>,
         /// Class name to find children for
         #[arg(short, long)]
         class_name: String,
@@ -143,30 +196,60 @@ fn run() -> i32 {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Commands::Functions { path, query, body } => {
-            cmd_functions(&path, query.as_deref().unwrap_or(""), body)
-        }
-        Commands::Classes { path, query } => cmd_classes(&path, query.as_deref().unwrap_or("")),
-        Commands::Fields { path, class_name } => cmd_fields(&path, &class_name),
-        Commands::Imports { path, query } => cmd_imports(&path, query.as_deref().unwrap_or("")),
+        Commands::Functions {
+            path,
+            language,
+            query,
+            body,
+        } => cmd_functions(&path, language, query.as_deref().unwrap_or(""), body),
+        Commands::Classes {
+            path,
+            language,
+            query,
+        } => cmd_classes(&path, language, query.as_deref().unwrap_or("")),
+        Commands::Fields {
+            path,
+            language,
+            class_name,
+        } => cmd_fields(&path, language, &class_name),
+        Commands::Imports {
+            path,
+            language,
+            query,
+        } => cmd_imports(&path, language, query.as_deref().unwrap_or("")),
         Commands::Callers {
             path,
+            language,
             function,
             class_name,
-        } => cmd_callers(&path, &function, class_name.as_deref()),
+        } => cmd_callers(&path, language, &function, class_name.as_deref()),
         Commands::Callees {
             path,
+            language,
             function,
             class_name,
-        } => cmd_callees(&path, &function, class_name.as_deref()),
-        Commands::Symbols { path, name } => cmd_symbols(&path, &name),
+        } => cmd_callees(&path, language, &function, class_name.as_deref()),
+        Commands::Symbols {
+            path,
+            language,
+            name,
+        } => cmd_symbols(&path, language, &name),
         Commands::Definition {
             path,
+            language,
             function,
             class_name,
-        } => cmd_definition(&path, &function, class_name.as_deref()),
-        Commands::SuperClasses { path, class_name } => cmd_super_classes(&path, &class_name),
-        Commands::SubClasses { path, class_name } => cmd_sub_classes(&path, &class_name),
+        } => cmd_definition(&path, language, &function, class_name.as_deref()),
+        Commands::SuperClasses {
+            path,
+            language,
+            class_name,
+        } => cmd_super_classes(&path, language, &class_name),
+        Commands::SubClasses {
+            path,
+            language,
+            class_name,
+        } => cmd_sub_classes(&path, language, &class_name),
     };
 
     println!(
@@ -180,9 +263,14 @@ fn run() -> i32 {
     }
 }
 
-fn cmd_functions(path: &str, query: &str, include_body: bool) -> Value {
+fn cmd_functions(
+    path: &str,
+    language: Option<LanguageFilter>,
+    query: &str,
+    include_body: bool,
+) -> Value {
     let real_path = resolve_path(path);
-    match ProjectAnalyzer::new(&real_path) {
+    match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
         Ok(project) => {
             let functions = project.get_functions(query);
             json!({
@@ -196,9 +284,9 @@ fn cmd_functions(path: &str, query: &str, include_body: bool) -> Value {
     }
 }
 
-fn cmd_classes(path: &str, query: &str) -> Value {
+fn cmd_classes(path: &str, language: Option<LanguageFilter>, query: &str) -> Value {
     let real_path = resolve_path(path);
-    match ProjectAnalyzer::new(&real_path) {
+    match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
         Ok(project) => {
             let classes = project.get_classes(query);
             json!({
@@ -212,16 +300,16 @@ fn cmd_classes(path: &str, query: &str) -> Value {
     }
 }
 
-fn cmd_fields(path: &str, class_name: &str) -> Value {
+fn cmd_fields(path: &str, language: Option<LanguageFilter>, class_name: &str) -> Value {
     let real_path = resolve_path(path);
-    match ProjectAnalyzer::new(&real_path) {
+    match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
         Ok(project) => {
             let fields = project.get_fields(class_name);
             json!({
                 "path": real_path,
                 "files_searched": project.files.len(),
-                "class_name": class_name,
                 "count": fields.len(),
+                "class_name": class_name,
                 "fields": fields.iter().map(|f| f.to_json_value(true)).collect::<Vec<_>>(),
             })
         }
@@ -229,9 +317,9 @@ fn cmd_fields(path: &str, class_name: &str) -> Value {
     }
 }
 
-fn cmd_imports(path: &str, query: &str) -> Value {
+fn cmd_imports(path: &str, language: Option<LanguageFilter>, query: &str) -> Value {
     let real_path = resolve_path(path);
-    match ProjectAnalyzer::new(&real_path) {
+    match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
         Ok(project) => {
             let imports = project.get_imports(query);
             json!({
@@ -245,17 +333,22 @@ fn cmd_imports(path: &str, query: &str) -> Value {
     }
 }
 
-fn cmd_callers(path: &str, function_name: &str, class_name: Option<&str>) -> Value {
+fn cmd_callers(
+    path: &str,
+    language: Option<LanguageFilter>,
+    function_name: &str,
+    class_name: Option<&str>,
+) -> Value {
     let real_path = resolve_path(path);
-    match ProjectAnalyzer::new(&real_path) {
+    match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
         Ok(project) => {
             let callers = project.get_callers(function_name, class_name);
             json!({
                 "path": real_path,
                 "files_searched": project.files.len(),
+                "count": callers.len(),
                 "function": function_name,
                 "class_name": class_name,
-                "count": callers.len(),
                 "callers": callers,
             })
         }
@@ -263,17 +356,22 @@ fn cmd_callers(path: &str, function_name: &str, class_name: Option<&str>) -> Val
     }
 }
 
-fn cmd_callees(path: &str, function_name: &str, class_name: Option<&str>) -> Value {
+fn cmd_callees(
+    path: &str,
+    language: Option<LanguageFilter>,
+    function_name: &str,
+    class_name: Option<&str>,
+) -> Value {
     let real_path = resolve_path(path);
-    match ProjectAnalyzer::new(&real_path) {
+    match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
         Ok(project) => {
             let callees = project.get_callees(function_name, class_name);
             json!({
                 "path": real_path,
                 "files_searched": project.files.len(),
+                "count": callees.len(),
                 "function": function_name,
                 "class_name": class_name,
-                "count": callees.len(),
                 "callees": callees,
             })
         }
@@ -281,16 +379,16 @@ fn cmd_callees(path: &str, function_name: &str, class_name: Option<&str>) -> Val
     }
 }
 
-fn cmd_symbols(path: &str, name: &str) -> Value {
+fn cmd_symbols(path: &str, language: Option<LanguageFilter>, name: &str) -> Value {
     let real_path = resolve_path(path);
-    match ProjectAnalyzer::new(&real_path) {
+    match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
         Ok(project) => {
             let refs = project.find_symbols(name);
             json!({
                 "path": real_path,
                 "files_searched": project.files.len(),
-                "name": name,
                 "count": refs.len(),
+                "name": name,
                 "references": refs,
             })
         }
@@ -298,9 +396,14 @@ fn cmd_symbols(path: &str, name: &str) -> Value {
     }
 }
 
-fn cmd_definition(path: &str, function_name: &str, class_name: Option<&str>) -> Value {
+fn cmd_definition(
+    path: &str,
+    language: Option<LanguageFilter>,
+    function_name: &str,
+    class_name: Option<&str>,
+) -> Value {
     let real_path = resolve_path(path);
-    match ProjectAnalyzer::new(&real_path) {
+    match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
         Ok(project) => {
             let functions = project.get_all_functions_by_name(function_name, class_name);
             if functions.is_empty() {
@@ -309,8 +412,8 @@ fn cmd_definition(path: &str, function_name: &str, class_name: Option<&str>) -> 
             json!({
                 "path": real_path,
                 "files_searched": project.files.len(),
-                "class_name": class_name,
                 "count": functions.len(),
+                "class_name": class_name,
                 "functions": functions.iter().map(|f| f.to_json_value(true, true)).collect::<Vec<_>>(),
             })
         }
@@ -318,16 +421,16 @@ fn cmd_definition(path: &str, function_name: &str, class_name: Option<&str>) -> 
     }
 }
 
-fn cmd_super_classes(path: &str, class_name: &str) -> Value {
+fn cmd_super_classes(path: &str, language: Option<LanguageFilter>, class_name: &str) -> Value {
     let real_path = resolve_path(path);
-    match ProjectAnalyzer::new(&real_path) {
+    match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
         Ok(project) => {
             let super_classes = project.get_super_classes(class_name);
             json!({
                 "path": real_path,
                 "files_searched": project.files.len(),
-                "class_name": class_name,
                 "count": super_classes.len(),
+                "class_name": class_name,
                 "super_classes": super_classes.iter().map(|c| c.to_json_value(true)).collect::<Vec<_>>(),
             })
         }
@@ -335,16 +438,16 @@ fn cmd_super_classes(path: &str, class_name: &str) -> Value {
     }
 }
 
-fn cmd_sub_classes(path: &str, class_name: &str) -> Value {
+fn cmd_sub_classes(path: &str, language: Option<LanguageFilter>, class_name: &str) -> Value {
     let real_path = resolve_path(path);
-    match ProjectAnalyzer::new(&real_path) {
+    match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
         Ok(project) => {
             let sub_classes = project.get_sub_classes(class_name);
             json!({
                 "path": real_path,
                 "files_searched": project.files.len(),
-                "class_name": class_name,
                 "count": sub_classes.len(),
+                "class_name": class_name,
                 "sub_classes": sub_classes.iter().map(|c| c.to_json_value(true)).collect::<Vec<_>>(),
             })
         }

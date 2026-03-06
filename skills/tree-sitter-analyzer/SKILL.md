@@ -92,6 +92,8 @@ tsa <command> <path> [options]
 | Java | `.java` |
 | Go | `.go` |
 
+Use `-l, --language <LANGUAGE>` to limit analysis to one language when the target directory mixes multiple supported languages. Allowed values: `python`, `java`, `go`, `javascript`, `typescript`, `tsx`.
+
 ### Output Formats
 
 Default output is structured JSON.
@@ -100,7 +102,7 @@ Pipe through `jq` to reduce context and extract only what you need:
 
 ```bash
 # Names only
-tsa functions ./src/ | jq -r '.functions[].name'
+tsa functions ./src/ -l python | jq -r '.functions[].name'
 
 # Location tuples
 tsa classes ./src/ | jq -r '.classes[] | "\(.name)\t\(.file):\(.start_line)"'
@@ -116,11 +118,12 @@ Full JSON output schemas for each command: see `references/OUTPUT.md`.
 ### `functions` — Extract function/method definitions
 
 ```bash
-tsa functions <path> [-q QUERY] [--body]
+tsa functions <path> [-l LANGUAGE] [-q QUERY] [--body]
 ```
 
 | Option | Description |
 |--------|-------------|
+| `-l, --language` | Only analyze files for a single language |
 | `-q, --query` | Filter by name (regex) |
 | `--body` | Include function body |
 
@@ -131,11 +134,12 @@ tsa functions ./src/ -q "^get_"
 ### `classes` — Extract class/struct/interface definitions
 
 ```bash
-tsa classes <path> [-q QUERY]
+tsa classes <path> [-l LANGUAGE] [-q QUERY]
 ```
 
 | Option | Description |
 |--------|-------------|
+| `-l, --language` | Only analyze files for a single language |
 | `-q, --query` | Filter by name (regex) |
 
 ```bash
@@ -145,11 +149,12 @@ tsa classes ./src/ -q "Service$"
 ### `fields` — Get class fields
 
 ```bash
-tsa fields <path> -c CLASS_NAME
+tsa fields <path> [-l LANGUAGE] -c CLASS_NAME
 ```
 
 | Option | Description |
 |--------|-------------|
+| `-l, --language` | Only analyze files for a single language |
 | `-c, --class-name` | Class name (required) |
 
 ```bash
@@ -159,11 +164,12 @@ tsa fields ./src/ -c DatabaseConfig
 ### `imports` — Extract import statements
 
 ```bash
-tsa imports <path> [-q QUERY]
+tsa imports <path> [-l LANGUAGE] [-q QUERY]
 ```
 
 | Option | Description |
 |--------|-------------|
+| `-l, --language` | Only analyze files for a single language |
 | `-q, --query` | Filter by module name (regex) |
 
 ```bash
@@ -173,11 +179,12 @@ tsa imports ./src/ -q "^(os|sys)$"
 ### `callers` — Find who calls a function
 
 ```bash
-tsa callers <path> -f FUNCTION [-c CLASS_NAME]
+tsa callers <path> [-l LANGUAGE] -f FUNCTION [-c CLASS_NAME]
 ```
 
 | Option | Description |
 |--------|-------------|
+| `-l, --language` | Only analyze files for a single language |
 | `-f, --function` | Function name (required) |
 | `-c, --class-name` | Scope to a method in this class |
 
@@ -188,11 +195,12 @@ tsa callers ./src/ -f save -c DatabaseHandler
 ### `callees` — Find what a function calls
 
 ```bash
-tsa callees <path> -f FUNCTION [-c CLASS_NAME]
+tsa callees <path> [-l LANGUAGE] -f FUNCTION [-c CLASS_NAME]
 ```
 
 | Option | Description |
 |--------|-------------|
+| `-l, --language` | Only analyze files for a single language |
 | `-f, --function` | Function name (required) |
 | `-c, --class-name` | Scope to a method in this class |
 
@@ -203,11 +211,12 @@ tsa callees ./src/ -f initialize -c Application
 ### `definition` — Get function source code
 
 ```bash
-tsa definition <path> -f FUNCTION [-c CLASS_NAME]
+tsa definition <path> [-l LANGUAGE] -f FUNCTION [-c CLASS_NAME]
 ```
 
 | Option | Description |
 |--------|-------------|
+| `-l, --language` | Only analyze files for a single language |
 | `-f, --function` | Function name (required) |
 | `-c, --class-name` | Scope to a method in this class |
 
@@ -218,11 +227,12 @@ tsa definition ./src/ -f parse_config
 ### `symbols` — Find all references to an identifier
 
 ```bash
-tsa symbols <path> -n NAME
+tsa symbols <path> [-l LANGUAGE] -n NAME
 ```
 
 | Option | Description |
 |--------|-------------|
+| `-l, --language` | Only analyze files for a single language |
 | `-n, --name` | Identifier name (required) |
 
 ```bash
@@ -232,11 +242,12 @@ tsa symbols ./src/ -n CONFIG_PATH
 ### `super-classes` — Get parent classes
 
 ```bash
-tsa super-classes <path> -c CLASS_NAME
+tsa super-classes <path> [-l LANGUAGE] -c CLASS_NAME
 ```
 
 | Option | Description |
 |--------|-------------|
+| `-l, --language` | Only analyze files for a single language |
 | `-c, --class-name` | Class name (required) |
 
 ```bash
@@ -246,11 +257,12 @@ tsa super-classes ./src/ -c AdminUser
 ### `sub-classes` — Get child classes
 
 ```bash
-tsa sub-classes <path> -c CLASS_NAME
+tsa sub-classes <path> [-l LANGUAGE] -c CLASS_NAME
 ```
 
 | Option | Description |
 |--------|-------------|
+| `-l, --language` | Only analyze files for a single language |
 | `-c, --class-name` | Class name (required) |
 
 ```bash

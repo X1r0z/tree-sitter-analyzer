@@ -98,8 +98,8 @@ Array key: `fields`
 {
   "path": "/path/to/project",
   "files_searched": 42,
-  "class_name": "Database",
   "count": 2,
+  "class_name": "Database",
   "fields": [
     {
       "name": "dsn",
@@ -158,8 +158,8 @@ Array key: `super_classes`
 {
   "path": "/path/to/project",
   "files_searched": 42,
-  "class_name": "AdminUser",
   "count": 1,
+  "class_name": "AdminUser",
   "super_classes": [
     {
       "name": "User",
@@ -190,8 +190,8 @@ Array key: `sub_classes`
 {
   "path": "/path/to/project",
   "files_searched": 42,
-  "class_name": "User",
   "count": 1,
+  "class_name": "User",
   "sub_classes": [
     {
       "name": "AdminUser",
@@ -220,9 +220,9 @@ Array key: `callers`
 {
   "path": "/path/to/project",
   "files_searched": 42,
+  "count": 2,
   "function": "process_data",
   "class_name": null,
-  "count": 2,
   "callers": [
     {"caller": "main", "line": 12, "file": "/path/to/project/src/app.py", "target_class": null},
     {"caller": "handle_request", "line": 88, "file": "/path/to/project/src/api.py", "target_class": null}
@@ -245,9 +245,9 @@ Array key: `callees`
 {
   "path": "/path/to/project",
   "files_searched": 42,
+  "count": 2,
   "function": "main",
   "class_name": null,
-  "count": 2,
   "callees": [
     {"callee": "load_config", "line": 18, "file": "/path/to/project/src/app.py", "class_name": null},
     {"callee": "process_data", "line": 25, "file": "/path/to/project/src/app.py", "class_name": null}
@@ -271,8 +271,8 @@ Array key: `functions`
 {
   "path": "/path/to/project",
   "files_searched": 42,
-  "class_name": null,
   "count": 1,
+  "class_name": null,
   "functions": [
     {
       "name": "main",
@@ -301,8 +301,8 @@ Array key: `references`
 {
   "path": "/path/to/project",
   "files_searched": 42,
-  "name": "CONFIG_PATH",
   "count": 2,
+  "name": "CONFIG_PATH",
   "references": [
     {
       "type": "identifier",

@@ -13,7 +13,7 @@ pub struct ProjectAnalyzer {
 }
 
 impl ProjectAnalyzer {
-    pub fn new(path: &str) -> anyhow::Result<Self> {
+    pub fn new_with_language(path: &str, language: Option<&str>) -> anyhow::Result<Self> {
         let p = Path::new(path);
         if !p.exists() {
             anyhow::bail!("Path not found: {}", path);
@@ -21,7 +21,7 @@ impl ProjectAnalyzer {
         if !p.is_dir() {
             anyhow::bail!("Path must be a directory: {}", path);
         }
-        let files = find_files(path);
+        let files = find_files(path, language);
         Ok(Self {
             files,
             path: path.to_string(),
@@ -354,7 +354,7 @@ impl ProjectAnalyzer {
         if text.is_empty() {
             return self.files.clone();
         }
-        if let Some(rg_files) = rg_search_files(text, &self.path) {
+        if let Some(rg_files) = rg_search_files(text, &self.path, None) {
             let rg_set: HashSet<String> = rg_files.into_iter().collect();
             self.files
                 .iter()

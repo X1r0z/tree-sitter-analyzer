@@ -241,11 +241,13 @@ impl CodeAnalyzer {
         };
         for m in &call_matches {
             let call_node = m.call;
-            let (caller, caller_class_name) = self.parser.find_enclosing_context(call_node);
+            let (caller, caller_class_name, enclosing_function_node) = self
+                .parser
+                .find_enclosing_context_with_function_node(call_node);
             let mut callee = String::new();
             let mut is_method = false;
             let mut obj_name: Option<String> = None;
-            let mut func_node_opt: Option<Node<'_>> = None;
+            let mut callee_function_node_opt: Option<Node<'_>> = None;
 
             if self.parser.language == "java" {
                 if call_node.kind() == "explicit_constructor_invocation" {
@@ -277,7 +279,7 @@ impl CodeAnalyzer {
                 }
             } else {
                 if let Some(func_node) = call_node.child_by_field_name("function") {
-                    func_node_opt = Some(func_node);
+                    callee_function_node_opt = Some(func_node);
                     if func_node.kind() == "identifier" {
                         callee = self.parser.node_text(func_node);
                     } else if matches!(
@@ -310,11 +312,11 @@ impl CodeAnalyzer {
                 let mut pushed_resolved_calls = false;
                 if is_js_like
                     && !is_method
-                    && func_node_opt
+                    && callee_function_node_opt
                         .map(|n| n.kind() == "identifier")
                         .unwrap_or(false)
                 {
-                    if let Some(func_node) = self.parser.find_enclosing_function_node(call_node) {
+                    if let Some(func_node) = enclosing_function_node {
                         if let Some(resolvers) = js_alias_resolvers_by_function.as_mut() {
                             let resolver = resolvers.entry(func_node.id()).or_insert_with(|| {
                                 JsAliasResolverState::new(

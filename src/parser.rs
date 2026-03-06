@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::Path;
@@ -17,6 +18,8 @@ pub(crate) struct BaseParser {
     pub(crate) source: Vec<u8>,
     pub(crate) tree: Tree,
     pub(crate) lang_info: &'static LanguageInfo,
+    function_names_by_node: RefCell<HashMap<usize, Option<String>>>,
+    class_names_by_node: RefCell<HashMap<usize, Option<String>>>,
 }
 
 pub(crate) struct CallQueryMatch<'a> {
@@ -60,6 +63,8 @@ impl BaseParser {
             source,
             tree,
             lang_info,
+            function_names_by_node: RefCell::new(HashMap::new()),
+            class_names_by_node: RefCell::new(HashMap::new()),
         })
     }
 
@@ -309,18 +314,11 @@ impl BaseParser {
     }
 
     pub(crate) fn find_enclosing_function(&self, node: Node) -> Option<String> {
-        self.find_enclosing_context(node).0
+        self.find_enclosing_context_with_function_node(node).0
     }
 
     pub(crate) fn find_enclosing_function_node<'a>(&self, node: Node<'a>) -> Option<Node<'a>> {
-        let mut current = node.parent();
-        while let Some(cur) = current {
-            if Self::is_function_like(cur.kind()) {
-                return Some(cur);
-            }
-            current = cur.parent();
-        }
-        None
+        self.find_enclosing_context_with_function_node(node).2
     }
 
     pub(crate) fn infer_anonymous_function_name(&self, func_node: Node) -> Option<String> {
@@ -362,23 +360,33 @@ impl BaseParser {
     }
 
     pub(crate) fn find_enclosing_class(&self, node: Node) -> Option<String> {
-        self.find_enclosing_context(node).1
+        self.find_enclosing_context_with_function_node(node).1
     }
 
     pub(crate) fn find_enclosing_context(&self, node: Node) -> (Option<String>, Option<String>) {
+        let (function_name, class_name, _) = self.find_enclosing_context_with_function_node(node);
+        (function_name, class_name)
+    }
+
+    pub(crate) fn find_enclosing_context_with_function_node<'a>(
+        &self,
+        node: Node<'a>,
+    ) -> (Option<String>, Option<String>, Option<Node<'a>>) {
         if self.language == "go" && node.kind() == "method_declaration" {
             if let Some(rc) = self.extract_go_receiver_type(node) {
-                let function_name = self.function_name_from_node(node);
-                return (function_name, Some(rc));
+                let function_name = self.cached_function_name_from_node(node);
+                return (function_name, Some(rc), Some(node));
             }
         }
 
         let mut current = node.parent();
         let mut function_name: Option<String> = None;
         let mut class_name: Option<String> = None;
+        let mut function_node: Option<Node<'a>> = None;
         while let Some(cur) = current {
             if function_name.is_none() && Self::is_function_like(cur.kind()) {
-                function_name = self.function_name_from_node(cur);
+                function_name = self.cached_function_name_from_node(cur);
+                function_node = Some(cur);
             }
 
             if self.language == "go" && class_name.is_none() && cur.kind() == "method_declaration" {
@@ -397,7 +405,7 @@ impl BaseParser {
                         | "annotation_type_declaration"
                 )
             {
-                class_name = self.class_name_from_node(cur);
+                class_name = self.cached_class_name_from_node(cur);
                 // Some nodes like Java `class_body` don't carry the class name.
                 // Keep walking upward to find the owning class declaration.
                 current = cur.parent();
@@ -405,7 +413,7 @@ impl BaseParser {
             }
             current = cur.parent();
         }
-        (function_name, class_name)
+        (function_name, class_name, function_node)
     }
 
     fn function_name_from_node(&self, node: Node) -> Option<String> {
@@ -428,6 +436,18 @@ impl BaseParser {
         None
     }
 
+    fn cached_function_name_from_node(&self, node: Node) -> Option<String> {
+        let node_id = node.id();
+        if let Some(name) = self.function_names_by_node.borrow().get(&node_id) {
+            return name.clone();
+        }
+        let name = self.function_name_from_node(node);
+        self.function_names_by_node
+            .borrow_mut()
+            .insert(node_id, name.clone());
+        name
+    }
+
     fn class_name_from_node(&self, node: Node) -> Option<String> {
         if let Some(name_node) = node.child_by_field_name("name") {
             let class_name = self.node_text(name_node);
@@ -445,6 +465,18 @@ impl BaseParser {
             }
         }
         None
+    }
+
+    fn cached_class_name_from_node(&self, node: Node) -> Option<String> {
+        let node_id = node.id();
+        if let Some(name) = self.class_names_by_node.borrow().get(&node_id) {
+            return name.clone();
+        }
+        let name = self.class_name_from_node(node);
+        self.class_names_by_node
+            .borrow_mut()
+            .insert(node_id, name.clone());
+        name
     }
 
     pub(crate) fn extract_go_receiver_type(&self, method_node: Node) -> Option<String> {

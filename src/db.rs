@@ -8,8 +8,6 @@ use serde_json::json;
 use crate::nodes::{AnalyzerSnapshot, ClassInfo, FieldInfo, FunctionInfo, ImportInfo, Location};
 use crate::utils::{is_simple_query, sort_by_file_line, QueryMatcher};
 
-const SCHEMA_VERSION: &str = "1";
-
 #[derive(Debug, Clone)]
 pub(crate) struct IndexedFileRecord {
     pub(crate) path: String,
@@ -22,6 +20,15 @@ pub(crate) struct IndexedFileRecord {
 pub(crate) struct FileIndexData {
     pub(crate) file: IndexedFileRecord,
     pub(crate) snapshot: AnalyzerSnapshot,
+}
+
+#[derive(Debug, Clone)]
+struct IndexedFileEntry {
+    id: i64,
+    path: String,
+    language: String,
+    mtime_secs: i64,
+    size_bytes: i64,
 }
 
 pub(crate) struct DbProjectAnalyzer {
@@ -174,7 +181,11 @@ impl DbProjectAnalyzer {
             CREATE INDEX IF NOT EXISTS idx_files_language ON files(language);
             CREATE INDEX IF NOT EXISTS idx_functions_name_class ON functions(name, class_name);
             CREATE INDEX IF NOT EXISTS idx_classes_name ON classes(name);
+            CREATE INDEX IF NOT EXISTS idx_class_methods_class_id ON class_methods(class_id);
+            CREATE INDEX IF NOT EXISTS idx_class_super_classes_class_id ON class_super_classes(class_id);
+            CREATE INDEX IF NOT EXISTS idx_class_super_classes_super_name ON class_super_classes(super_class_name);
             CREATE INDEX IF NOT EXISTS idx_fields_class_name ON fields(class_name, name);
+            CREATE INDEX IF NOT EXISTS idx_fields_file_class_name ON fields(file_id, class_name);
             CREATE INDEX IF NOT EXISTS idx_calls_callee ON calls(callee);
             CREATE INDEX IF NOT EXISTS idx_calls_caller_class ON calls(caller, caller_class_name);
             CREATE INDEX IF NOT EXISTS idx_imports_module ON imports(module);
@@ -185,7 +196,7 @@ impl DbProjectAnalyzer {
         Ok(())
     }
 
-    pub(crate) fn rebuild_database(
+    pub(crate) fn update_database(
         db_path: &Path,
         root_path: &str,
         language: Option<&str>,
@@ -194,22 +205,30 @@ impl DbProjectAnalyzer {
         let mut conn = Connection::open(db_path)?;
         Self::init_schema(&conn)?;
         let tx = conn.transaction()?;
-        Self::clear_all(&tx)?;
-        Self::set_metadata(&tx, "schema_version", SCHEMA_VERSION)?;
-        Self::set_metadata(&tx, "indexed_root_path", root_path)?;
-        Self::set_metadata(&tx, "language_filter", language.unwrap_or(""))?;
-        Self::set_metadata(
-            &tx,
-            "created_at",
-            &format!(
-                "{}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)?
-                    .as_secs()
-            ),
-        )?;
-        for snapshot in snapshots {
-            Self::insert_snapshot(&tx, snapshot)?;
+        let existing = Self::load_metadata_map(&tx)?;
+        let indexed_language = language.unwrap_or("");
+        let compatible = existing.get("indexed_root_path").map(String::as_str) == Some(root_path)
+            && existing
+                .get("language_filter")
+                .map(String::as_str)
+                .unwrap_or("")
+                == indexed_language;
+
+        if !compatible {
+            Self::clear_all(&tx)?;
+            Self::set_metadata(&tx, "created_at", &Self::current_timestamp_string()?)?;
+        }
+
+        Self::upsert_metadata(&tx, "indexed_root_path", root_path)?;
+        Self::upsert_metadata(&tx, "language_filter", indexed_language)?;
+        Self::upsert_metadata(&tx, "updated_at", &Self::current_timestamp_string()?)?;
+
+        if compatible {
+            Self::sync_snapshots(&tx, snapshots)?;
+        } else {
+            for snapshot in snapshots {
+                Self::insert_snapshot(&tx, snapshot)?;
+            }
         }
         tx.commit()?;
         Ok(())
@@ -242,6 +261,94 @@ impl DbProjectAnalyzer {
         Ok(())
     }
 
+    fn upsert_metadata(tx: &Transaction<'_>, key: &str, value: &str) -> anyhow::Result<()> {
+        tx.execute(
+            "
+            INSERT INTO metadata(key, value) VALUES (?1, ?2)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            ",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    fn load_metadata_map(tx: &Transaction<'_>) -> anyhow::Result<HashMap<String, String>> {
+        let mut stmt = tx.prepare("SELECT key, value FROM metadata")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.collect::<Result<HashMap<_, _>, _>>()
+            .map_err(Into::into)
+    }
+
+    fn current_timestamp_string() -> anyhow::Result<String> {
+        Ok(format!(
+            "{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_secs()
+        ))
+    }
+
+    fn sync_snapshots(tx: &Transaction<'_>, snapshots: &[FileIndexData]) -> anyhow::Result<()> {
+        let existing = Self::load_indexed_files(tx)?;
+        let incoming: HashMap<&str, &FileIndexData> = snapshots
+            .iter()
+            .map(|snapshot| (snapshot.file.path.as_str(), snapshot))
+            .collect();
+
+        for (path, record) in &existing {
+            if !incoming.contains_key(path.as_str()) {
+                Self::delete_file_by_id(tx, record.id)?;
+            }
+        }
+
+        for snapshot in snapshots {
+            match existing.get(snapshot.file.path.as_str()) {
+                Some(record)
+                    if record.language == snapshot.file.language
+                        && record.mtime_secs == snapshot.file.mtime_secs
+                        && record.size_bytes == snapshot.file.size_bytes => {}
+                Some(record) => {
+                    Self::delete_file_by_id(tx, record.id)?;
+                    Self::insert_snapshot(tx, snapshot)?;
+                }
+                None => Self::insert_snapshot(tx, snapshot)?,
+            }
+        }
+        Ok(())
+    }
+
+    fn load_indexed_files(
+        tx: &Transaction<'_>,
+    ) -> anyhow::Result<HashMap<String, IndexedFileEntry>> {
+        let mut stmt = tx.prepare(
+            "
+            SELECT id, path, language, mtime_secs, size_bytes
+            FROM files
+            ",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(IndexedFileEntry {
+                id: row.get(0)?,
+                path: row.get(1)?,
+                language: row.get(2)?,
+                mtime_secs: row.get(3)?,
+                size_bytes: row.get(4)?,
+            })
+        })?;
+        let entries = rows.collect::<Result<Vec<_>, _>>()?;
+        Ok(entries
+            .into_iter()
+            .map(|entry| (entry.path.clone(), entry))
+            .collect())
+    }
+
+    fn delete_file_by_id(tx: &Transaction<'_>, file_id: i64) -> anyhow::Result<()> {
+        tx.execute("DELETE FROM files WHERE id = ?1", [file_id])?;
+        Ok(())
+    }
+
     fn metadata_value(&self, key: &str) -> anyhow::Result<Option<String>> {
         self.conn
             .query_row("SELECT value FROM metadata WHERE key = ?1", [key], |row| {
@@ -256,9 +363,6 @@ impl DbProjectAnalyzer {
         root_path: &str,
         requested_language: Option<&str>,
     ) -> anyhow::Result<bool> {
-        if self.metadata_value("schema_version")?.as_deref() != Some(SCHEMA_VERSION) {
-            return Ok(false);
-        }
         if self.metadata_value("indexed_root_path")?.as_deref() != Some(root_path) {
             return Ok(false);
         }
@@ -748,12 +852,7 @@ impl DbProjectAnalyzer {
     }
 
     pub(crate) fn find_super_classes(&self, class_name: &str) -> anyhow::Result<Vec<ClassInfo>> {
-        let all_classes = self.load_all_classes()?;
-        let class_map: HashMap<String, ClassInfo> = all_classes
-            .into_iter()
-            .map(|c| (c.name.clone(), c))
-            .collect();
-        let Some(target) = class_map.get(class_name).cloned() else {
+        let Some(target) = self.find_first_class_by_name(class_name)? else {
             return Ok(Vec::new());
         };
 
@@ -768,7 +867,7 @@ impl DbProjectAnalyzer {
                 if !visited.insert(parent_name.clone()) {
                     continue;
                 }
-                if let Some(parent) = class_map.get(parent_name).cloned() {
+                if let Some(parent) = self.find_first_class_by_name(parent_name)? {
                     result.push(parent.clone());
                     queue.push_back(parent);
                 }
@@ -778,17 +877,6 @@ impl DbProjectAnalyzer {
     }
 
     pub(crate) fn find_sub_classes(&self, class_name: &str) -> anyhow::Result<Vec<ClassInfo>> {
-        let all_classes = self.load_all_classes()?;
-        let mut inheritance_map: HashMap<String, Vec<ClassInfo>> = HashMap::new();
-        for class in &all_classes {
-            for parent in &class.super_classes {
-                inheritance_map
-                    .entry(parent.clone())
-                    .or_default()
-                    .push(class.clone());
-            }
-        }
-
         let mut result = Vec::new();
         let mut visited = HashSet::new();
         let mut queue = VecDeque::new();
@@ -796,20 +884,14 @@ impl DbProjectAnalyzer {
         queue.push_back(class_name.to_string());
 
         while let Some(current) = queue.pop_front() {
-            if let Some(children) = inheritance_map.get(&current) {
-                for child in children {
-                    if visited.insert(child.name.clone()) {
-                        result.push(child.clone());
-                        queue.push_back(child.name.clone());
-                    }
+            for child in self.find_classes_by_super_name(&current)? {
+                if visited.insert(child.name.clone()) {
+                    queue.push_back(child.name.clone());
+                    result.push(child);
                 }
             }
         }
         Ok(result)
-    }
-
-    fn load_all_classes(&self) -> anyhow::Result<Vec<ClassInfo>> {
-        self.find_classes("")
     }
 
     fn language_matches(&self, language: &str) -> bool {
@@ -817,6 +899,97 @@ impl DbProjectAnalyzer {
             .as_deref()
             .map(|requested| requested == language)
             .unwrap_or(true)
+    }
+
+    fn find_first_class_by_name(&self, class_name: &str) -> anyhow::Result<Option<ClassInfo>> {
+        let mut stmt = self.conn.prepare(
+            "
+            SELECT c.id, c.file_id, f.path, f.language, c.name, c.start_line, c.end_line
+            FROM classes c
+            JOIN files f ON f.id = c.file_id
+            WHERE c.name = ?1
+            ORDER BY f.path, c.start_line
+            ",
+        )?;
+        let rows = stmt.query_map([class_name], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
+            ))
+        })?;
+
+        for row in rows {
+            let (class_id, file_id, file, language, name, start_line, end_line) = row?;
+            if !self.language_matches(&language) {
+                continue;
+            }
+            return self
+                .load_class_info(class_id, file_id, file, name, start_line, end_line)
+                .map(Some);
+        }
+        Ok(None)
+    }
+
+    fn find_classes_by_super_name(&self, super_name: &str) -> anyhow::Result<Vec<ClassInfo>> {
+        let mut stmt = self.conn.prepare(
+            "
+            SELECT c.id, c.file_id, f.path, f.language, c.name, c.start_line, c.end_line
+            FROM class_super_classes sc
+            JOIN classes c ON c.id = sc.class_id
+            JOIN files f ON f.id = c.file_id
+            WHERE sc.super_class_name = ?1
+            ORDER BY f.path, c.start_line
+            ",
+        )?;
+        let rows = stmt.query_map([super_name], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
+            ))
+        })?;
+
+        let mut classes = Vec::new();
+        for row in rows {
+            let (class_id, file_id, file, language, name, start_line, end_line) = row?;
+            if !self.language_matches(&language) {
+                continue;
+            }
+            classes
+                .push(self.load_class_info(class_id, file_id, file, name, start_line, end_line)?);
+        }
+        Ok(classes)
+    }
+
+    fn load_class_info(
+        &self,
+        class_id: i64,
+        file_id: i64,
+        file: String,
+        name: String,
+        start_line: i64,
+        end_line: i64,
+    ) -> anyhow::Result<ClassInfo> {
+        Ok(ClassInfo {
+            name: name.clone(),
+            location: Location {
+                file,
+                start_line: start_line as usize,
+                end_line: end_line as usize,
+            },
+            methods: self.load_class_methods(class_id)?,
+            fields: self.load_field_names(file_id, &name)?,
+            super_classes: self.load_class_super_classes(class_id)?,
+        })
     }
 
     fn load_class_methods(&self, class_id: i64) -> anyhow::Result<Vec<String>> {

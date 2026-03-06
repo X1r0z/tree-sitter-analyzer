@@ -45,7 +45,7 @@ pub(crate) fn build_index(path: &str, language: Option<&str>) -> Value {
         Err(error) => return json!({ "error": error.to_string() }),
     };
 
-    if let Err(error) = DbProjectAnalyzer::rebuild_database(&db_path, path, language, &snapshots) {
+    if let Err(error) = DbProjectAnalyzer::update_database(&db_path, path, language, &snapshots) {
         return json!({ "error": error.to_string() });
     }
 

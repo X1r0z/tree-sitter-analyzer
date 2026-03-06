@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::LazyLock;
 
+use tree_sitter::Query;
+
 #[allow(dead_code)]
 pub struct LanguageInfo {
     pub name: &'static str,
@@ -113,6 +115,34 @@ static SUPPORTED_EXTENSIONS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
     exts
 });
 
+struct CompiledQueries {
+    function_query: Query,
+    class_query: Query,
+    call_query: Query,
+    import_query: Query,
+    field_query: Query,
+}
+
+fn compile_queries(info: &'static LanguageInfo) -> CompiledQueries {
+    let language = get_language(info.name).expect("supported language");
+    CompiledQueries {
+        function_query: Query::new(&language, info.function_query).expect("valid function query"),
+        class_query: Query::new(&language, info.class_query).expect("valid class query"),
+        call_query: Query::new(&language, info.call_query).expect("valid call query"),
+        import_query: Query::new(&language, info.import_query).expect("valid import query"),
+        field_query: Query::new(&language, info.field_query).expect("valid field query"),
+    }
+}
+
+static PYTHON_QUERIES: LazyLock<CompiledQueries> = LazyLock::new(|| compile_queries(&PYTHON_INFO));
+static JAVASCRIPT_QUERIES: LazyLock<CompiledQueries> =
+    LazyLock::new(|| compile_queries(&JAVASCRIPT_INFO));
+static TYPESCRIPT_QUERIES: LazyLock<CompiledQueries> =
+    LazyLock::new(|| compile_queries(&TYPESCRIPT_INFO));
+static TSX_QUERIES: LazyLock<CompiledQueries> = LazyLock::new(|| compile_queries(&TSX_INFO));
+static JAVA_QUERIES: LazyLock<CompiledQueries> = LazyLock::new(|| compile_queries(&JAVA_INFO));
+static GO_QUERIES: LazyLock<CompiledQueries> = LazyLock::new(|| compile_queries(&GO_INFO));
+
 pub fn detect_language(file_path: &Path) -> Option<&'static str> {
     let ext = file_path.extension()?.to_str()?;
     let dotted = format!(".{ext}");
@@ -141,4 +171,35 @@ pub fn get_supported_extensions() -> &'static [&'static str] {
 
 pub fn get_language_extensions(name: &str) -> Option<&'static [&'static str]> {
     get_language_info(name).map(|info| info.extensions)
+}
+
+fn get_compiled_queries(name: &str) -> Option<&'static CompiledQueries> {
+    match name {
+        "python" => Some(&PYTHON_QUERIES),
+        "javascript" => Some(&JAVASCRIPT_QUERIES),
+        "typescript" => Some(&TYPESCRIPT_QUERIES),
+        "tsx" => Some(&TSX_QUERIES),
+        "java" => Some(&JAVA_QUERIES),
+        "go" => Some(&GO_QUERIES),
+        _ => None,
+    }
+}
+
+pub fn get_compiled_query(language: &str, query_str: &str) -> Option<&'static Query> {
+    let info = get_language_info(language)?;
+    let queries = get_compiled_queries(language)?;
+
+    if query_str == info.function_query {
+        Some(&queries.function_query)
+    } else if query_str == info.class_query {
+        Some(&queries.class_query)
+    } else if query_str == info.call_query {
+        Some(&queries.call_query)
+    } else if query_str == info.import_query {
+        Some(&queries.import_query)
+    } else if query_str == info.field_query {
+        Some(&queries.field_query)
+    } else {
+        None
+    }
 }

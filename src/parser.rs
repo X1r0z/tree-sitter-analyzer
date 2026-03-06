@@ -5,7 +5,9 @@ use std::path::Path;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Node, Parser, Query, QueryCursor, Tree};
 
-use crate::languages::{detect_language, get_language, get_language_info, LanguageInfo};
+use crate::languages::{
+    detect_language, get_compiled_query, get_language, get_language_info, LanguageInfo,
+};
 use crate::nodes::*;
 
 pub(crate) struct BaseParser {
@@ -47,8 +49,12 @@ impl BaseParser {
         String::from_utf8_lossy(&self.source[node.start_byte()..node.end_byte()]).to_string()
     }
 
+    pub(crate) fn node_bytes<'a>(&'a self, node: Node) -> &'a [u8] {
+        &self.source[node.start_byte()..node.end_byte()]
+    }
+
     pub(crate) fn node_text_utf8(&self, node: Node) -> String {
-        String::from_utf8_lossy(&self.source[node.start_byte()..node.end_byte()]).to_string()
+        self.node_text(node)
     }
 
     pub(crate) fn node_location(&self, node: Node) -> Location {
@@ -60,6 +66,20 @@ impl BaseParser {
     }
 
     pub(crate) fn run_query(&self, query_str: &str) -> HashMap<String, Vec<Node<'_>>> {
+        if let Some(query) = get_compiled_query(&self.language, query_str) {
+            let mut cursor = QueryCursor::new();
+            let mut matches = cursor.matches(query, self.tree.root_node(), self.source.as_slice());
+
+            let mut result: HashMap<String, Vec<Node>> = HashMap::new();
+            while let Some(m) = matches.next() {
+                for cap in m.captures {
+                    let name = query.capture_names()[cap.index as usize];
+                    result.entry(name.to_string()).or_default().push(cap.node);
+                }
+            }
+            return result;
+        }
+
         let ts_lang = match get_language(&self.language) {
             Some(l) => l,
             None => return HashMap::new(),
@@ -83,6 +103,22 @@ impl BaseParser {
     }
 
     pub(crate) fn run_query_matches(&self, query_str: &str) -> Vec<HashMap<String, Node<'_>>> {
+        if let Some(query) = get_compiled_query(&self.language, query_str) {
+            let mut cursor = QueryCursor::new();
+            let mut matches = cursor.matches(query, self.tree.root_node(), self.source.as_slice());
+
+            let mut results = Vec::new();
+            while let Some(m) = matches.next() {
+                let mut match_dict = HashMap::new();
+                for cap in m.captures {
+                    let name = query.capture_names()[cap.index as usize];
+                    match_dict.insert(name.to_string(), cap.node);
+                }
+                results.push(match_dict);
+            }
+            return results;
+        }
+
         let ts_lang = match get_language(&self.language) {
             Some(l) => l,
             None => return Vec::new(),
@@ -188,18 +224,6 @@ impl BaseParser {
     }
 
     pub(crate) fn find_enclosing_class(&self, node: Node) -> Option<String> {
-        let class_types: HashSet<&str> = [
-            "class_definition",
-            "class_declaration",
-            "class_body",
-            "interface_declaration",
-            "enum_declaration",
-            "record_declaration",
-            "annotation_type_declaration",
-        ]
-        .into_iter()
-        .collect();
-
         if self.language == "go" && node.kind() == "method_declaration" {
             if let Some(rc) = self.extract_go_receiver_type(node) {
                 return Some(rc);
@@ -213,7 +237,16 @@ impl BaseParser {
                     return Some(rc);
                 }
             }
-            if class_types.contains(cur.kind()) {
+            if matches!(
+                cur.kind(),
+                "class_definition"
+                    | "class_declaration"
+                    | "class_body"
+                    | "interface_declaration"
+                    | "enum_declaration"
+                    | "record_declaration"
+                    | "annotation_type_declaration"
+            ) {
                 if let Some(name_node) = cur.child_by_field_name("name") {
                     let class_name = self.node_text(name_node);
                     if !class_name.is_empty() {

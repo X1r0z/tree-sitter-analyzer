@@ -272,7 +272,11 @@ fn cmd_functions(
     let real_path = resolve_path(path);
     match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
         Ok(project) => {
-            let functions = project.get_functions(query);
+            let functions = if include_body {
+                project.get_functions_with_bodies(query)
+            } else {
+                project.get_functions(query)
+            };
             json!({
                 "path": real_path,
                 "files_searched": project.files.len(),
@@ -405,7 +409,7 @@ fn cmd_definition(
     let real_path = resolve_path(path);
     match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
         Ok(project) => {
-            let functions = project.get_all_functions_by_name(function_name, class_name);
+            let functions = project.get_all_function_definitions_by_name(function_name, class_name);
             if functions.is_empty() {
                 return json!({"error": format!("Function '{}' not found", function_name)});
             }

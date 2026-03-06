@@ -77,16 +77,36 @@ pub fn sort_by_file_line(results: &mut [serde_json::Value]) {
     });
 }
 
-pub fn match_query(name: &str, query: &str) -> bool {
-    if query.is_empty() {
-        return true;
-    }
-    match Regex::new(query) {
-        Ok(re) => re.is_match(name),
-        Err(_) => name.contains(query),
-    }
-}
-
 pub fn is_simple_query(query: &str) -> bool {
     !query.is_empty() && !query.contains(|c: char| ".^$*+?{}[]|()\\".contains(c))
+}
+
+pub enum QueryMatcher {
+    MatchAll,
+    Regex(Regex),
+    Contains(String),
+}
+
+impl QueryMatcher {
+    pub fn new(query: &str) -> Self {
+        if query.is_empty() {
+            return Self::MatchAll;
+        }
+        match Regex::new(query) {
+            Ok(re) => Self::Regex(re),
+            Err(_) => Self::Contains(query.to_string()),
+        }
+    }
+
+    pub fn is_match(&self, name: &str) -> bool {
+        match self {
+            Self::MatchAll => true,
+            Self::Regex(re) => re.is_match(name),
+            Self::Contains(text) => name.contains(text),
+        }
+    }
+
+    pub fn matches_all(&self) -> bool {
+        matches!(self, Self::MatchAll)
+    }
 }

@@ -1,15 +1,17 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
+use std::sync::Mutex;
 
 use rayon::prelude::*;
 
 use crate::analyzer::CodeAnalyzer;
 use crate::nodes::*;
-use crate::utils::{find_files, is_simple_query, match_query, rg_search_files, sort_by_file_line};
+use crate::utils::{find_files, is_simple_query, rg_search_files, sort_by_file_line, QueryMatcher};
 
 pub struct ProjectAnalyzer {
     pub files: Vec<String>,
     path: String,
+    text_filter_cache: Mutex<HashMap<String, Vec<String>>>,
 }
 
 impl ProjectAnalyzer {
@@ -25,15 +27,24 @@ impl ProjectAnalyzer {
         Ok(Self {
             files,
             path: path.to_string(),
+            text_filter_cache: Mutex::new(HashMap::new()),
         })
     }
 
     pub fn get_functions(&self, query: &str) -> Vec<FunctionInfo> {
+        self.collect_functions(query, false)
+    }
+
+    pub fn get_functions_with_bodies(&self, query: &str) -> Vec<FunctionInfo> {
+        self.collect_functions(query, true)
+    }
+
+    fn collect_functions(&self, query: &str, include_body: bool) -> Vec<FunctionInfo> {
         let candidate_files = self.filter_candidates(query);
         if candidate_files.is_empty() {
             return Vec::new();
         }
-        let q = query.to_string();
+        let matcher = QueryMatcher::new(query);
         candidate_files
             .par_iter()
             .flat_map(|f| {
@@ -41,13 +52,17 @@ impl ProjectAnalyzer {
                     Ok(a) => a,
                     Err(_) => return Vec::new(),
                 };
-                let funcs = analyzer.get_functions();
-                if q.is_empty() {
+                let funcs = if include_body {
+                    analyzer.get_functions_with_bodies()
+                } else {
+                    analyzer.get_functions()
+                };
+                if matcher.matches_all() {
                     funcs
                 } else {
                     funcs
                         .into_iter()
-                        .filter(|func| match_query(&func.name, &q))
+                        .filter(|func| matcher.is_match(&func.name))
                         .collect()
                 }
             })
@@ -59,7 +74,7 @@ impl ProjectAnalyzer {
         if candidate_files.is_empty() {
             return Vec::new();
         }
-        let q = query.to_string();
+        let matcher = QueryMatcher::new(query);
         candidate_files
             .par_iter()
             .flat_map(|f| {
@@ -68,12 +83,12 @@ impl ProjectAnalyzer {
                     Err(_) => return Vec::new(),
                 };
                 let classes = analyzer.get_classes();
-                if q.is_empty() {
+                if matcher.matches_all() {
                     classes
                 } else {
                     classes
                         .into_iter()
-                        .filter(|class| match_query(&class.name, &q))
+                        .filter(|class| matcher.is_match(&class.name))
                         .collect()
                 }
             })
@@ -103,7 +118,7 @@ impl ProjectAnalyzer {
         if candidate_files.is_empty() {
             return Vec::new();
         }
-        let q = query.to_string();
+        let matcher = QueryMatcher::new(query);
         candidate_files
             .par_iter()
             .flat_map(|f| {
@@ -112,12 +127,12 @@ impl ProjectAnalyzer {
                     Err(_) => return Vec::new(),
                 };
                 let imports = analyzer.get_imports();
-                if q.is_empty() {
+                if matcher.matches_all() {
                     imports
                 } else {
                     imports
                         .into_iter()
-                        .filter(|import| match_query(&import.module, &q))
+                        .filter(|import| matcher.is_match(&import.module))
                         .collect()
                 }
             })
@@ -228,6 +243,29 @@ impl ProjectAnalyzer {
                     Err(_) => return Vec::new(),
                 };
                 analyzer.get_all_functions_by_name(&fn_name, cn.as_deref())
+            })
+            .collect()
+    }
+
+    pub fn get_all_function_definitions_by_name(
+        &self,
+        name: &str,
+        class_name: Option<&str>,
+    ) -> Vec<FunctionInfo> {
+        let candidate_files = self.filter_by_text(name);
+        if candidate_files.is_empty() {
+            return Vec::new();
+        }
+        let fn_name = name.to_string();
+        let cn = class_name.map(|s| s.to_string());
+        candidate_files
+            .par_iter()
+            .flat_map(|f| {
+                let mut analyzer = match CodeAnalyzer::new(f) {
+                    Ok(a) => a,
+                    Err(_) => return Vec::new(),
+                };
+                analyzer.get_all_function_definitions_by_name(&fn_name, cn.as_deref())
             })
             .collect()
     }
@@ -354,7 +392,14 @@ impl ProjectAnalyzer {
         if text.is_empty() {
             return self.files.clone();
         }
-        if let Some(rg_files) = rg_search_files(text, &self.path, None) {
+        if let Ok(cache) = self.text_filter_cache.lock() {
+            if let Some(cached) = cache.get(text) {
+                return cached.clone();
+            }
+        }
+        let matched_files: Vec<String> = if let Some(rg_files) =
+            rg_search_files(text, &self.path, None)
+        {
             let rg_set: HashSet<String> = rg_files.into_iter().collect();
             self.files
                 .iter()
@@ -371,6 +416,10 @@ impl ProjectAnalyzer {
                 })
                 .cloned()
                 .collect()
+        };
+        if let Ok(mut cache) = self.text_filter_cache.lock() {
+            cache.insert(text.to_string(), matched_files.clone());
         }
+        matched_files
     }
 }

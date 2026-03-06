@@ -8,10 +8,11 @@ use crate::parser::BaseParser;
 pub struct CodeAnalyzer {
     pub(crate) parser: BaseParser,
     functions_cache: Option<Vec<FunctionInfo>>,
+    functions_with_bodies_cache: Option<Vec<FunctionInfo>>,
     classes_cache: Option<Vec<ClassInfo>>,
     calls_cache: Option<Vec<CallInfo>>,
-    calls_by_callee: Option<HashMap<String, Vec<CallInfo>>>,
-    calls_by_caller: Option<HashMap<String, Vec<CallInfo>>>,
+    calls_by_callee: Option<HashMap<String, Vec<usize>>>,
+    calls_by_caller: Option<HashMap<String, Vec<usize>>>,
     imports_cache: Option<Vec<ImportInfo>>,
     fields_cache: HashMap<String, Vec<FieldInfo>>,
 }
@@ -23,6 +24,7 @@ impl CodeAnalyzer {
         Ok(Self {
             parser,
             functions_cache: None,
+            functions_with_bodies_cache: None,
             classes_cache: None,
             calls_cache: None,
             calls_by_callee: None,
@@ -32,11 +34,7 @@ impl CodeAnalyzer {
         })
     }
 
-    pub fn get_functions(&mut self) -> Vec<FunctionInfo> {
-        if let Some(ref cached) = self.functions_cache {
-            return cached.clone();
-        }
-
+    fn build_functions(&self, include_body: bool) -> Vec<FunctionInfo> {
         let matches = self
             .parser
             .run_query_matches(self.parser.lang_info.function_query);
@@ -68,126 +66,123 @@ impl CodeAnalyzer {
             functions.push(FunctionInfo {
                 name,
                 location: self.parser.node_location(func_node),
-                body: self.parser.node_text_utf8(func_node),
+                body: if include_body {
+                    self.parser.node_text_utf8(func_node)
+                } else {
+                    String::new()
+                },
                 is_method: class_name.is_some(),
                 class_name,
             });
         }
-        self.functions_cache = Some(functions.clone());
         functions
     }
 
-    pub fn get_function_by_name(
-        &mut self,
-        name: &str,
-        class_name: Option<&str>,
-    ) -> Option<FunctionInfo> {
-        self.get_functions().into_iter().find(|f| {
-            f.name == name && (class_name.is_none() || f.class_name.as_deref() == class_name)
-        })
+    fn functions(&mut self) -> &[FunctionInfo] {
+        if self.functions_cache.is_none() {
+            self.functions_cache = Some(self.build_functions(false));
+        }
+        self.functions_cache.as_deref().unwrap_or(&[])
     }
 
-    pub fn get_all_functions_by_name(
-        &mut self,
-        name: &str,
-        class_name: Option<&str>,
-    ) -> Vec<FunctionInfo> {
-        self.get_functions()
-            .into_iter()
-            .filter(|f| {
-                f.name == name && (class_name.is_none() || f.class_name.as_deref() == class_name)
-            })
-            .collect()
+    fn functions_with_bodies(&mut self) -> &[FunctionInfo] {
+        if self.functions_with_bodies_cache.is_none() {
+            self.functions_with_bodies_cache = Some(self.build_functions(true));
+        }
+        self.functions_with_bodies_cache.as_deref().unwrap_or(&[])
     }
 
-    pub fn get_classes(&mut self) -> Vec<ClassInfo> {
-        if let Some(ref cached) = self.classes_cache {
-            return cached.clone();
-        }
-
-        let mut methods_by_class: HashMap<String, HashSet<String>> = HashMap::new();
-        if self.parser.language == "go" {
-            for func in self.get_functions() {
-                if let Some(ref cn) = func.class_name {
-                    methods_by_class
-                        .entry(cn.clone())
-                        .or_default()
-                        .insert(func.name.clone());
-                }
-            }
-        }
-
-        let matches = self
-            .parser
-            .run_query_matches(self.parser.lang_info.class_query);
-        let mut class_pairs: Vec<(tree_sitter::Node, tree_sitter::Node)> = Vec::new();
-        for m in &matches {
-            if let (Some(&class_node), Some(&name_node)) = (m.get("class"), m.get("name")) {
-                class_pairs.push((class_node, name_node));
-            }
-        }
-        class_pairs.sort_by_key(|(c, _)| (c.start_byte(), std::cmp::Reverse(c.end_byte())));
-
-        let mut classes = Vec::new();
-        let mut class_ranges: Vec<(usize, usize)> = Vec::new();
-
-        for (class_node, name_node) in class_pairs {
-            let name = self.parser.node_text(name_node);
-            if name.is_empty() {
-                continue;
-            }
-            let start = class_node.start_byte();
-            let end = class_node.end_byte();
-            let is_nested = class_ranges.iter().any(|&(s, e)| s < start && end <= e);
-            if is_nested && self.parser.language != "java" {
-                continue;
-            }
-            class_ranges.push((start, end));
-
-            let mut methods = self.parser.extract_methods_from_class(class_node);
+    fn classes(&mut self) -> &[ClassInfo] {
+        if self.classes_cache.is_none() {
+            let mut methods_by_class: HashMap<String, HashSet<String>> = HashMap::new();
             if self.parser.language == "go" {
-                if let Some(go_methods) = methods_by_class.get(&name) {
-                    let mut all: HashSet<String> = methods.drain(..).collect();
-                    all.extend(go_methods.iter().cloned());
-                    methods = all.into_iter().collect();
-                    methods.sort();
+                for func in self.functions() {
+                    if let Some(ref cn) = func.class_name {
+                        methods_by_class
+                            .entry(cn.clone())
+                            .or_default()
+                            .insert(func.name.clone());
+                    }
                 }
             }
-            let fields = self.parser.extract_fields_from_class(class_node);
-            let super_classes = self.parser.extract_super_classes(class_node);
 
-            classes.push(ClassInfo {
-                name,
-                location: self.parser.node_location(class_node),
-                methods,
-                fields,
-                super_classes,
-            });
-        }
-        self.classes_cache = Some(classes.clone());
-        classes
-    }
-
-    pub fn get_fields(&mut self, class_name: &str) -> Vec<FieldInfo> {
-        if let Some(cached) = self.fields_cache.get(class_name) {
-            return cached.clone();
-        }
-
-        let classes = self.get_classes();
-        let mut fields = Vec::new();
-        for cls in &classes {
-            if cls.name == class_name {
-                fields.extend(self.parser.get_fields_from_class_node(class_name));
+            let matches = self
+                .parser
+                .run_query_matches(self.parser.lang_info.class_query);
+            let mut class_pairs: Vec<(tree_sitter::Node, tree_sitter::Node)> = Vec::new();
+            for m in &matches {
+                if let (Some(&class_node), Some(&name_node)) = (m.get("class"), m.get("name")) {
+                    class_pairs.push((class_node, name_node));
+                }
             }
+            class_pairs.sort_by_key(|(c, _)| (c.start_byte(), std::cmp::Reverse(c.end_byte())));
+
+            let mut classes = Vec::new();
+            let mut class_ranges: Vec<(usize, usize)> = Vec::new();
+
+            for (class_node, name_node) in class_pairs {
+                let name = self.parser.node_text(name_node);
+                if name.is_empty() {
+                    continue;
+                }
+                let start = class_node.start_byte();
+                let end = class_node.end_byte();
+                let is_nested = class_ranges.iter().any(|&(s, e)| s < start && end <= e);
+                if is_nested && self.parser.language != "java" {
+                    continue;
+                }
+                class_ranges.push((start, end));
+
+                let mut methods = self.parser.extract_methods_from_class(class_node);
+                if self.parser.language == "go" {
+                    if let Some(go_methods) = methods_by_class.get(&name) {
+                        let mut all: HashSet<String> = methods.drain(..).collect();
+                        all.extend(go_methods.iter().cloned());
+                        methods = all.into_iter().collect();
+                        methods.sort();
+                    }
+                }
+                let fields = self.parser.extract_fields_from_class(class_node);
+                let super_classes = self.parser.extract_super_classes(class_node);
+
+                classes.push(ClassInfo {
+                    name,
+                    location: self.parser.node_location(class_node),
+                    methods,
+                    fields,
+                    super_classes,
+                });
+            }
+            self.classes_cache = Some(classes);
         }
-        self.fields_cache
-            .insert(class_name.to_string(), fields.clone());
-        fields
+        self.classes_cache.as_deref().unwrap_or(&[])
     }
 
-    pub fn get_calls(&mut self) -> Vec<CallInfo> {
-        if let Some(ref cached) = self.calls_cache {
-            return cached.clone();
+    fn imports(&mut self) -> &[ImportInfo] {
+        if self.imports_cache.is_none() {
+            let captures = self.parser.run_query(self.parser.lang_info.import_query);
+            let module_nodes = captures.get("module").cloned().unwrap_or_default();
+
+            let mut imports = Vec::new();
+            for node in module_nodes {
+                let text = self
+                    .parser
+                    .node_text(node)
+                    .trim_matches(|c| c == '"' || c == '\'')
+                    .to_string();
+                imports.push(ImportInfo {
+                    module: text,
+                    location: self.parser.node_location(node),
+                });
+            }
+            self.imports_cache = Some(imports);
+        }
+        self.imports_cache.as_deref().unwrap_or(&[])
+    }
+
+    fn ensure_calls(&mut self) {
+        if self.calls_cache.is_some() {
+            return;
         }
 
         let call_matches = self
@@ -293,45 +288,109 @@ impl CodeAnalyzer {
         }
 
         // Build indices
-        let mut by_callee: HashMap<String, Vec<CallInfo>> = HashMap::new();
-        let mut by_caller: HashMap<String, Vec<CallInfo>> = HashMap::new();
-        for call in &calls {
+        let mut by_callee: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut by_caller: HashMap<String, Vec<usize>> = HashMap::new();
+        for (index, call) in calls.iter().enumerate() {
             by_callee
                 .entry(call.callee.clone())
                 .or_default()
-                .push(call.clone());
+                .push(index);
             if let Some(ref c) = call.caller {
-                by_caller.entry(c.clone()).or_default().push(call.clone());
+                by_caller.entry(c.clone()).or_default().push(index);
             }
         }
         self.calls_by_callee = Some(by_callee);
         self.calls_by_caller = Some(by_caller);
-        self.calls_cache = Some(calls.clone());
-        calls
+        self.calls_cache = Some(calls);
     }
 
-    pub fn get_imports(&mut self) -> Vec<ImportInfo> {
-        if let Some(ref cached) = self.imports_cache {
+    pub fn get_functions(&mut self) -> Vec<FunctionInfo> {
+        self.functions().to_vec()
+    }
+
+    pub fn get_functions_with_bodies(&mut self) -> Vec<FunctionInfo> {
+        self.functions_with_bodies().to_vec()
+    }
+
+    pub fn get_function_by_name(
+        &mut self,
+        name: &str,
+        class_name: Option<&str>,
+    ) -> Option<FunctionInfo> {
+        self.functions()
+            .iter()
+            .find(|f| {
+                f.name == name && (class_name.is_none() || f.class_name.as_deref() == class_name)
+            })
+            .cloned()
+    }
+
+    pub fn get_function_definition_by_name(
+        &mut self,
+        name: &str,
+        class_name: Option<&str>,
+    ) -> Option<FunctionInfo> {
+        self.functions_with_bodies()
+            .iter()
+            .find(|f| {
+                f.name == name && (class_name.is_none() || f.class_name.as_deref() == class_name)
+            })
+            .cloned()
+    }
+
+    pub fn get_all_functions_by_name(
+        &mut self,
+        name: &str,
+        class_name: Option<&str>,
+    ) -> Vec<FunctionInfo> {
+        self.functions()
+            .iter()
+            .filter(|f| {
+                f.name == name && (class_name.is_none() || f.class_name.as_deref() == class_name)
+            })
+            .cloned()
+            .collect()
+    }
+
+    pub fn get_all_function_definitions_by_name(
+        &mut self,
+        name: &str,
+        class_name: Option<&str>,
+    ) -> Vec<FunctionInfo> {
+        self.functions_with_bodies()
+            .iter()
+            .filter(|f| {
+                f.name == name && (class_name.is_none() || f.class_name.as_deref() == class_name)
+            })
+            .cloned()
+            .collect()
+    }
+
+    pub fn get_classes(&mut self) -> Vec<ClassInfo> {
+        self.classes().to_vec()
+    }
+
+    pub fn get_fields(&mut self, class_name: &str) -> Vec<FieldInfo> {
+        if let Some(cached) = self.fields_cache.get(class_name) {
             return cached.clone();
         }
 
-        let captures = self.parser.run_query(self.parser.lang_info.import_query);
-        let module_nodes = captures.get("module").cloned().unwrap_or_default();
-
-        let mut imports = Vec::new();
-        for node in module_nodes {
-            let text = self
-                .parser
-                .node_text(node)
-                .trim_matches(|c| c == '"' || c == '\'')
-                .to_string();
-            imports.push(ImportInfo {
-                module: text,
-                location: self.parser.node_location(node),
-            });
+        let mut fields = Vec::new();
+        if self.classes().iter().any(|cls| cls.name == class_name) {
+            fields.extend(self.parser.get_fields_from_class_node(class_name));
         }
-        self.imports_cache = Some(imports.clone());
-        imports
+        self.fields_cache
+            .insert(class_name.to_string(), fields.clone());
+        fields
+    }
+
+    pub fn get_calls(&mut self) -> Vec<CallInfo> {
+        self.ensure_calls();
+        self.calls_cache.as_deref().unwrap_or(&[]).to_vec()
+    }
+
+    pub fn get_imports(&mut self) -> Vec<ImportInfo> {
+        self.imports().to_vec()
     }
 
     pub fn get_function_callers(
@@ -339,8 +398,9 @@ impl CodeAnalyzer {
         function_name: &str,
         class_name: Option<&str>,
     ) -> Vec<(String, usize)> {
-        self.get_calls();
+        self.ensure_calls();
         let by_callee = self.calls_by_callee.as_ref().unwrap();
+        let calls = self.calls_cache.as_ref().unwrap();
 
         let mut target_function = function_name;
         let mut target_object: Option<&str> = None;
@@ -352,8 +412,9 @@ impl CodeAnalyzer {
 
         let mut callers = Vec::new();
         let mut seen: HashSet<(String, usize)> = HashSet::new();
-        if let Some(candidate_calls) = by_callee.get(target_function) {
-            for call in candidate_calls {
+        if let Some(candidate_call_indices) = by_callee.get(target_function) {
+            for &call_index in candidate_call_indices {
+                let call = &calls[call_index];
                 if let Some(to) = target_object {
                     if call.object_name.as_deref() != Some(to) {
                         continue;
@@ -393,16 +454,18 @@ impl CodeAnalyzer {
         class_name: Option<&str>,
     ) -> Vec<(String, usize, Option<String>)> {
         let funcs = self.get_all_functions_by_name(function_name, class_name);
-        self.get_calls();
+        self.ensure_calls();
         let by_caller = self.calls_by_caller.as_ref().unwrap();
+        let calls = self.calls_cache.as_ref().unwrap();
 
         let mut callees = Vec::new();
         let mut seen: HashSet<(String, Option<String>)> = HashSet::new();
 
         if !funcs.is_empty() {
             for func in &funcs {
-                if let Some(caller_calls) = by_caller.get(&func.name) {
-                    for call in caller_calls {
+                if let Some(caller_call_indices) = by_caller.get(&func.name) {
+                    for &call_index in caller_call_indices {
+                        let call = &calls[call_index];
                         if call.caller_class_name != func.class_name {
                             continue;
                         }
@@ -421,8 +484,9 @@ impl CodeAnalyzer {
                     }
                 }
             }
-        } else if let Some(caller_calls) = by_caller.get(function_name) {
-            for call in caller_calls {
+        } else if let Some(caller_call_indices) = by_caller.get(function_name) {
+            for &call_index in caller_call_indices {
+                let call = &calls[call_index];
                 if class_name.is_some() && call.caller_class_name.as_deref() != class_name {
                     continue;
                 }
@@ -457,7 +521,7 @@ impl CodeAnalyzer {
         let mut refs = Vec::new();
         let mut stack = vec![self.parser.tree.root_node()];
         while let Some(node) = stack.pop() {
-            if node.is_named() && self.parser.node_text(node) == name {
+            if node.is_named() && self.parser.node_bytes(node) == name_bytes {
                 let context = node
                     .parent()
                     .map(|p| self.parser.node_text_utf8(p))
@@ -482,13 +546,14 @@ impl CodeAnalyzer {
     }
 
     pub fn get_class_by_name(&mut self, class_name: &str) -> Option<ClassInfo> {
-        self.get_classes()
-            .into_iter()
+        self.classes()
+            .iter()
             .find(|c| c.name == class_name)
+            .cloned()
     }
 
     pub fn get_super_classes(&mut self, class_name: &str) -> Vec<ClassInfo> {
-        let all_classes = self.get_classes();
+        let all_classes = self.classes();
         let class_map: HashMap<&str, &ClassInfo> =
             all_classes.iter().map(|c| (c.name.as_str(), c)).collect();
 
@@ -519,9 +584,9 @@ impl CodeAnalyzer {
     }
 
     pub fn get_sub_classes(&mut self, class_name: &str) -> Vec<ClassInfo> {
-        let all_classes = self.get_classes();
+        let all_classes = self.classes();
         let mut inheritance_map: HashMap<String, Vec<ClassInfo>> = HashMap::new();
-        for cls in &all_classes {
+        for cls in all_classes {
             for parent in &cls.super_classes {
                 inheritance_map
                     .entry(parent.clone())

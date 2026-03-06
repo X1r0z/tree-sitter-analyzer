@@ -2,8 +2,67 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use tree_sitter::Node;
 
-use super::{BaseParser, JsAliasEvent};
+use super::BaseParser;
 use crate::nodes::FieldInfo;
+
+pub(crate) struct JsAliasEvent {
+    pub(crate) start_byte: usize,
+    pub(crate) name: String,
+    pub(crate) targets: Vec<String>,
+}
+
+pub(crate) struct JsAliasResolverState {
+    events: Vec<JsAliasEvent>,
+    next_event_idx: usize,
+    active_aliases: HashMap<String, Vec<String>>,
+}
+
+impl JsAliasResolverState {
+    pub(crate) fn new(events: Vec<JsAliasEvent>) -> Self {
+        Self {
+            events,
+            next_event_idx: 0,
+            active_aliases: HashMap::new(),
+        }
+    }
+
+    pub(crate) fn resolve<'a>(
+        &'a mut self,
+        call_start: usize,
+        identifier_name: &'a str,
+    ) -> Vec<String> {
+        while self.next_event_idx < self.events.len()
+            && self.events[self.next_event_idx].start_byte < call_start
+        {
+            let event = &self.events[self.next_event_idx];
+            self.active_aliases
+                .insert(event.name.clone(), event.targets.clone());
+            self.next_event_idx += 1;
+        }
+
+        let mut visited: HashSet<&'a str> = HashSet::new();
+        let mut resolved = Vec::new();
+        let mut resolved_seen: HashSet<&'a str> = HashSet::new();
+        let mut queue: VecDeque<&'a str> = VecDeque::new();
+        queue.push_back(identifier_name);
+
+        while let Some(current) = queue.pop_front() {
+            if !visited.insert(current) {
+                continue;
+            }
+            if let Some(targets) = self.active_aliases.get(current) {
+                for target in targets {
+                    queue.push_back(target.as_str());
+                }
+            } else if resolved_seen.insert(current) {
+                resolved.push(current);
+            }
+        }
+
+        resolved.sort_unstable();
+        resolved.into_iter().map(str::to_string).collect()
+    }
+}
 
 #[allow(dead_code)]
 impl BaseParser {
@@ -16,12 +75,11 @@ impl BaseParser {
             return Vec::new();
         };
 
-        let events = self.build_js_alias_event_stream(func_node);
-        self.resolve_js_call_targets_from_alias_events(
-            &events,
-            call_node.start_byte(),
-            identifier_name,
-        )
+        let mut resolvers = self.js_alias_resolvers_by_function.borrow_mut();
+        let resolver = resolvers.entry(func_node.id()).or_insert_with(|| {
+            JsAliasResolverState::new(self.build_js_alias_event_stream(func_node))
+        });
+        resolver.resolve(call_node.start_byte(), identifier_name)
     }
 
     pub(crate) fn build_js_alias_event_stream(&self, func_node: Node<'_>) -> Vec<JsAliasEvent> {

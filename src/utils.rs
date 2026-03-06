@@ -2,12 +2,12 @@ use std::path::Path;
 
 use regex::Regex;
 
-use crate::languages::{get_language_extensions, get_supported_extensions};
+use crate::languages::{language_extensions, supported_extensions};
 
 pub fn find_files(path: &str, language: Option<&str>) -> Vec<String> {
     let extensions = language
-        .and_then(get_language_extensions)
-        .unwrap_or_else(get_supported_extensions);
+        .and_then(language_extensions)
+        .unwrap_or_else(supported_extensions);
 
     let mut files = Vec::new();
     let walker = ignore::WalkBuilder::new(path)
@@ -33,11 +33,11 @@ pub fn find_files(path: &str, language: Option<&str>) -> Vec<String> {
     files
 }
 
-pub fn rg_search_files(text: &str, path: &str, language: Option<&str>) -> Option<Vec<String>> {
+pub fn search_files_with_rg(text: &str, path: &str, language: Option<&str>) -> Option<Vec<String>> {
     let rg = which::which("rg").ok()?;
     let extensions = language
-        .and_then(get_language_extensions)
-        .unwrap_or_else(get_supported_extensions);
+        .and_then(language_extensions)
+        .unwrap_or_else(supported_extensions);
 
     let mut cmd = std::process::Command::new(rg);
     cmd.args(["--files-with-matches", "--fixed-strings", "--no-ignore"]);

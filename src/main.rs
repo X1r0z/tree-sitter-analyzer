@@ -19,8 +19,10 @@ enum LanguageFilter {
     Python,
     Java,
     Go,
-    Javascript,
-    Typescript,
+    #[value(name = "javascript")]
+    JavaScript,
+    #[value(name = "typescript")]
+    TypeScript,
     Tsx,
 }
 
@@ -30,8 +32,8 @@ impl LanguageFilter {
             Self::Python => "python",
             Self::Java => "java",
             Self::Go => "go",
-            Self::Javascript => "javascript",
-            Self::Typescript => "typescript",
+            Self::JavaScript => "javascript",
+            Self::TypeScript => "typescript",
             Self::Tsx => "tsx",
         }
     }
@@ -274,9 +276,9 @@ fn cmd_functions(
     match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
         Ok(project) => {
             let functions = if include_body {
-                project.get_functions_with_bodies(query)
+                project.find_functions_with_bodies(query)
             } else {
-                project.get_functions(query)
+                project.find_functions(query)
             };
             json!({
                 "path": real_path,
@@ -293,7 +295,7 @@ fn cmd_classes(path: &str, language: Option<LanguageFilter>, query: &str) -> Val
     let real_path = resolve_path(path);
     match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
         Ok(project) => {
-            let classes = project.get_classes(query);
+            let classes = project.find_classes(query);
             json!({
                 "path": real_path,
                 "files_searched": project.files.len(),
@@ -309,7 +311,7 @@ fn cmd_fields(path: &str, language: Option<LanguageFilter>, class_name: &str) ->
     let real_path = resolve_path(path);
     match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
         Ok(project) => {
-            let fields = project.get_fields(class_name);
+            let fields = project.find_fields(class_name);
             json!({
                 "path": real_path,
                 "files_searched": project.files.len(),
@@ -326,7 +328,7 @@ fn cmd_imports(path: &str, language: Option<LanguageFilter>, query: &str) -> Val
     let real_path = resolve_path(path);
     match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
         Ok(project) => {
-            let imports = project.get_imports(query);
+            let imports = project.find_imports(query);
             json!({
                 "path": real_path,
                 "files_searched": project.files.len(),
@@ -347,7 +349,7 @@ fn cmd_callers(
     let real_path = resolve_path(path);
     match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
         Ok(project) => {
-            let callers = project.get_callers(function_name, class_name);
+            let callers = project.find_callers(function_name, class_name);
             json!({
                 "path": real_path,
                 "files_searched": project.files.len(),
@@ -370,7 +372,7 @@ fn cmd_callees(
     let real_path = resolve_path(path);
     match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
         Ok(project) => {
-            let callees = project.get_callees(function_name, class_name);
+            let callees = project.find_callees(function_name, class_name);
             json!({
                 "path": real_path,
                 "files_searched": project.files.len(),
@@ -410,7 +412,7 @@ fn cmd_definition(
     let real_path = resolve_path(path);
     match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
         Ok(project) => {
-            let functions = project.get_all_function_definitions_by_name(function_name, class_name);
+            let functions = project.find_function_definitions(function_name, class_name);
             if functions.is_empty() {
                 return json!({"error": format!("Function '{}' not found", function_name)});
             }
@@ -430,7 +432,7 @@ fn cmd_super_classes(path: &str, language: Option<LanguageFilter>, class_name: &
     let real_path = resolve_path(path);
     match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
         Ok(project) => {
-            let super_classes = project.get_super_classes(class_name);
+            let super_classes = project.find_super_classes(class_name);
             json!({
                 "path": real_path,
                 "files_searched": project.files.len(),
@@ -447,7 +449,7 @@ fn cmd_sub_classes(path: &str, language: Option<LanguageFilter>, class_name: &st
     let real_path = resolve_path(path);
     match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
         Ok(project) => {
-            let sub_classes = project.get_sub_classes(class_name);
+            let sub_classes = project.find_sub_classes(class_name);
             json!({
                 "path": real_path,
                 "files_searched": project.files.len(),

@@ -124,7 +124,7 @@ struct CompiledQueries {
 }
 
 fn compile_queries(info: &'static LanguageInfo) -> CompiledQueries {
-    let language = get_language(info.name).expect("supported language");
+    let language = find_language(info.name).expect("supported language");
     CompiledQueries {
         function_query: Query::new(&language, info.function_query).expect("valid function query"),
         class_query: Query::new(&language, info.class_query).expect("valid class query"),
@@ -149,7 +149,7 @@ pub fn detect_language(file_path: &Path) -> Option<&'static str> {
     FILE_EXTENSION_MAP.get(dotted.as_str()).copied()
 }
 
-pub fn get_language(name: &str) -> Option<tree_sitter::Language> {
+pub fn find_language(name: &str) -> Option<tree_sitter::Language> {
     match name {
         "python" => Some(tree_sitter_python::LANGUAGE.into()),
         "javascript" => Some(tree_sitter_javascript::LANGUAGE.into()),
@@ -161,16 +161,16 @@ pub fn get_language(name: &str) -> Option<tree_sitter::Language> {
     }
 }
 
-pub fn get_language_info(name: &str) -> Option<&'static LanguageInfo> {
+pub fn find_language_info(name: &str) -> Option<&'static LanguageInfo> {
     LANGUAGE_INFO_MAP.get(name).copied()
 }
 
-pub fn get_supported_extensions() -> &'static [&'static str] {
+pub fn supported_extensions() -> &'static [&'static str] {
     &SUPPORTED_EXTENSIONS
 }
 
-pub fn get_language_extensions(name: &str) -> Option<&'static [&'static str]> {
-    get_language_info(name).map(|info| info.extensions)
+pub fn language_extensions(name: &str) -> Option<&'static [&'static str]> {
+    find_language_info(name).map(|info| info.extensions)
 }
 
 fn get_compiled_queries(name: &str) -> Option<&'static CompiledQueries> {
@@ -185,8 +185,8 @@ fn get_compiled_queries(name: &str) -> Option<&'static CompiledQueries> {
     }
 }
 
-pub fn get_compiled_query(language: &str, query_str: &str) -> Option<&'static Query> {
-    let info = get_language_info(language)?;
+pub fn find_compiled_query(language: &str, query_str: &str) -> Option<&'static Query> {
+    let info = find_language_info(language)?;
     let queries = get_compiled_queries(language)?;
 
     if query_str == info.function_query {

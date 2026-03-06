@@ -4,56 +4,7 @@ use tree_sitter::Node;
 
 use crate::cache::AnalyzerCache;
 use crate::nodes::*;
-use crate::parser::{BaseParser, JsAliasEvent};
-
-struct JsAliasResolverState {
-    events: Vec<JsAliasEvent>,
-    next_event_idx: usize,
-    active_aliases: HashMap<String, Vec<String>>,
-}
-
-impl JsAliasResolverState {
-    fn new(events: Vec<JsAliasEvent>) -> Self {
-        Self {
-            events,
-            next_event_idx: 0,
-            active_aliases: HashMap::new(),
-        }
-    }
-
-    fn resolve<'a>(&'a mut self, call_start: usize, identifier_name: &'a str) -> Vec<String> {
-        while self.next_event_idx < self.events.len()
-            && self.events[self.next_event_idx].start_byte < call_start
-        {
-            let event = &self.events[self.next_event_idx];
-            self.active_aliases
-                .insert(event.name.clone(), event.targets.clone());
-            self.next_event_idx += 1;
-        }
-
-        let mut visited: HashSet<&'a str> = HashSet::new();
-        let mut resolved = Vec::new();
-        let mut resolved_seen: HashSet<&'a str> = HashSet::new();
-        let mut queue: VecDeque<&'a str> = VecDeque::new();
-        queue.push_back(identifier_name);
-
-        while let Some(current) = queue.pop_front() {
-            if !visited.insert(current) {
-                continue;
-            }
-            if let Some(targets) = self.active_aliases.get(current) {
-                for target in targets {
-                    queue.push_back(target.as_str());
-                }
-            } else if resolved_seen.insert(current) {
-                resolved.push(current);
-            }
-        }
-
-        resolved.sort_unstable();
-        resolved.into_iter().map(str::to_string).collect()
-    }
-}
+use crate::parser::BaseParser;
 
 pub struct CodeAnalyzer {
     pub(crate) parser: BaseParser,
@@ -72,7 +23,7 @@ impl CodeAnalyzer {
 
     fn build_functions(&self, include_body: bool) -> Vec<FunctionInfo> {
         let mut func_pairs = self.parser.query_capture_pairs(
-            self.parser.lang_info.function_query,
+            self.parser.language_info.function_query,
             "function",
             "name",
         );
@@ -115,14 +66,14 @@ impl CodeAnalyzer {
         functions
     }
 
-    fn functions(&mut self) -> &[FunctionInfo] {
+    fn cached_functions(&mut self) -> &[FunctionInfo] {
         if self.cache.functions().is_none() {
             self.cache.set_functions(self.build_functions(false));
         }
         self.cache.functions().unwrap_or(&[])
     }
 
-    fn functions_with_bodies(&mut self) -> &[FunctionInfo] {
+    fn cached_functions_with_bodies(&mut self) -> &[FunctionInfo] {
         if self.cache.functions_with_bodies().is_none() {
             self.cache
                 .set_functions_with_bodies(self.build_functions(true));
@@ -130,11 +81,11 @@ impl CodeAnalyzer {
         self.cache.functions_with_bodies().unwrap_or(&[])
     }
 
-    fn classes(&mut self) -> &[ClassInfo] {
+    fn cached_classes(&mut self) -> &[ClassInfo] {
         if self.cache.classes().is_none() {
             let mut methods_by_class: HashMap<String, Vec<String>> = HashMap::new();
             if self.parser.language == "go" {
-                for func in self.functions() {
+                for func in self.cached_functions() {
                     if let Some(ref cn) = func.class_name {
                         methods_by_class
                             .entry(cn.clone())
@@ -148,9 +99,11 @@ impl CodeAnalyzer {
                 }
             }
 
-            let matches =
-                self.parser
-                    .query_capture_pairs(self.parser.lang_info.class_query, "class", "name");
+            let matches = self.parser.query_capture_pairs(
+                self.parser.language_info.class_query,
+                "class",
+                "name",
+            );
             let mut class_pairs = matches;
             class_pairs.sort_by_key(|(c, _)| (c.start_byte(), std::cmp::Reverse(c.end_byte())));
 
@@ -201,11 +154,11 @@ impl CodeAnalyzer {
         self.cache.classes().unwrap_or(&[])
     }
 
-    fn imports(&mut self) -> &[ImportInfo] {
+    fn cached_imports(&mut self) -> &[ImportInfo] {
         if self.cache.imports().is_none() {
             let module_nodes = self
                 .parser
-                .query_capture_nodes(self.parser.lang_info.import_query, "module");
+                .query_capture_nodes(self.parser.language_info.import_query, "module");
 
             let mut imports = Vec::new();
             for node in module_nodes {
@@ -227,7 +180,7 @@ impl CodeAnalyzer {
 
         let mut call_matches = self
             .parser
-            .query_call_matches(self.parser.lang_info.call_query);
+            .query_call_matches(self.parser.language_info.call_query);
         let is_js_like = matches!(
             self.parser.language.as_str(),
             "javascript" | "typescript" | "tsx"
@@ -236,11 +189,6 @@ impl CodeAnalyzer {
             call_matches.sort_by_key(|m| m.call.start_byte());
         }
         let mut calls = Vec::new();
-        let mut js_alias_resolvers_by_function = if is_js_like {
-            Some(HashMap::new())
-        } else {
-            None
-        };
         for m in &call_matches {
             let call_node = m.call;
             let (caller, caller_class_name, enclosing_function_node) =
@@ -316,29 +264,23 @@ impl CodeAnalyzer {
                     && callee_function_node_opt
                         .map(|n| n.kind() == "identifier")
                         .unwrap_or(false)
+                    && enclosing_function_node.is_some()
                 {
-                    if let Some(func_node) = enclosing_function_node {
-                        if let Some(resolvers) = js_alias_resolvers_by_function.as_mut() {
-                            let resolver = resolvers.entry(func_node.id()).or_insert_with(|| {
-                                JsAliasResolverState::new(
-                                    self.parser.build_js_alias_event_stream(func_node),
-                                )
+                    let resolved = self
+                        .parser
+                        .resolve_js_call_targets_for_identifier(call_node, &callee);
+                    if !resolved.is_empty() {
+                        for resolved_callee in resolved {
+                            calls.push(CallInfo {
+                                callee: resolved_callee,
+                                location: call_location.clone(),
+                                caller: caller.clone(),
+                                caller_class_name: caller_class_name.clone(),
+                                object_name: obj_name.clone(),
+                                is_method_call: is_method,
                             });
-                            let resolved = resolver.resolve(call_node.start_byte(), &callee);
-                            if !resolved.is_empty() {
-                                for resolved_callee in resolved {
-                                    calls.push(CallInfo {
-                                        callee: resolved_callee,
-                                        location: call_location.clone(),
-                                        caller: caller.clone(),
-                                        caller_class_name: caller_class_name.clone(),
-                                        object_name: obj_name.clone(),
-                                        is_method_call: is_method,
-                                    });
-                                }
-                                pushed_resolved_calls = true;
-                            }
                         }
+                        pushed_resolved_calls = true;
                     }
                 }
 
@@ -413,7 +355,7 @@ impl CodeAnalyzer {
             call.caller_class_name.as_deref(),
         ) {
             if let Some(attr_name) = Self::extract_instance_attr(object_name) {
-                for field in self.get_fields(caller_class_name) {
+                for field in self.fields(caller_class_name) {
                     if field.name != attr_name {
                         continue;
                     }
@@ -446,20 +388,16 @@ impl CodeAnalyzer {
             .any(|token| !token.is_empty() && token == class_name)
     }
 
-    pub fn get_functions(&mut self) -> Vec<FunctionInfo> {
-        self.functions().to_vec()
+    pub fn functions(&mut self) -> Vec<FunctionInfo> {
+        self.cached_functions().to_vec()
     }
 
-    pub fn get_functions_with_bodies(&mut self) -> Vec<FunctionInfo> {
-        self.functions_with_bodies().to_vec()
+    pub fn functions_with_bodies(&mut self) -> Vec<FunctionInfo> {
+        self.cached_functions_with_bodies().to_vec()
     }
 
-    pub fn get_function_by_name(
-        &mut self,
-        name: &str,
-        class_name: Option<&str>,
-    ) -> Option<FunctionInfo> {
-        self.functions()
+    pub fn function_named(&mut self, name: &str, class_name: Option<&str>) -> Option<FunctionInfo> {
+        self.cached_functions()
             .iter()
             .find(|f| {
                 f.name == name && (class_name.is_none() || f.class_name.as_deref() == class_name)
@@ -467,16 +405,16 @@ impl CodeAnalyzer {
             .cloned()
     }
 
-    pub fn has_function_by_name(&self, name: &str, class_name: Option<&str>) -> bool {
+    pub fn has_function_named(&self, name: &str, class_name: Option<&str>) -> bool {
         self.parser.has_function_named(name, class_name)
     }
 
-    pub fn get_function_definition_by_name(
+    pub fn function_definition_named(
         &mut self,
         name: &str,
         class_name: Option<&str>,
     ) -> Option<FunctionInfo> {
-        self.functions_with_bodies()
+        self.cached_functions_with_bodies()
             .iter()
             .find(|f| {
                 f.name == name && (class_name.is_none() || f.class_name.as_deref() == class_name)
@@ -484,12 +422,12 @@ impl CodeAnalyzer {
             .cloned()
     }
 
-    pub fn get_all_functions_by_name(
+    pub fn find_functions_named(
         &mut self,
         name: &str,
         class_name: Option<&str>,
     ) -> Vec<FunctionInfo> {
-        self.functions()
+        self.cached_functions()
             .iter()
             .filter(|f| {
                 f.name == name && (class_name.is_none() || f.class_name.as_deref() == class_name)
@@ -498,12 +436,12 @@ impl CodeAnalyzer {
             .collect()
     }
 
-    pub fn get_all_function_definitions_by_name(
+    pub fn find_function_definitions(
         &mut self,
         name: &str,
         class_name: Option<&str>,
     ) -> Vec<FunctionInfo> {
-        self.functions_with_bodies()
+        self.cached_functions_with_bodies()
             .iter()
             .filter(|f| {
                 f.name == name && (class_name.is_none() || f.class_name.as_deref() == class_name)
@@ -512,17 +450,21 @@ impl CodeAnalyzer {
             .collect()
     }
 
-    pub fn get_classes(&mut self) -> Vec<ClassInfo> {
-        self.classes().to_vec()
+    pub fn classes(&mut self) -> Vec<ClassInfo> {
+        self.cached_classes().to_vec()
     }
 
-    pub fn get_fields(&mut self, class_name: &str) -> Vec<FieldInfo> {
+    pub fn fields(&mut self, class_name: &str) -> Vec<FieldInfo> {
         if let Some(cached) = self.cache.fields(class_name) {
             return cached.clone();
         }
 
         let mut fields = Vec::new();
-        if self.classes().iter().any(|cls| cls.name == class_name) {
+        if self
+            .cached_classes()
+            .iter()
+            .any(|cls| cls.name == class_name)
+        {
             fields.extend(self.parser.find_field_infos_by_class_name(class_name));
         }
         self.cache
@@ -530,16 +472,16 @@ impl CodeAnalyzer {
         fields
     }
 
-    pub fn get_calls(&mut self) -> Vec<CallInfo> {
+    pub fn calls(&mut self) -> Vec<CallInfo> {
         self.ensure_calls();
         self.cache.calls().unwrap_or(&[]).to_vec()
     }
 
-    pub fn get_imports(&mut self) -> Vec<ImportInfo> {
-        self.imports().to_vec()
+    pub fn imports(&mut self) -> Vec<ImportInfo> {
+        self.cached_imports().to_vec()
     }
 
-    pub fn get_function_callers(
+    pub fn find_function_callers(
         &mut self,
         function_name: &str,
         class_name: Option<&str>,
@@ -606,7 +548,7 @@ impl CodeAnalyzer {
         callers
     }
 
-    pub fn get_function_callees(
+    pub fn find_function_callees(
         &mut self,
         function_name: &str,
         class_name: Option<&str>,
@@ -678,15 +620,15 @@ impl CodeAnalyzer {
         refs
     }
 
-    pub fn get_class_by_name(&mut self, class_name: &str) -> Option<ClassInfo> {
-        self.classes()
+    pub fn class_named(&mut self, class_name: &str) -> Option<ClassInfo> {
+        self.cached_classes()
             .iter()
             .find(|c| c.name == class_name)
             .cloned()
     }
 
-    pub fn get_super_classes(&mut self, class_name: &str) -> Vec<ClassInfo> {
-        let all_classes = self.classes();
+    pub fn find_super_classes(&mut self, class_name: &str) -> Vec<ClassInfo> {
+        let all_classes = self.cached_classes();
         let class_map: HashMap<&str, &ClassInfo> =
             all_classes.iter().map(|c| (c.name.as_str(), c)).collect();
 
@@ -716,8 +658,8 @@ impl CodeAnalyzer {
         result
     }
 
-    pub fn get_sub_classes(&mut self, class_name: &str) -> Vec<ClassInfo> {
-        let all_classes = self.classes();
+    pub fn find_sub_classes(&mut self, class_name: &str) -> Vec<ClassInfo> {
+        let all_classes = self.cached_classes();
         let mut inheritance_map: HashMap<&str, Vec<usize>> = HashMap::new();
         for (index, cls) in all_classes.iter().enumerate() {
             for parent in &cls.super_classes {

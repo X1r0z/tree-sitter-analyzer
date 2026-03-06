@@ -6,7 +6,9 @@ use rayon::prelude::*;
 use crate::analyzer::CodeAnalyzer;
 use crate::cache::TextFilterCache;
 use crate::nodes::*;
-use crate::utils::{find_files, is_simple_query, rg_search_files, sort_by_file_line, QueryMatcher};
+use crate::utils::{
+    find_files, is_simple_query, search_files_with_rg, sort_by_file_line, QueryMatcher,
+};
 
 pub struct ProjectAnalyzer {
     pub files: Vec<String>,
@@ -36,11 +38,11 @@ impl ProjectAnalyzer {
         Some(f(&mut analyzer))
     }
 
-    pub fn get_functions(&self, query: &str) -> Vec<FunctionInfo> {
+    pub fn find_functions(&self, query: &str) -> Vec<FunctionInfo> {
         self.collect_functions(query, false)
     }
 
-    pub fn get_functions_with_bodies(&self, query: &str) -> Vec<FunctionInfo> {
+    pub fn find_functions_with_bodies(&self, query: &str) -> Vec<FunctionInfo> {
         self.collect_functions(query, true)
     }
 
@@ -56,9 +58,9 @@ impl ProjectAnalyzer {
                 let funcs = self
                     .analyze_file(f, |analyzer| {
                         if include_body {
-                            analyzer.get_functions_with_bodies()
+                            analyzer.functions_with_bodies()
                         } else {
-                            analyzer.get_functions()
+                            analyzer.functions()
                         }
                     })
                     .unwrap_or_default();
@@ -74,7 +76,7 @@ impl ProjectAnalyzer {
             .collect()
     }
 
-    pub fn get_classes(&self, query: &str) -> Vec<ClassInfo> {
+    pub fn find_classes(&self, query: &str) -> Vec<ClassInfo> {
         let candidate_files = self.filter_candidates(query);
         if candidate_files.is_empty() {
             return Vec::new();
@@ -84,7 +86,7 @@ impl ProjectAnalyzer {
             .par_iter()
             .flat_map(|f| {
                 let classes = self
-                    .analyze_file(f, |analyzer| analyzer.get_classes())
+                    .analyze_file(f, |analyzer| analyzer.classes())
                     .unwrap_or_default();
                 if matcher.matches_all() {
                     classes
@@ -98,7 +100,7 @@ impl ProjectAnalyzer {
             .collect()
     }
 
-    pub fn get_fields(&self, class_name: &str) -> Vec<FieldInfo> {
+    pub fn find_fields(&self, class_name: &str) -> Vec<FieldInfo> {
         let candidate_files = self.filter_by_text(class_name);
         if candidate_files.is_empty() {
             return Vec::new();
@@ -107,13 +109,13 @@ impl ProjectAnalyzer {
         candidate_files
             .par_iter()
             .flat_map(|f| {
-                self.analyze_file(f, |analyzer| analyzer.get_fields(&cn))
+                self.analyze_file(f, |analyzer| analyzer.fields(&cn))
                     .unwrap_or_default()
             })
             .collect()
     }
 
-    pub fn get_imports(&self, query: &str) -> Vec<ImportInfo> {
+    pub fn find_imports(&self, query: &str) -> Vec<ImportInfo> {
         let candidate_files = self.filter_candidates(query);
         if candidate_files.is_empty() {
             return Vec::new();
@@ -123,7 +125,7 @@ impl ProjectAnalyzer {
             .par_iter()
             .flat_map(|f| {
                 let imports = self
-                    .analyze_file(f, |analyzer| analyzer.get_imports())
+                    .analyze_file(f, |analyzer| analyzer.imports())
                     .unwrap_or_default();
                 if matcher.matches_all() {
                     imports
@@ -136,7 +138,7 @@ impl ProjectAnalyzer {
             })
             .collect()
     }
-    pub fn get_callers(
+    pub fn find_callers(
         &self,
         function_name: &str,
         class_name: Option<&str>,
@@ -151,7 +153,7 @@ impl ProjectAnalyzer {
             .par_iter()
             .flat_map(|f| {
                 self.analyze_file(f, |analyzer| {
-                    analyzer.get_function_callers(&fn_name, cn.as_deref())
+                    analyzer.find_function_callers(&fn_name, cn.as_deref())
                 })
                 .unwrap_or_default()
                 .into_iter()
@@ -170,7 +172,7 @@ impl ProjectAnalyzer {
         results
     }
 
-    pub fn get_callees(
+    pub fn find_callees(
         &self,
         function_name: &str,
         class_name: Option<&str>,
@@ -186,7 +188,7 @@ impl ProjectAnalyzer {
             .par_iter()
             .filter_map(|f| {
                 self.analyze_file(f, |analyzer| {
-                    analyzer.has_function_by_name(&fn_name, cn.as_deref())
+                    analyzer.has_function_named(&fn_name, cn.as_deref())
                 })
                 .and_then(|exists| exists.then(|| f.clone()))
             })
@@ -200,7 +202,7 @@ impl ProjectAnalyzer {
             .par_iter()
             .flat_map(|f| {
                 self.analyze_file(f, |analyzer| {
-                    analyzer.get_function_callees(&fn_name, cn.as_deref())
+                    analyzer.find_function_callees(&fn_name, cn.as_deref())
                 })
                 .unwrap_or_default()
                 .into_iter()
@@ -219,7 +221,7 @@ impl ProjectAnalyzer {
         results
     }
 
-    pub fn get_all_function_definitions_by_name(
+    pub fn find_function_definitions(
         &self,
         name: &str,
         class_name: Option<&str>,
@@ -234,7 +236,7 @@ impl ProjectAnalyzer {
             .par_iter()
             .flat_map(|f| {
                 self.analyze_file(f, |analyzer| {
-                    analyzer.get_all_function_definitions_by_name(&fn_name, cn.as_deref())
+                    analyzer.find_function_definitions(&fn_name, cn.as_deref())
                 })
                 .unwrap_or_default()
             })
@@ -256,7 +258,7 @@ impl ProjectAnalyzer {
             .collect()
     }
 
-    pub fn get_super_classes(&self, class_name: &str) -> Vec<ClassInfo> {
+    pub fn find_super_classes(&self, class_name: &str) -> Vec<ClassInfo> {
         let target = self.find_class_by_name(class_name);
         let target = match target {
             Some(c) => c,
@@ -280,7 +282,7 @@ impl ProjectAnalyzer {
                 let found: Vec<ClassInfo> = candidate_files
                     .par_iter()
                     .flat_map(|f| {
-                        self.analyze_file(f, |analyzer| analyzer.get_class_by_name(&pn))
+                        self.analyze_file(f, |analyzer| analyzer.class_named(&pn))
                             .flatten()
                             .into_iter()
                             .collect::<Vec<_>>()
@@ -295,7 +297,7 @@ impl ProjectAnalyzer {
         result
     }
 
-    pub fn get_sub_classes(&self, class_name: &str) -> Vec<ClassInfo> {
+    pub fn find_sub_classes(&self, class_name: &str) -> Vec<ClassInfo> {
         let mut result = Vec::new();
         let mut visited: HashSet<String> = HashSet::new();
         visited.insert(class_name.to_string());
@@ -308,7 +310,7 @@ impl ProjectAnalyzer {
             let found: Vec<ClassInfo> = candidate_files
                 .par_iter()
                 .flat_map(|f| {
-                    self.analyze_file(f, |analyzer| analyzer.get_classes())
+                    self.analyze_file(f, |analyzer| analyzer.classes())
                         .unwrap_or_default()
                         .into_iter()
                         .filter(|cls| cls.super_classes.contains(&cp))
@@ -329,7 +331,7 @@ impl ProjectAnalyzer {
         let candidate_files = self.filter_by_text(class_name);
         for f in &candidate_files {
             if let Some(cls) = self
-                .analyze_file(f, |analyzer| analyzer.get_class_by_name(class_name))
+                .analyze_file(f, |analyzer| analyzer.class_named(class_name))
                 .flatten()
             {
                 return Some(cls);
@@ -354,7 +356,7 @@ impl ProjectAnalyzer {
             return cached;
         }
         let matched_files: Vec<String> = if let Some(rg_files) =
-            rg_search_files(text, &self.path, None)
+            search_files_with_rg(text, &self.path, None)
         {
             let mut rg_files = rg_files;
             rg_files.sort();

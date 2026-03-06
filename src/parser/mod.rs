@@ -13,7 +13,7 @@ use streaming_iterator::StreamingIterator;
 use tree_sitter::{Node, Parser, Query, QueryCursor, Tree};
 
 use crate::languages::{
-    detect_language, get_compiled_query, get_language, get_language_info, LanguageInfo,
+    detect_language, find_compiled_query, find_language, find_language_info, LanguageInfo,
 };
 use crate::nodes::*;
 
@@ -22,9 +22,10 @@ pub(crate) struct BaseParser {
     pub(crate) language: String,
     pub(crate) source: Vec<u8>,
     pub(crate) tree: Tree,
-    pub(crate) lang_info: &'static LanguageInfo,
+    pub(crate) language_info: &'static LanguageInfo,
     function_names_by_node: RefCell<HashMap<usize, Option<String>>>,
     class_names_by_node: RefCell<HashMap<usize, Option<String>>>,
+    js_alias_resolvers_by_function: RefCell<HashMap<usize, javascript::JsAliasResolverState>>,
 }
 
 pub(crate) struct CallQueryMatch<'a> {
@@ -32,12 +33,6 @@ pub(crate) struct CallQueryMatch<'a> {
     pub(crate) callee: Option<Node<'a>>,
     pub(crate) method: Option<Node<'a>>,
     pub(crate) object: Option<Node<'a>>,
-}
-
-pub(crate) struct JsAliasEvent {
-    pub(crate) start_byte: usize,
-    pub(crate) name: String,
-    pub(crate) targets: Vec<String>,
 }
 
 pub(crate) type PythonPropertyKey = (String, Option<String>);
@@ -50,9 +45,9 @@ impl BaseParser {
         let path = Path::new(file_path);
         let language = detect_language(path)
             .ok_or_else(|| anyhow::anyhow!("Could not detect language for: {}", file_path))?;
-        let ts_lang = get_language(language)
+        let ts_lang = find_language(language)
             .ok_or_else(|| anyhow::anyhow!("Unsupported language: {}", language))?;
-        let lang_info = get_language_info(language)
+        let language_info = find_language_info(language)
             .ok_or_else(|| anyhow::anyhow!("No language info for: {}", language))?;
 
         let source = fs::read(file_path)?;
@@ -67,9 +62,10 @@ impl BaseParser {
             language: language.to_string(),
             source,
             tree,
-            lang_info,
+            language_info,
             function_names_by_node: RefCell::new(HashMap::new()),
             class_names_by_node: RefCell::new(HashMap::new()),
+            js_alias_resolvers_by_function: RefCell::new(HashMap::new()),
         })
     }
 
@@ -114,10 +110,10 @@ impl BaseParser {
     }
 
     fn with_query<T>(&self, query_str: &str, f: impl FnOnce(&Query) -> T) -> Option<T> {
-        if let Some(query) = get_compiled_query(&self.language, query_str) {
+        if let Some(query) = find_compiled_query(&self.language, query_str) {
             return Some(f(query));
         }
-        let ts_lang = get_language(&self.language)?;
+        let ts_lang = find_language(&self.language)?;
         let query = match Query::new(&ts_lang, query_str) {
             Ok(q) => q,
             Err(_) => return None,
@@ -197,7 +193,7 @@ impl BaseParser {
     }
 
     pub(crate) fn has_function_named(&self, function_name: &str, class_name: Option<&str>) -> bool {
-        self.with_query(self.lang_info.function_query, |query| {
+        self.with_query(self.language_info.function_query, |query| {
             let capture_names = query.capture_names();
             let Some(function_index) = capture_names
                 .iter()
@@ -773,7 +769,7 @@ impl BaseParser {
     }
 
     pub(crate) fn find_field_infos_by_class_name(&self, class_name: &str) -> Vec<FieldInfo> {
-        let matches = self.query_capture_pairs(self.lang_info.class_query, "class", "name");
+        let matches = self.query_capture_pairs(self.language_info.class_query, "class", "name");
         let mut candidates: Vec<Node> = Vec::new();
 
         for (class_node, name_node) in matches {

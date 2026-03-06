@@ -2,19 +2,13 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use tree_sitter::Node;
 
+use crate::cache::AnalyzerCache;
 use crate::nodes::*;
 use crate::parser::BaseParser;
 
 pub struct CodeAnalyzer {
     pub(crate) parser: BaseParser,
-    functions_cache: Option<Vec<FunctionInfo>>,
-    functions_with_bodies_cache: Option<Vec<FunctionInfo>>,
-    classes_cache: Option<Vec<ClassInfo>>,
-    calls_cache: Option<Vec<CallInfo>>,
-    calls_by_callee: Option<HashMap<String, Vec<usize>>>,
-    calls_by_caller: Option<HashMap<String, Vec<usize>>>,
-    imports_cache: Option<Vec<ImportInfo>>,
-    fields_cache: HashMap<String, Vec<FieldInfo>>,
+    cache: AnalyzerCache,
 }
 
 #[allow(dead_code)]
@@ -23,14 +17,7 @@ impl CodeAnalyzer {
         let parser = BaseParser::new(file_path)?;
         Ok(Self {
             parser,
-            functions_cache: None,
-            functions_with_bodies_cache: None,
-            classes_cache: None,
-            calls_cache: None,
-            calls_by_callee: None,
-            calls_by_caller: None,
-            imports_cache: None,
-            fields_cache: HashMap::new(),
+            cache: AnalyzerCache::new(),
         })
     }
 
@@ -78,21 +65,22 @@ impl CodeAnalyzer {
     }
 
     fn functions(&mut self) -> &[FunctionInfo] {
-        if self.functions_cache.is_none() {
-            self.functions_cache = Some(self.build_functions(false));
+        if self.cache.functions().is_none() {
+            self.cache.set_functions(self.build_functions(false));
         }
-        self.functions_cache.as_deref().unwrap_or(&[])
+        self.cache.functions().unwrap_or(&[])
     }
 
     fn functions_with_bodies(&mut self) -> &[FunctionInfo] {
-        if self.functions_with_bodies_cache.is_none() {
-            self.functions_with_bodies_cache = Some(self.build_functions(true));
+        if self.cache.functions_with_bodies().is_none() {
+            self.cache
+                .set_functions_with_bodies(self.build_functions(true));
         }
-        self.functions_with_bodies_cache.as_deref().unwrap_or(&[])
+        self.cache.functions_with_bodies().unwrap_or(&[])
     }
 
     fn classes(&mut self) -> &[ClassInfo] {
-        if self.classes_cache.is_none() {
+        if self.cache.classes().is_none() {
             let mut methods_by_class: HashMap<String, Vec<String>> = HashMap::new();
             if self.parser.language == "go" {
                 for func in self.functions() {
@@ -157,13 +145,13 @@ impl CodeAnalyzer {
                     super_classes,
                 });
             }
-            self.classes_cache = Some(classes);
+            self.cache.set_classes(classes);
         }
-        self.classes_cache.as_deref().unwrap_or(&[])
+        self.cache.classes().unwrap_or(&[])
     }
 
     fn imports(&mut self) -> &[ImportInfo] {
-        if self.imports_cache.is_none() {
+        if self.cache.imports().is_none() {
             let module_nodes = self
                 .parser
                 .run_query_capture(self.parser.lang_info.import_query, "module");
@@ -176,13 +164,13 @@ impl CodeAnalyzer {
                     location: self.parser.node_location(node),
                 });
             }
-            self.imports_cache = Some(imports);
+            self.cache.set_imports(imports);
         }
-        self.imports_cache.as_deref().unwrap_or(&[])
+        self.cache.imports().unwrap_or(&[])
     }
 
     fn ensure_calls(&mut self) {
-        if self.calls_cache.is_some() {
+        if self.cache.has_calls() {
             return;
         }
 
@@ -267,7 +255,9 @@ impl CodeAnalyzer {
                         .map(|n| n.kind() == "identifier")
                         .unwrap_or(false)
                 {
-                    let resolved = self.resolve_js_identifier_call_targets(call_node, &callee);
+                    let resolved = self
+                        .parser
+                        .resolve_js_identifier_call_targets(call_node, &callee);
                     if !resolved.is_empty() {
                         resolved_callees = resolved;
                     }
@@ -298,9 +288,7 @@ impl CodeAnalyzer {
                 by_caller.entry(c.clone()).or_default().push(index);
             }
         }
-        self.calls_by_callee = Some(by_callee);
-        self.calls_by_caller = Some(by_caller);
-        self.calls_cache = Some(calls);
+        self.cache.set_calls(calls, by_callee, by_caller);
     }
 
     pub fn get_functions(&mut self) -> Vec<FunctionInfo> {
@@ -370,7 +358,7 @@ impl CodeAnalyzer {
     }
 
     pub fn get_fields(&mut self, class_name: &str) -> Vec<FieldInfo> {
-        if let Some(cached) = self.fields_cache.get(class_name) {
+        if let Some(cached) = self.cache.fields(class_name) {
             return cached.clone();
         }
 
@@ -378,14 +366,14 @@ impl CodeAnalyzer {
         if self.classes().iter().any(|cls| cls.name == class_name) {
             fields.extend(self.parser.get_fields_from_class_node(class_name));
         }
-        self.fields_cache
-            .insert(class_name.to_string(), fields.clone());
+        self.cache
+            .insert_fields(class_name.to_string(), fields.clone());
         fields
     }
 
     pub fn get_calls(&mut self) -> Vec<CallInfo> {
         self.ensure_calls();
-        self.calls_cache.as_deref().unwrap_or(&[]).to_vec()
+        self.cache.calls().unwrap_or(&[]).to_vec()
     }
 
     pub fn get_imports(&mut self) -> Vec<ImportInfo> {
@@ -398,8 +386,8 @@ impl CodeAnalyzer {
         class_name: Option<&str>,
     ) -> Vec<(String, usize)> {
         self.ensure_calls();
-        let by_callee = self.calls_by_callee.as_ref().unwrap();
-        let calls = self.calls_cache.as_ref().unwrap();
+        let by_callee = self.cache.calls_by_callee().unwrap();
+        let calls = self.cache.calls().unwrap();
 
         let mut target_function = function_name;
         let mut target_object: Option<&str> = None;
@@ -436,8 +424,10 @@ impl CodeAnalyzer {
             }
         }
 
-        if self.parser.language == "python" && self.is_python_property(function_name, class_name) {
-            for (caller, line) in self.find_python_property_callers(function_name) {
+        if self.parser.language == "python"
+            && self.parser.is_python_property(function_name, class_name)
+        {
+            for (caller, line) in self.parser.find_python_property_callers(function_name) {
                 let key = (caller.clone(), line);
                 if seen.insert(key) {
                     callers.push((caller, line));
@@ -454,8 +444,8 @@ impl CodeAnalyzer {
     ) -> Vec<(String, usize, Option<String>)> {
         let funcs = self.get_all_functions_by_name(function_name, class_name);
         self.ensure_calls();
-        let by_caller = self.calls_by_caller.as_ref().unwrap();
-        let calls = self.calls_cache.as_ref().unwrap();
+        let by_caller = self.cache.calls_by_caller().unwrap();
+        let calls = self.cache.calls().unwrap();
 
         let mut callees = Vec::new();
         let mut seen: HashSet<(String, Option<String>)> = HashSet::new();
@@ -612,223 +602,5 @@ impl CodeAnalyzer {
             }
         }
         result
-    }
-
-    fn find_enclosing_function_node<'a>(&self, node: Node<'a>) -> Option<Node<'a>> {
-        let mut current = node.parent();
-        while let Some(cur) = current {
-            if BaseParser::is_function_like(cur.kind()) {
-                return Some(cur);
-            }
-            current = cur.parent();
-        }
-        None
-    }
-
-    fn resolve_js_identifier_call_targets(
-        &self,
-        call_node: Node<'_>,
-        identifier_name: &str,
-    ) -> Vec<String> {
-        let Some(func_node) = self.find_enclosing_function_node(call_node) else {
-            return Vec::new();
-        };
-
-        let mut aliases: HashMap<String, Vec<String>> = HashMap::new();
-        let call_start = call_node.start_byte();
-
-        fn add_alias(
-            aliases: &mut HashMap<String, Vec<String>>,
-            name: Option<String>,
-            targets: impl IntoIterator<Item = String>,
-        ) {
-            let Some(name) = name else {
-                return;
-            };
-            if name.is_empty() {
-                return;
-            }
-            let entry = aliases.entry(name).or_default();
-            for target in targets {
-                if !target.is_empty() {
-                    entry.push(target);
-                }
-            }
-        }
-
-        let extract_loop_var = |node: Node<'_>| -> Option<String> {
-            if node.kind() == "identifier" {
-                return Some(self.parser.node_text(node));
-            }
-            for i in 0..node.named_child_count() {
-                let Some(child) = node.named_child((i) as u32) else {
-                    continue;
-                };
-                if child.kind() == "identifier" {
-                    return Some(self.parser.node_text(child));
-                }
-                if child.kind() == "variable_declarator" {
-                    if let Some(name_node) = child.child_by_field_name("name") {
-                        if name_node.kind() == "identifier" {
-                            return Some(self.parser.node_text(name_node));
-                        }
-                    }
-                }
-            }
-            None
-        };
-
-        let mut stack = vec![func_node];
-        while let Some(node) = stack.pop() {
-            if node.id() == call_node.id() || node.start_byte() >= call_start {
-                continue;
-            }
-
-            if node.kind() == "variable_declarator" {
-                let name_node = node.child_by_field_name("name");
-                let value_node = node.child_by_field_name("value");
-                if let (Some(name_node), Some(value_node)) = (name_node, value_node) {
-                    if name_node.kind() == "identifier" {
-                        let name = self.parser.node_text(name_node);
-                        if value_node.kind() == "identifier" {
-                            add_alias(
-                                &mut aliases,
-                                Some(name),
-                                [self.parser.node_text(value_node)],
-                            );
-                        } else if value_node.kind() == "array" {
-                            let targets = (0..value_node.named_child_count())
-                                .filter_map(|i| value_node.named_child((i) as u32))
-                                .filter(|c| c.kind() == "identifier")
-                                .map(|c| self.parser.node_text(c))
-                                .collect::<Vec<_>>();
-                            add_alias(&mut aliases, Some(name), targets);
-                        }
-                    }
-                }
-            } else if node.kind() == "for_in_statement" {
-                let left_node = node.child_by_field_name("left");
-                let right_node = node.child_by_field_name("right");
-                if let (Some(left_node), Some(right_node)) = (left_node, right_node) {
-                    if right_node.kind() == "identifier" {
-                        let loop_var = extract_loop_var(left_node);
-                        let iterable = self.parser.node_text(right_node);
-                        if let Some(targets) = aliases.get(&iterable).cloned() {
-                            add_alias(&mut aliases, loop_var, targets);
-                        } else {
-                            add_alias(&mut aliases, loop_var, [iterable]);
-                        }
-                    }
-                }
-            }
-
-            for i in (0..node.child_count()).rev() {
-                if let Some(child) = node.child((i) as u32) {
-                    if child.start_byte() < call_start {
-                        stack.push(child);
-                    }
-                }
-            }
-        }
-
-        for targets in aliases.values_mut() {
-            targets.sort_unstable();
-            targets.dedup();
-        }
-
-        let mut visited: HashSet<String> = HashSet::new();
-        let mut resolved: Vec<String> = Vec::new();
-        let mut queue: VecDeque<String> = VecDeque::new();
-        queue.push_back(identifier_name.to_string());
-
-        while let Some(current) = queue.pop_front() {
-            if !visited.insert(current.clone()) {
-                continue;
-            }
-            if let Some(targets) = aliases.get(&current) {
-                for target in targets {
-                    queue.push_back(target.clone());
-                }
-            } else if !resolved.iter().any(|existing| existing == &current) {
-                resolved.push(current);
-            }
-        }
-
-        resolved.sort_unstable();
-        resolved
-    }
-
-    fn is_python_property(&self, function_name: &str, class_name: Option<&str>) -> bool {
-        if self.parser.language != "python" {
-            return false;
-        }
-        let mut stack = vec![self.parser.tree.root_node()];
-        while let Some(node) = stack.pop() {
-            if node.kind() == "decorated_definition" {
-                let definition_node = node.child_by_field_name("definition");
-                if let Some(definition_node) = definition_node {
-                    if definition_node.kind() == "function_definition" {
-                        if let Some(name_node) = definition_node.child_by_field_name("name") {
-                            if self.parser.node_eq_str(name_node, function_name) {
-                                if let Some(expected_class) = class_name {
-                                    if self.parser.find_enclosing_class(definition_node).as_deref()
-                                        != Some(expected_class)
-                                    {
-                                        continue;
-                                    }
-                                }
-                                for i in 0..node.child_count() {
-                                    let Some(child) = node.child((i) as u32) else {
-                                        continue;
-                                    };
-                                    if child.kind() == "decorator"
-                                        && self.parser.node_trimmed_eq_str(child, "@property")
-                                    {
-                                        return true;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            for i in (0..node.child_count()).rev() {
-                if let Some(child) = node.child((i) as u32) {
-                    stack.push(child);
-                }
-            }
-        }
-        false
-    }
-
-    fn find_python_property_callers(&self, property_name: &str) -> Vec<(String, usize)> {
-        if self.parser.language != "python" {
-            return Vec::new();
-        }
-        let mut callers = Vec::new();
-        let mut seen: HashSet<(String, usize)> = HashSet::new();
-        let mut stack = vec![self.parser.tree.root_node()];
-        while let Some(node) = stack.pop() {
-            if node.kind() == "attribute" {
-                let (callee, _) = self.parser.parse_attribute_node(node);
-                if callee == property_name {
-                    let caller = self
-                        .parser
-                        .find_enclosing_function(node)
-                        .unwrap_or_else(|| "<module>".to_string());
-                    let line = node.start_position().row + 1;
-                    let key = (caller.clone(), line);
-                    if seen.insert(key) {
-                        callers.push((caller, line));
-                    }
-                }
-            }
-            for i in (0..node.child_count()).rev() {
-                if let Some(child) = node.child((i) as u32) {
-                    stack.push(child);
-                }
-            }
-        }
-        callers
     }
 }

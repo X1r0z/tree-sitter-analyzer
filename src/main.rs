@@ -1,4 +1,5 @@
 mod analyzer;
+mod cache;
 mod languages;
 mod nodes;
 mod parser;

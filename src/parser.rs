@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::Path;
 
@@ -278,6 +278,17 @@ impl BaseParser {
         None
     }
 
+    pub(crate) fn find_enclosing_function_node<'a>(&self, node: Node<'a>) -> Option<Node<'a>> {
+        let mut current = node.parent();
+        while let Some(cur) = current {
+            if Self::is_function_like(cur.kind()) {
+                return Some(cur);
+            }
+            current = cur.parent();
+        }
+        None
+    }
+
     pub(crate) fn infer_anonymous_function_name(&self, func_node: Node) -> Option<String> {
         let parent = func_node.parent()?;
         match parent.kind() {
@@ -486,6 +497,208 @@ impl BaseParser {
             }
         }
         (callee, obj_name)
+    }
+
+    pub(crate) fn resolve_js_identifier_call_targets(
+        &self,
+        call_node: Node<'_>,
+        identifier_name: &str,
+    ) -> Vec<String> {
+        let Some(func_node) = self.find_enclosing_function_node(call_node) else {
+            return Vec::new();
+        };
+
+        let mut aliases: HashMap<String, Vec<String>> = HashMap::new();
+        let call_start = call_node.start_byte();
+
+        fn add_alias(
+            aliases: &mut HashMap<String, Vec<String>>,
+            name: Option<String>,
+            targets: impl IntoIterator<Item = String>,
+        ) {
+            let Some(name) = name else {
+                return;
+            };
+            if name.is_empty() {
+                return;
+            }
+            let entry = aliases.entry(name).or_default();
+            for target in targets {
+                if !target.is_empty() {
+                    entry.push(target);
+                }
+            }
+        }
+
+        let extract_loop_var = |node: Node<'_>| -> Option<String> {
+            if node.kind() == "identifier" {
+                return Some(self.node_text(node));
+            }
+            for i in 0..node.named_child_count() {
+                let Some(child) = node.named_child(i as u32) else {
+                    continue;
+                };
+                if child.kind() == "identifier" {
+                    return Some(self.node_text(child));
+                }
+                if child.kind() == "variable_declarator" {
+                    if let Some(name_node) = child.child_by_field_name("name") {
+                        if name_node.kind() == "identifier" {
+                            return Some(self.node_text(name_node));
+                        }
+                    }
+                }
+            }
+            None
+        };
+
+        let mut stack = vec![func_node];
+        while let Some(node) = stack.pop() {
+            if node.id() == call_node.id() || node.start_byte() >= call_start {
+                continue;
+            }
+
+            if node.kind() == "variable_declarator" {
+                let name_node = node.child_by_field_name("name");
+                let value_node = node.child_by_field_name("value");
+                if let (Some(name_node), Some(value_node)) = (name_node, value_node) {
+                    if name_node.kind() == "identifier" {
+                        let name = self.node_text(name_node);
+                        if value_node.kind() == "identifier" {
+                            add_alias(&mut aliases, Some(name), [self.node_text(value_node)]);
+                        } else if value_node.kind() == "array" {
+                            let targets = (0..value_node.named_child_count())
+                                .filter_map(|i| value_node.named_child(i as u32))
+                                .filter(|c| c.kind() == "identifier")
+                                .map(|c| self.node_text(c))
+                                .collect::<Vec<_>>();
+                            add_alias(&mut aliases, Some(name), targets);
+                        }
+                    }
+                }
+            } else if node.kind() == "for_in_statement" {
+                let left_node = node.child_by_field_name("left");
+                let right_node = node.child_by_field_name("right");
+                if let (Some(left_node), Some(right_node)) = (left_node, right_node) {
+                    if right_node.kind() == "identifier" {
+                        let loop_var = extract_loop_var(left_node);
+                        let iterable = self.node_text(right_node);
+                        if let Some(targets) = aliases.get(&iterable).cloned() {
+                            add_alias(&mut aliases, loop_var, targets);
+                        } else {
+                            add_alias(&mut aliases, loop_var, [iterable]);
+                        }
+                    }
+                }
+            }
+
+            for i in (0..node.child_count()).rev() {
+                if let Some(child) = node.child(i as u32) {
+                    if child.start_byte() < call_start {
+                        stack.push(child);
+                    }
+                }
+            }
+        }
+
+        for targets in aliases.values_mut() {
+            targets.sort_unstable();
+            targets.dedup();
+        }
+
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut resolved: Vec<String> = Vec::new();
+        let mut queue: VecDeque<String> = VecDeque::new();
+        queue.push_back(identifier_name.to_string());
+
+        while let Some(current) = queue.pop_front() {
+            if !visited.insert(current.clone()) {
+                continue;
+            }
+            if let Some(targets) = aliases.get(&current) {
+                for target in targets {
+                    queue.push_back(target.clone());
+                }
+            } else if !resolved.iter().any(|existing| existing == &current) {
+                resolved.push(current);
+            }
+        }
+
+        resolved.sort_unstable();
+        resolved
+    }
+
+    pub(crate) fn is_python_property(&self, function_name: &str, class_name: Option<&str>) -> bool {
+        if self.language != "python" {
+            return false;
+        }
+        let mut stack = vec![self.tree.root_node()];
+        while let Some(node) = stack.pop() {
+            if node.kind() == "decorated_definition" {
+                let definition_node = node.child_by_field_name("definition");
+                if let Some(definition_node) = definition_node {
+                    if definition_node.kind() == "function_definition" {
+                        if let Some(name_node) = definition_node.child_by_field_name("name") {
+                            if self.node_eq_str(name_node, function_name) {
+                                if let Some(expected_class) = class_name {
+                                    if self.find_enclosing_class(definition_node).as_deref()
+                                        != Some(expected_class)
+                                    {
+                                        continue;
+                                    }
+                                }
+                                for i in 0..node.child_count() {
+                                    let Some(child) = node.child(i as u32) else {
+                                        continue;
+                                    };
+                                    if child.kind() == "decorator"
+                                        && self.node_trimmed_eq_str(child, "@property")
+                                    {
+                                        return true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            for i in (0..node.child_count()).rev() {
+                if let Some(child) = node.child(i as u32) {
+                    stack.push(child);
+                }
+            }
+        }
+        false
+    }
+
+    pub(crate) fn find_python_property_callers(&self, property_name: &str) -> Vec<(String, usize)> {
+        if self.language != "python" {
+            return Vec::new();
+        }
+        let mut callers = Vec::new();
+        let mut seen: HashSet<(String, usize)> = HashSet::new();
+        let mut stack = vec![self.tree.root_node()];
+        while let Some(node) = stack.pop() {
+            if node.kind() == "attribute" {
+                let (callee, _) = self.parse_attribute_node(node);
+                if callee == property_name {
+                    let caller = self
+                        .find_enclosing_function(node)
+                        .unwrap_or_else(|| "<module>".to_string());
+                    let line = node.start_position().row + 1;
+                    let key = (caller.clone(), line);
+                    if seen.insert(key) {
+                        callers.push((caller, line));
+                    }
+                }
+            }
+            for i in (0..node.child_count()).rev() {
+                if let Some(child) = node.child(i as u32) {
+                    stack.push(child);
+                }
+            }
+        }
+        callers
     }
 
     pub(crate) fn extract_methods_from_class(&self, class_node: Node) -> Vec<String> {

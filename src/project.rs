@@ -1,17 +1,17 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 use std::path::Path;
-use std::sync::Mutex;
 
 use rayon::prelude::*;
 
 use crate::analyzer::CodeAnalyzer;
+use crate::cache::TextFilterCache;
 use crate::nodes::*;
 use crate::utils::{find_files, is_simple_query, rg_search_files, sort_by_file_line, QueryMatcher};
 
 pub struct ProjectAnalyzer {
     pub files: Vec<String>,
     path: String,
-    text_filter_cache: Mutex<HashMap<String, Vec<String>>>,
+    text_filter_cache: TextFilterCache,
 }
 
 impl ProjectAnalyzer {
@@ -27,7 +27,7 @@ impl ProjectAnalyzer {
         Ok(Self {
             files,
             path: path.to_string(),
-            text_filter_cache: Mutex::new(HashMap::new()),
+            text_filter_cache: TextFilterCache::new(),
         })
     }
 
@@ -391,10 +391,8 @@ impl ProjectAnalyzer {
         if text.is_empty() {
             return self.files.clone();
         }
-        if let Ok(cache) = self.text_filter_cache.lock() {
-            if let Some(cached) = cache.get(text) {
-                return cached.clone();
-            }
+        if let Some(cached) = self.text_filter_cache.get(text) {
+            return cached;
         }
         let matched_files: Vec<String> = if let Some(rg_files) =
             rg_search_files(text, &self.path, None)
@@ -429,9 +427,7 @@ impl ProjectAnalyzer {
                 .cloned()
                 .collect()
         };
-        if let Ok(mut cache) = self.text_filter_cache.lock() {
-            cache.insert(text.to_string(), matched_files.clone());
-        }
+        self.text_filter_cache.insert(text, matched_files.clone());
         matched_files
     }
 }

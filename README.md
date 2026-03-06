@@ -56,7 +56,7 @@ See [USAGE.md](USAGE.md) for complete documentation.
 | `classes` | Extract all class/struct/interface definitions |
 | `fields` | Extract all field definitions |
 | `imports` | Extract all import statements |
-| `definition` | Get the complete source code of a function |
+| `definition` | Extract source code of a function |
 
 ### Inheritance Analysis
 

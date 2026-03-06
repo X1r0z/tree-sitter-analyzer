@@ -4,7 +4,56 @@ use tree_sitter::Node;
 
 use crate::cache::AnalyzerCache;
 use crate::nodes::*;
-use crate::parser::BaseParser;
+use crate::parser::{BaseParser, JsAliasEvent};
+
+struct JsAliasResolverState {
+    events: Vec<JsAliasEvent>,
+    next_event_idx: usize,
+    active_aliases: HashMap<String, Vec<String>>,
+}
+
+impl JsAliasResolverState {
+    fn new(events: Vec<JsAliasEvent>) -> Self {
+        Self {
+            events,
+            next_event_idx: 0,
+            active_aliases: HashMap::new(),
+        }
+    }
+
+    fn resolve<'a>(&'a mut self, call_start: usize, identifier_name: &'a str) -> Vec<String> {
+        while self.next_event_idx < self.events.len()
+            && self.events[self.next_event_idx].start_byte < call_start
+        {
+            let event = &self.events[self.next_event_idx];
+            self.active_aliases
+                .insert(event.name.clone(), event.targets.clone());
+            self.next_event_idx += 1;
+        }
+
+        let mut visited: HashSet<&'a str> = HashSet::new();
+        let mut resolved = Vec::new();
+        let mut resolved_seen: HashSet<&'a str> = HashSet::new();
+        let mut queue: VecDeque<&'a str> = VecDeque::new();
+        queue.push_back(identifier_name);
+
+        while let Some(current) = queue.pop_front() {
+            if !visited.insert(current) {
+                continue;
+            }
+            if let Some(targets) = self.active_aliases.get(current) {
+                for target in targets {
+                    queue.push_back(target.as_str());
+                }
+            } else if resolved_seen.insert(current) {
+                resolved.push(current);
+            }
+        }
+
+        resolved.sort_unstable();
+        resolved.into_iter().map(str::to_string).collect()
+    }
+}
 
 pub struct CodeAnalyzer {
     pub(crate) parser: BaseParser,
@@ -174,12 +223,22 @@ impl CodeAnalyzer {
             return;
         }
 
-        let call_matches = self
+        let mut call_matches = self
             .parser
             .run_call_query_matches(self.parser.lang_info.call_query);
+        let is_js_like = matches!(
+            self.parser.language.as_str(),
+            "javascript" | "typescript" | "tsx"
+        );
+        if is_js_like {
+            call_matches.sort_by_key(|m| m.call.start_byte());
+        }
         let mut calls = Vec::new();
-        let mut js_alias_events_by_function: HashMap<usize, Vec<crate::parser::JsAliasEvent>> =
-            HashMap::new();
+        let mut js_alias_resolvers_by_function = if is_js_like {
+            Some(HashMap::new())
+        } else {
+            None
+        };
         for m in &call_matches {
             let call_node = m.call;
             let (caller, caller_class_name) = self.parser.find_enclosing_context(call_node);
@@ -196,8 +255,8 @@ impl CodeAnalyzer {
                 } else if call_node.kind() == "object_creation_expression" {
                     if let Some(type_node) = call_node.child_by_field_name("type") {
                         if type_node.kind() == "generic_type" {
-                            for i in 0..type_node.child_count() {
-                                let child = type_node.child((i) as u32).unwrap();
+                            for i in 0..type_node.named_child_count() {
+                                let child = type_node.named_child(i as u32).unwrap();
                                 if child.kind() == "type_identifier" {
                                     callee = self.parser.node_text(child);
                                     break;
@@ -247,37 +306,46 @@ impl CodeAnalyzer {
             }
 
             if !callee.is_empty() {
-                let mut resolved_callees = vec![callee.clone()];
-                if matches!(
-                    self.parser.language.as_str(),
-                    "javascript" | "typescript" | "tsx"
-                ) && !is_method
+                let call_location = self.parser.node_location(call_node);
+                let mut pushed_resolved_calls = false;
+                if is_js_like
+                    && !is_method
                     && func_node_opt
                         .map(|n| n.kind() == "identifier")
                         .unwrap_or(false)
                 {
                     if let Some(func_node) = self.parser.find_enclosing_function_node(call_node) {
-                        let alias_events = js_alias_events_by_function
-                            .entry(func_node.id())
-                            .or_insert_with(|| self.parser.build_js_alias_events(func_node));
-                        let resolved = self.parser.resolve_js_identifier_call_targets_from_events(
-                            alias_events,
-                            call_node.start_byte(),
-                            &callee,
-                        );
-                        if !resolved.is_empty() {
-                            resolved_callees = resolved;
+                        if let Some(resolvers) = js_alias_resolvers_by_function.as_mut() {
+                            let resolver = resolvers.entry(func_node.id()).or_insert_with(|| {
+                                JsAliasResolverState::new(
+                                    self.parser.build_js_alias_events(func_node),
+                                )
+                            });
+                            let resolved = resolver.resolve(call_node.start_byte(), &callee);
+                            if !resolved.is_empty() {
+                                for resolved_callee in resolved {
+                                    calls.push(CallInfo {
+                                        callee: resolved_callee,
+                                        location: call_location.clone(),
+                                        caller: caller.clone(),
+                                        caller_class_name: caller_class_name.clone(),
+                                        object_name: obj_name.clone(),
+                                        is_method_call: is_method,
+                                    });
+                                }
+                                pushed_resolved_calls = true;
+                            }
                         }
                     }
                 }
 
-                for resolved_callee in resolved_callees {
+                if !pushed_resolved_calls {
                     calls.push(CallInfo {
-                        callee: resolved_callee,
-                        location: self.parser.node_location(call_node),
-                        caller: caller.clone(),
-                        caller_class_name: caller_class_name.clone(),
-                        object_name: obj_name.clone(),
+                        callee,
+                        location: call_location,
+                        caller,
+                        caller_class_name,
+                        object_name: obj_name,
                         is_method_call: is_method,
                     });
                 }
@@ -314,6 +382,14 @@ impl CodeAnalyzer {
             }
         }
         self.cache.set_calls_by_caller(by_caller);
+    }
+
+    fn ensure_python_property_index(&mut self) {
+        if self.parser.language != "python" || self.cache.python_properties().is_some() {
+            return;
+        }
+        let (properties, callers) = self.parser.build_python_property_index();
+        self.cache.set_python_properties(properties, callers);
     }
 
     fn matches_call_target_class(&mut self, call: &CallInfo, class_name: &str) -> bool {
@@ -503,10 +579,21 @@ impl CodeAnalyzer {
             }
         }
 
+        if self.parser.language == "python" {
+            self.ensure_python_property_index();
+        }
         if self.parser.language == "python"
-            && self.parser.is_python_property(function_name, class_name)
+            && self.cache.python_properties().is_some_and(|properties| {
+                properties.contains(&(function_name.to_string(), class_name.map(str::to_string)))
+            })
         {
-            for (caller, line) in self.parser.find_python_property_callers(function_name) {
+            for (caller, line) in self
+                .cache
+                .python_property_callers()
+                .and_then(|callers| callers.get(function_name))
+                .cloned()
+                .unwrap_or_default()
+            {
                 let key = (caller.clone(), line);
                 if seen.insert(key) {
                     callers.push((caller, line));

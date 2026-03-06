@@ -32,6 +32,10 @@ pub(crate) struct JsAliasEvent {
     pub(crate) targets: Vec<String>,
 }
 
+pub(crate) type PythonPropertyKey = (String, Option<String>);
+pub(crate) type PythonPropertyDefinitions = HashSet<PythonPropertyKey>;
+pub(crate) type PythonPropertyCallers = HashMap<String, Vec<(String, usize)>>;
+
 #[allow(dead_code)]
 impl BaseParser {
     pub(crate) fn new(file_path: &str) -> anyhow::Result<Self> {
@@ -538,8 +542,8 @@ impl BaseParser {
             }
             _ => {
                 let mut ids = Vec::new();
-                for i in 0..node.child_count() {
-                    let child = node.child((i) as u32).unwrap();
+                for i in 0..node.named_child_count() {
+                    let child = node.named_child(i as u32).unwrap();
                     if matches!(
                         child.kind(),
                         "identifier"
@@ -564,6 +568,39 @@ impl BaseParser {
             }
         }
         (callee, obj_name)
+    }
+
+    pub(crate) fn attribute_callee_name(&self, node: Node) -> Option<String> {
+        let callee_node = match node.kind() {
+            "attribute" => node.child_by_field_name("attribute"),
+            "member_expression" => node.child_by_field_name("property"),
+            "selector_expression" => node.child_by_field_name("field"),
+            _ => {
+                let mut last_identifier = None;
+                for i in 0..node.named_child_count() {
+                    let Some(child) = node.named_child(i as u32) else {
+                        continue;
+                    };
+                    if matches!(
+                        child.kind(),
+                        "identifier"
+                            | "property_identifier"
+                            | "private_property_identifier"
+                            | "field_identifier"
+                    ) {
+                        last_identifier = Some(child);
+                    }
+                }
+                last_identifier
+            }
+        }?;
+
+        let callee = self.node_text(callee_node);
+        if callee.is_empty() {
+            None
+        } else {
+            Some(callee)
+        }
     }
 
     pub(crate) fn resolve_js_identifier_call_targets(
@@ -695,8 +732,8 @@ impl BaseParser {
                 }
             }
 
-            for i in (0..node.child_count()).rev() {
-                if let Some(child) = node.child(i as u32) {
+            for i in (0..node.named_child_count()).rev() {
+                if let Some(child) = node.named_child(i as u32) {
                     stack.push(child);
                 }
             }
@@ -719,99 +756,114 @@ impl BaseParser {
             aliases.insert(event.name.as_str(), event.targets.as_slice());
         }
 
-        let mut visited: HashSet<String> = HashSet::new();
-        let mut resolved: Vec<String> = Vec::new();
-        let mut queue: VecDeque<String> = VecDeque::new();
-        queue.push_back(identifier_name.to_string());
+        let mut visited: HashSet<&str> = HashSet::new();
+        let mut resolved = Vec::new();
+        let mut resolved_seen: HashSet<&str> = HashSet::new();
+        let mut queue: VecDeque<&str> = VecDeque::new();
+        queue.push_back(identifier_name);
 
         while let Some(current) = queue.pop_front() {
-            if !visited.insert(current.clone()) {
+            if !visited.insert(current) {
                 continue;
             }
-            if let Some(targets) = aliases.get(current.as_str()) {
+            if let Some(targets) = aliases.get(current) {
                 for target in *targets {
-                    queue.push_back(target.clone());
+                    queue.push_back(target.as_str());
                 }
-            } else if !resolved.iter().any(|existing| existing == &current) {
+            } else if resolved_seen.insert(current) {
                 resolved.push(current);
             }
         }
 
         resolved.sort_unstable();
-        resolved
+        resolved.into_iter().map(str::to_string).collect()
     }
 
-    pub(crate) fn is_python_property(&self, function_name: &str, class_name: Option<&str>) -> bool {
+    pub(crate) fn build_python_property_index(
+        &self,
+    ) -> (PythonPropertyDefinitions, PythonPropertyCallers) {
         if self.language != "python" {
-            return false;
+            return (HashSet::new(), HashMap::new());
         }
+
+        let mut properties = HashSet::new();
+        let mut callers_by_property: HashMap<String, Vec<(String, usize)>> = HashMap::new();
+        let mut seen_callers: HashSet<(String, String, usize)> = HashSet::new();
         let mut stack = vec![self.tree.root_node()];
+
         while let Some(node) = stack.pop() {
-            if node.kind() == "decorated_definition" {
-                let definition_node = node.child_by_field_name("definition");
-                if let Some(definition_node) = definition_node {
-                    if definition_node.kind() == "function_definition" {
-                        if let Some(name_node) = definition_node.child_by_field_name("name") {
-                            if self.node_eq_str(name_node, function_name) {
-                                if let Some(expected_class) = class_name {
-                                    if self.find_enclosing_class(definition_node).as_deref()
-                                        != Some(expected_class)
-                                    {
-                                        continue;
-                                    }
-                                }
-                                for i in 0..node.child_count() {
-                                    let Some(child) = node.child(i as u32) else {
-                                        continue;
-                                    };
-                                    if child.kind() == "decorator"
-                                        && self.node_trimmed_eq_str(child, "@property")
-                                    {
-                                        return true;
-                                    }
-                                }
-                            }
+            match node.kind() {
+                "decorated_definition" => {
+                    let Some(definition_node) = node.child_by_field_name("definition") else {
+                        continue;
+                    };
+                    if definition_node.kind() != "function_definition" {
+                        continue;
+                    }
+                    let Some(name_node) = definition_node.child_by_field_name("name") else {
+                        continue;
+                    };
+
+                    let mut is_property = false;
+                    for i in 0..node.named_child_count() {
+                        let Some(child) = node.named_child(i as u32) else {
+                            continue;
+                        };
+                        if child.kind() == "decorator"
+                            && self.node_trimmed_eq_str(child, "@property")
+                        {
+                            is_property = true;
+                            break;
                         }
                     }
-                }
-            }
-            for i in (0..node.child_count()).rev() {
-                if let Some(child) = node.child(i as u32) {
-                    stack.push(child);
-                }
-            }
-        }
-        false
-    }
 
-    pub(crate) fn find_python_property_callers(&self, property_name: &str) -> Vec<(String, usize)> {
-        if self.language != "python" {
-            return Vec::new();
-        }
-        let mut callers = Vec::new();
-        let mut seen: HashSet<(String, usize)> = HashSet::new();
-        let mut stack = vec![self.tree.root_node()];
-        while let Some(node) = stack.pop() {
-            if node.kind() == "attribute" {
-                let (callee, _) = self.parse_attribute_node(node);
-                if callee == property_name {
+                    if is_property {
+                        properties.insert((
+                            self.node_text(name_node),
+                            self.find_enclosing_class(definition_node),
+                        ));
+                    }
+                }
+                "attribute" => {
+                    let Some(property_name) = self.attribute_callee_name(node) else {
+                        continue;
+                    };
                     let caller = self
                         .find_enclosing_function(node)
                         .unwrap_or_else(|| "<module>".to_string());
                     let line = node.start_position().row + 1;
-                    let key = (caller.clone(), line);
-                    if seen.insert(key) {
-                        callers.push((caller, line));
+                    let seen_key = (property_name.clone(), caller.clone(), line);
+                    if seen_callers.insert(seen_key) {
+                        callers_by_property
+                            .entry(property_name)
+                            .or_default()
+                            .push((caller, line));
                     }
                 }
+                _ => {}
             }
-            for i in (0..node.child_count()).rev() {
-                if let Some(child) = node.child(i as u32) {
+
+            for i in (0..node.named_child_count()).rev() {
+                if let Some(child) = node.named_child(i as u32) {
                     stack.push(child);
                 }
             }
         }
-        callers
+
+        (properties, callers_by_property)
+    }
+
+    pub(crate) fn is_python_property(&self, function_name: &str, class_name: Option<&str>) -> bool {
+        let (properties, _) = self.build_python_property_index();
+        properties.contains(&(function_name.to_string(), class_name.map(str::to_string)))
+    }
+
+    pub(crate) fn find_python_property_callers(&self, property_name: &str) -> Vec<(String, usize)> {
+        let (_, callers_by_property) = self.build_python_property_index();
+        callers_by_property
+            .get(property_name)
+            .cloned()
+            .unwrap_or_default()
     }
 
     pub(crate) fn extract_methods_from_class(&self, class_node: Node) -> Vec<String> {

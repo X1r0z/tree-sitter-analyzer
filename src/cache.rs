@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use crate::nodes::{CallInfo, ClassInfo, FieldInfo, FunctionInfo, ImportInfo};
+use crate::parser::{PythonPropertyCallers, PythonPropertyDefinitions};
 
 pub(crate) struct AnalyzerCache {
     functions: Option<Vec<FunctionInfo>>,
@@ -10,6 +11,8 @@ pub(crate) struct AnalyzerCache {
     calls: Option<Vec<CallInfo>>,
     calls_by_callee: Option<HashMap<String, Vec<usize>>>,
     calls_by_caller: Option<HashMap<String, Vec<usize>>>,
+    python_properties: Option<PythonPropertyDefinitions>,
+    python_property_callers: Option<PythonPropertyCallers>,
     imports: Option<Vec<ImportInfo>>,
     fields_by_class: HashMap<String, Vec<FieldInfo>>,
 }
@@ -23,6 +26,8 @@ impl AnalyzerCache {
             calls: None,
             calls_by_callee: None,
             calls_by_caller: None,
+            python_properties: None,
+            python_property_callers: None,
             imports: None,
             fields_by_class: HashMap::new(),
         }
@@ -86,6 +91,23 @@ impl AnalyzerCache {
 
     pub(crate) fn calls_by_caller(&self) -> Option<&HashMap<String, Vec<usize>>> {
         self.calls_by_caller.as_ref()
+    }
+
+    pub(crate) fn set_python_properties(
+        &mut self,
+        properties: PythonPropertyDefinitions,
+        callers: PythonPropertyCallers,
+    ) {
+        self.python_properties = Some(properties);
+        self.python_property_callers = Some(callers);
+    }
+
+    pub(crate) fn python_properties(&self) -> Option<&PythonPropertyDefinitions> {
+        self.python_properties.as_ref()
+    }
+
+    pub(crate) fn python_property_callers(&self) -> Option<&PythonPropertyCallers> {
+        self.python_property_callers.as_ref()
     }
 
     pub(crate) fn fields(&self, class_name: &str) -> Option<&Vec<FieldInfo>> {

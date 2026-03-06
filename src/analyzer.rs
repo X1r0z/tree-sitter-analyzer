@@ -35,16 +35,9 @@ impl CodeAnalyzer {
     }
 
     fn build_functions(&self, include_body: bool) -> Vec<FunctionInfo> {
-        let matches = self
-            .parser
-            .run_query_matches(self.parser.lang_info.function_query);
-
-        let mut func_pairs: Vec<(tree_sitter::Node, tree_sitter::Node)> = Vec::new();
-        for m in &matches {
-            if let (Some(&func_node), Some(&name_node)) = (m.get("function"), m.get("name")) {
-                func_pairs.push((func_node, name_node));
-            }
-        }
+        let mut func_pairs =
+            self.parser
+                .run_query_pairs(self.parser.lang_info.function_query, "function", "name");
         func_pairs.sort_by_key(|(f, _)| (f.start_byte(), std::cmp::Reverse(f.end_byte())));
 
         let mut functions = Vec::new();
@@ -106,15 +99,10 @@ impl CodeAnalyzer {
                 }
             }
 
-            let matches = self
-                .parser
-                .run_query_matches(self.parser.lang_info.class_query);
-            let mut class_pairs: Vec<(tree_sitter::Node, tree_sitter::Node)> = Vec::new();
-            for m in &matches {
-                if let (Some(&class_node), Some(&name_node)) = (m.get("class"), m.get("name")) {
-                    class_pairs.push((class_node, name_node));
-                }
-            }
+            let matches =
+                self.parser
+                    .run_query_pairs(self.parser.lang_info.class_query, "class", "name");
+            let mut class_pairs = matches;
             class_pairs.sort_by_key(|(c, _)| (c.start_byte(), std::cmp::Reverse(c.end_byte())));
 
             let mut classes = Vec::new();
@@ -160,8 +148,9 @@ impl CodeAnalyzer {
 
     fn imports(&mut self) -> &[ImportInfo] {
         if self.imports_cache.is_none() {
-            let captures = self.parser.run_query(self.parser.lang_info.import_query);
-            let module_nodes = captures.get("module").cloned().unwrap_or_default();
+            let module_nodes = self
+                .parser
+                .run_query_capture(self.parser.lang_info.import_query, "module");
 
             let mut imports = Vec::new();
             for node in module_nodes {
@@ -187,12 +176,10 @@ impl CodeAnalyzer {
 
         let call_matches = self
             .parser
-            .run_query_matches(self.parser.lang_info.call_query);
+            .run_call_query_matches(self.parser.lang_info.call_query);
         let mut calls = Vec::new();
         for m in &call_matches {
-            let Some(&call_node) = m.get("call") else {
-                continue;
-            };
+            let call_node = m.call;
             let caller = self.parser.find_enclosing_function(call_node);
             let caller_class_name = self.parser.find_enclosing_class(call_node);
             let mut callee = String::new();
@@ -245,13 +232,13 @@ impl CodeAnalyzer {
                 }
                 // Handle callee/method captures from the query
                 if callee.is_empty() {
-                    if let Some(&callee_cap) = m.get("callee") {
+                    if let Some(callee_cap) = m.callee {
                         callee = self.parser.node_text(callee_cap);
                     }
-                    if let Some(&method_cap) = m.get("method") {
+                    if let Some(method_cap) = m.method {
                         callee = self.parser.node_text(method_cap);
                         is_method = true;
-                        if let Some(&obj_cap) = m.get("object") {
+                        if let Some(obj_cap) = m.object {
                             obj_name = Some(self.parser.node_text(obj_cap));
                         }
                     }

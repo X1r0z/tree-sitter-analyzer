@@ -18,6 +18,13 @@ pub(crate) struct BaseParser {
     pub(crate) lang_info: &'static LanguageInfo,
 }
 
+pub(crate) struct CallQueryMatch<'a> {
+    pub(crate) call: Node<'a>,
+    pub(crate) callee: Option<Node<'a>>,
+    pub(crate) method: Option<Node<'a>>,
+    pub(crate) object: Option<Node<'a>>,
+}
+
 #[allow(dead_code)]
 impl BaseParser {
     pub(crate) fn new(file_path: &str) -> anyhow::Result<Self> {
@@ -66,7 +73,7 @@ impl BaseParser {
     }
 
     pub(crate) fn run_query(&self, query_str: &str) -> HashMap<String, Vec<Node<'_>>> {
-        if let Some(query) = get_compiled_query(&self.language, query_str) {
+        self.with_query(query_str, |query| {
             let mut cursor = QueryCursor::new();
             let mut matches = cursor.matches(query, self.tree.root_node(), self.source.as_slice());
 
@@ -77,33 +84,13 @@ impl BaseParser {
                     result.entry(name.to_string()).or_default().push(cap.node);
                 }
             }
-            return result;
-        }
-
-        let ts_lang = match get_language(&self.language) {
-            Some(l) => l,
-            None => return HashMap::new(),
-        };
-        let query = match Query::new(&ts_lang, query_str) {
-            Ok(q) => q,
-            Err(_) => return HashMap::new(),
-        };
-
-        let mut cursor = QueryCursor::new();
-        let mut matches = cursor.matches(&query, self.tree.root_node(), self.source.as_slice());
-
-        let mut result: HashMap<String, Vec<Node>> = HashMap::new();
-        while let Some(m) = matches.next() {
-            for cap in m.captures {
-                let name = query.capture_names()[cap.index as usize];
-                result.entry(name.to_string()).or_default().push(cap.node);
-            }
-        }
-        result
+            result
+        })
+        .unwrap_or_default()
     }
 
     pub(crate) fn run_query_matches(&self, query_str: &str) -> Vec<HashMap<String, Node<'_>>> {
-        if let Some(query) = get_compiled_query(&self.language, query_str) {
+        self.with_query(query_str, |query| {
             let mut cursor = QueryCursor::new();
             let mut matches = cursor.matches(query, self.tree.root_node(), self.source.as_slice());
 
@@ -116,31 +103,148 @@ impl BaseParser {
                 }
                 results.push(match_dict);
             }
-            return results;
-        }
+            results
+        })
+        .unwrap_or_default()
+    }
 
-        let ts_lang = match get_language(&self.language) {
-            Some(l) => l,
-            None => return Vec::new(),
-        };
+    fn with_query<T>(&self, query_str: &str, f: impl FnOnce(&Query) -> T) -> Option<T> {
+        if let Some(query) = get_compiled_query(&self.language, query_str) {
+            return Some(f(query));
+        }
+        let ts_lang = get_language(&self.language)?;
         let query = match Query::new(&ts_lang, query_str) {
             Ok(q) => q,
-            Err(_) => return Vec::new(),
+            Err(_) => return None,
         };
+        Some(f(&query))
+    }
 
-        let mut cursor = QueryCursor::new();
-        let mut matches = cursor.matches(&query, self.tree.root_node(), self.source.as_slice());
+    pub(crate) fn run_query_capture(&self, query_str: &str, capture_name: &str) -> Vec<Node<'_>> {
+        self.with_query(query_str, |query| {
+            let Some(capture_index) = query
+                .capture_names()
+                .iter()
+                .position(|name| *name == capture_name)
+                .map(|idx| idx as u32)
+            else {
+                return Vec::new();
+            };
 
-        let mut results = Vec::new();
-        while let Some(m) = matches.next() {
-            let mut match_dict = HashMap::new();
-            for cap in m.captures {
-                let name = query.capture_names()[cap.index as usize];
-                match_dict.insert(name.to_string(), cap.node);
+            let mut cursor = QueryCursor::new();
+            let mut matches = cursor.matches(query, self.tree.root_node(), self.source.as_slice());
+            let mut nodes = Vec::new();
+            while let Some(m) = matches.next() {
+                for cap in m.captures {
+                    if cap.index == capture_index {
+                        nodes.push(cap.node);
+                    }
+                }
             }
-            results.push(match_dict);
-        }
-        results
+            nodes
+        })
+        .unwrap_or_default()
+    }
+
+    pub(crate) fn run_query_pairs(
+        &self,
+        query_str: &str,
+        first_capture: &str,
+        second_capture: &str,
+    ) -> Vec<(Node<'_>, Node<'_>)> {
+        self.with_query(query_str, |query| {
+            let capture_names = query.capture_names();
+            let Some(first_index) = capture_names
+                .iter()
+                .position(|name| *name == first_capture)
+                .map(|idx| idx as u32)
+            else {
+                return Vec::new();
+            };
+            let Some(second_index) = capture_names
+                .iter()
+                .position(|name| *name == second_capture)
+                .map(|idx| idx as u32)
+            else {
+                return Vec::new();
+            };
+
+            let mut cursor = QueryCursor::new();
+            let mut matches = cursor.matches(query, self.tree.root_node(), self.source.as_slice());
+            let mut pairs = Vec::new();
+            while let Some(m) = matches.next() {
+                let mut first = None;
+                let mut second = None;
+                for cap in m.captures {
+                    if cap.index == first_index {
+                        first = Some(cap.node);
+                    } else if cap.index == second_index {
+                        second = Some(cap.node);
+                    }
+                }
+                if let (Some(first), Some(second)) = (first, second) {
+                    pairs.push((first, second));
+                }
+            }
+            pairs
+        })
+        .unwrap_or_default()
+    }
+
+    pub(crate) fn run_call_query_matches(&self, query_str: &str) -> Vec<CallQueryMatch<'_>> {
+        self.with_query(query_str, |query| {
+            let capture_names = query.capture_names();
+            let call_index = capture_names
+                .iter()
+                .position(|name| *name == "call")
+                .map(|idx| idx as u32);
+            let callee_index = capture_names
+                .iter()
+                .position(|name| *name == "callee")
+                .map(|idx| idx as u32);
+            let method_index = capture_names
+                .iter()
+                .position(|name| *name == "method")
+                .map(|idx| idx as u32);
+            let object_index = capture_names
+                .iter()
+                .position(|name| *name == "object")
+                .map(|idx| idx as u32);
+            let Some(call_index) = call_index else {
+                return Vec::new();
+            };
+
+            let mut cursor = QueryCursor::new();
+            let mut matches = cursor.matches(query, self.tree.root_node(), self.source.as_slice());
+            let mut out = Vec::new();
+            while let Some(m) = matches.next() {
+                let mut call = None;
+                let mut callee = None;
+                let mut method = None;
+                let mut object = None;
+                for cap in m.captures {
+                    if cap.index == call_index {
+                        call = Some(cap.node);
+                    } else if callee_index == Some(cap.index) {
+                        callee = Some(cap.node);
+                    } else if method_index == Some(cap.index) {
+                        method = Some(cap.node);
+                    } else if object_index == Some(cap.index) {
+                        object = Some(cap.node);
+                    }
+                }
+                if let Some(call) = call {
+                    out.push(CallQueryMatch {
+                        call,
+                        callee,
+                        method,
+                        object,
+                    });
+                }
+            }
+            out
+        })
+        .unwrap_or_default()
     }
 
     pub(crate) fn is_function_like(node_kind: &str) -> bool {
@@ -1126,18 +1230,10 @@ impl BaseParser {
     }
 
     pub(crate) fn get_fields_from_class_node(&self, class_name: &str) -> Vec<FieldInfo> {
-        let matches = self.run_query_matches(self.lang_info.class_query);
+        let matches = self.run_query_pairs(self.lang_info.class_query, "class", "name");
         let mut candidates: Vec<Node> = Vec::new();
 
-        for m in &matches {
-            let class_node = match m.get("class") {
-                Some(n) => *n,
-                None => continue,
-            };
-            let name_node = match m.get("name") {
-                Some(n) => *n,
-                None => continue,
-            };
+        for (class_node, name_node) in matches {
             if self.node_text(name_node) != class_name {
                 continue;
             }

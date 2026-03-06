@@ -291,6 +291,16 @@ tsa sub-classes ./src/ -c BaseModel
 
 ## Typical Workflows
 
+### Index a large repo for repeated queries
+
+```bash
+tsa index /path/to/project
+# subsequent queries will use the cache automatically
+tsa functions /path/to/project -q "handle"
+tsa callers /path/to/project -f process_data
+tsa classes /path/to/project -q "Controller"
+```
+
 ### Inventory a repository
 
 ```bash

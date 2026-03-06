@@ -214,7 +214,7 @@ impl CodeAnalyzer {
                     if let Some(type_node) = call_node.child_by_field_name("type") {
                         if type_node.kind() == "generic_type" {
                             for i in 0..type_node.child_count() {
-                                let child = type_node.child(i).unwrap();
+                                let child = type_node.child((i) as u32).unwrap();
                                 if child.kind() == "type_identifier" {
                                     callee = self.parser.node_text(child);
                                     break;
@@ -473,7 +473,7 @@ impl CodeAnalyzer {
                 }));
             }
             for i in (0..node.child_count()).rev() {
-                if let Some(child) = node.child(i) {
+                if let Some(child) = node.child((i) as u32) {
                     stack.push(child);
                 }
             }
@@ -596,7 +596,7 @@ impl CodeAnalyzer {
                 return Some(self.parser.node_text(node));
             }
             for i in 0..node.named_child_count() {
-                let Some(child) = node.named_child(i) else {
+                let Some(child) = node.named_child((i) as u32) else {
                     continue;
                 };
                 if child.kind() == "identifier" {
@@ -633,7 +633,7 @@ impl CodeAnalyzer {
                             );
                         } else if value_node.kind() == "array" {
                             let targets = (0..value_node.named_child_count())
-                                .filter_map(|i| value_node.named_child(i))
+                                .filter_map(|i| value_node.named_child((i) as u32))
                                 .filter(|c| c.kind() == "identifier")
                                 .map(|c| self.parser.node_text(c))
                                 .collect::<Vec<_>>();
@@ -658,7 +658,7 @@ impl CodeAnalyzer {
             }
 
             for i in (0..node.child_count()).rev() {
-                if let Some(child) = node.child(i) {
+                if let Some(child) = node.child((i) as u32) {
                     if child.start_byte() < call_start {
                         stack.push(child);
                     }
@@ -709,7 +709,7 @@ impl CodeAnalyzer {
                                     }
                                 }
                                 for i in 0..node.child_count() {
-                                    let Some(child) = node.child(i) else {
+                                    let Some(child) = node.child((i) as u32) else {
                                         continue;
                                     };
                                     if child.kind() == "decorator"
@@ -724,7 +724,7 @@ impl CodeAnalyzer {
                 }
             }
             for i in (0..node.child_count()).rev() {
-                if let Some(child) = node.child(i) {
+                if let Some(child) = node.child((i) as u32) {
                     stack.push(child);
                 }
             }
@@ -755,7 +755,7 @@ impl CodeAnalyzer {
                 }
             }
             for i in (0..node.child_count()).rev() {
-                if let Some(child) = node.child(i) {
+                if let Some(child) = node.child((i) as u32) {
                     stack.push(child);
                 }
             }

@@ -134,7 +134,7 @@ impl BaseParser {
                     return self.infer_anonymous_function_name(cur);
                 }
                 for i in 0..cur.child_count() {
-                    let child = cur.child(i).unwrap();
+                    let child = cur.child((i) as u32).unwrap();
                     if matches!(
                         child.kind(),
                         "identifier" | "property_identifier" | "field_identifier"
@@ -176,7 +176,7 @@ impl BaseParser {
             }
             "export_statement" => {
                 for i in 0..parent.child_count() {
-                    let child = parent.child(i).unwrap();
+                    let child = parent.child((i) as u32).unwrap();
                     if self.node_text(child) == "default" {
                         return Some("<default_export>".to_string());
                     }
@@ -221,7 +221,7 @@ impl BaseParser {
                     }
                 }
                 for i in 0..cur.child_count() {
-                    let child = cur.child(i).unwrap();
+                    let child = cur.child((i) as u32).unwrap();
                     if matches!(child.kind(), "identifier" | "type_identifier" | "name") {
                         let class_name = self.node_text(child);
                         if !class_name.is_empty() {
@@ -242,7 +242,7 @@ impl BaseParser {
     pub(crate) fn extract_go_receiver_type(&self, method_node: Node) -> Option<String> {
         let receiver_list = method_node.child_by_field_name("receiver").or_else(|| {
             for i in 0..method_node.child_count() {
-                let child = method_node.child(i).unwrap();
+                let child = method_node.child((i) as u32).unwrap();
                 if child.kind() == "parameter_list" {
                     return Some(child);
                 }
@@ -251,16 +251,16 @@ impl BaseParser {
         })?;
 
         for i in 0..receiver_list.child_count() {
-            let param = receiver_list.child(i).unwrap();
+            let param = receiver_list.child((i) as u32).unwrap();
             if param.kind() == "parameter_declaration" {
                 if let Some(type_node) = param.child_by_field_name("type") {
                     return self.unwrap_go_type(type_node);
                 }
                 for j in 0..param.child_count() {
-                    let p = param.child(j).unwrap();
+                    let p = param.child((j) as u32).unwrap();
                     if p.kind() == "pointer_type" {
                         for k in 0..p.child_count() {
-                            let pt = p.child(k).unwrap();
+                            let pt = p.child((k) as u32).unwrap();
                             if pt.kind() == "type_identifier" {
                                 return Some(self.node_text(pt));
                             }
@@ -280,7 +280,7 @@ impl BaseParser {
             "type_identifier" => Some(self.node_text(type_node)),
             "pointer_type" => {
                 for i in 0..type_node.child_count() {
-                    let child = type_node.child(i).unwrap();
+                    let child = type_node.child((i) as u32).unwrap();
                     if child.kind() != "*" {
                         return self.unwrap_go_type(child);
                     }
@@ -292,7 +292,7 @@ impl BaseParser {
                     return self.unwrap_go_type(base);
                 }
                 for i in 0..type_node.child_count() {
-                    let child = type_node.child(i).unwrap();
+                    let child = type_node.child((i) as u32).unwrap();
                     if child.kind() == "type_identifier" {
                         return Some(self.node_text(child));
                     }
@@ -342,7 +342,7 @@ impl BaseParser {
                 let attr_types = ["attribute", "member_expression", "selector_expression"];
                 let mut ids = Vec::new();
                 for i in 0..node.child_count() {
-                    let child = node.child(i).unwrap();
+                    let child = node.child((i) as u32).unwrap();
                     if id_types.contains(&child.kind()) {
                         ids.push(self.node_text(child));
                     } else if attr_types.contains(&child.kind()) {
@@ -406,7 +406,7 @@ impl BaseParser {
         while let Some(node) = stack.pop() {
             if method_types.contains(node.kind()) {
                 for i in 0..node.child_count() {
-                    let child = node.child(i).unwrap();
+                    let child = node.child((i) as u32).unwrap();
                     if matches!(
                         child.kind(),
                         "identifier" | "property_identifier" | "field_identifier" | "name"
@@ -418,7 +418,7 @@ impl BaseParser {
                 continue;
             }
             for i in (0..node.child_count()).rev() {
-                if let Some(child) = node.child(i) {
+                if let Some(child) = node.child((i) as u32) {
                     stack.push(child);
                 }
             }
@@ -494,7 +494,7 @@ impl BaseParser {
                     return;
                 }
                 for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
+                    if let Some(child) = node.child((i) as u32) {
                         walk(ctx, child, true);
                     }
                 }
@@ -510,7 +510,7 @@ impl BaseParser {
                 }
 
                 for i in 0..node.child_count() {
-                    let child = node.child(i).unwrap();
+                    let child = node.child((i) as u32).unwrap();
                     if matches!(
                         child.kind(),
                         "identifier" | "property_identifier" | "field_identifier"
@@ -518,7 +518,7 @@ impl BaseParser {
                         names.push(ctx.analyzer.node_text(child));
                     } else if child.kind() == "variable_declarator" {
                         for j in 0..child.child_count() {
-                            let sub = child.child(j).unwrap();
+                            let sub = child.child((j) as u32).unwrap();
                             if sub.kind() == "identifier" {
                                 names.push(ctx.analyzer.node_text(sub));
                                 break;
@@ -571,7 +571,7 @@ impl BaseParser {
             // Python: expression_statement with assignment
             if ctx.analyzer.language == "python" && node.kind() == "expression_statement" {
                 for i in 0..node.child_count() {
-                    let child = node.child(i).unwrap();
+                    let child = node.child((i) as u32).unwrap();
                     if child.kind() == "assignment" {
                         let left_node = match child.child_by_field_name("left") {
                             Some(n) => n,
@@ -609,7 +609,7 @@ impl BaseParser {
             }
 
             for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
+                if let Some(child) = node.child((i) as u32) {
                     walk(ctx, child, inside_method);
                 }
             }
@@ -636,7 +636,7 @@ impl BaseParser {
     ) -> Vec<FieldInfo> {
         let body = class_node.child_by_field_name("body").or_else(|| {
             for i in 0..class_node.child_count() {
-                let child = class_node.child(i).unwrap();
+                let child = class_node.child((i) as u32).unwrap();
                 if child.kind() == "class_body" {
                     return Some(child);
                 }
@@ -652,7 +652,7 @@ impl BaseParser {
         let mut seen: HashSet<String> = HashSet::new();
 
         for i in 0..body.child_count() {
-            let member = body.child(i).unwrap();
+            let member = body.child((i) as u32).unwrap();
             if !member.is_named() {
                 continue;
             }
@@ -704,12 +704,12 @@ impl BaseParser {
                     None => continue,
                 };
                 for j in 0..params.child_count() {
-                    let param = params.child(j).unwrap();
+                    let param = params.child((j) as u32).unwrap();
                     if !param.is_named() {
                         continue;
                     }
                     let has_modifier = (0..param.child_count()).any(|k| {
-                        let c = param.child(k).unwrap();
+                        let c = param.child((k) as u32).unwrap();
                         matches!(c.kind(), "accessibility_modifier" | "readonly")
                     });
                     if !has_modifier {
@@ -801,7 +801,7 @@ impl BaseParser {
                 continue;
             }
             for i in (0..node.child_count()).rev() {
-                if let Some(child) = node.child(i) {
+                if let Some(child) = node.child((i) as u32) {
                     stack.push(child);
                 }
             }
@@ -823,10 +823,10 @@ impl BaseParser {
         match self.language.as_str() {
             "python" => {
                 for i in 0..class_node.child_count() {
-                    let child = class_node.child(i).unwrap();
+                    let child = class_node.child((i) as u32).unwrap();
                     if child.kind() == "argument_list" {
                         for j in 0..child.child_count() {
-                            let arg = child.child(j).unwrap();
+                            let arg = child.child((j) as u32).unwrap();
                             if matches!(arg.kind(), "identifier" | "attribute") {
                                 super_classes.push(self.node_text(arg));
                             }
@@ -840,16 +840,16 @@ impl BaseParser {
             }
             "java" => {
                 for i in 0..class_node.child_count() {
-                    let child = class_node.child(i).unwrap();
+                    let child = class_node.child((i) as u32).unwrap();
                     match child.kind() {
                         "superclass" => {
                             for j in 0..child.child_count() {
-                                let sub = child.child(j).unwrap();
+                                let sub = child.child((j) as u32).unwrap();
                                 if sub.kind() == "type_identifier" {
                                     super_classes.push(self.node_text(sub));
                                 } else if sub.kind() == "generic_type" {
                                     for k in 0..sub.child_count() {
-                                        let g = sub.child(k).unwrap();
+                                        let g = sub.child((k) as u32).unwrap();
                                         if g.kind() == "type_identifier" {
                                             super_classes.push(self.node_text(g));
                                             break;
@@ -860,15 +860,15 @@ impl BaseParser {
                         }
                         "super_interfaces" => {
                             for j in 0..child.child_count() {
-                                let sub = child.child(j).unwrap();
+                                let sub = child.child((j) as u32).unwrap();
                                 if sub.kind() == "type_list" {
                                     for k in 0..sub.child_count() {
-                                        let t = sub.child(k).unwrap();
+                                        let t = sub.child((k) as u32).unwrap();
                                         if t.kind() == "type_identifier" {
                                             super_classes.push(self.node_text(t));
                                         } else if t.kind() == "generic_type" {
                                             for l in 0..t.child_count() {
-                                                let g = t.child(l).unwrap();
+                                                let g = t.child((l) as u32).unwrap();
                                                 if g.kind() == "type_identifier" {
                                                     super_classes.push(self.node_text(g));
                                                     break;
@@ -898,13 +898,13 @@ impl BaseParser {
         seen: &mut HashSet<String>,
     ) {
         for i in 0..node.child_count() {
-            let child = node.child(i).unwrap();
+            let child = node.child((i) as u32).unwrap();
             if child.kind() == "class_heritage" {
                 for j in 0..child.child_count() {
-                    let sub = child.child(j).unwrap();
+                    let sub = child.child((j) as u32).unwrap();
                     if matches!(sub.kind(), "extends_clause" | "implements_clause") {
                         for k in 0..sub.child_count() {
-                            let gc = sub.child(k).unwrap();
+                            let gc = sub.child((k) as u32).unwrap();
                             if gc.is_named() {
                                 self.handle_heritage_expression(gc, super_classes, seen);
                             }
@@ -936,7 +936,7 @@ impl BaseParser {
                     super_classes.push(text);
                 }
                 for i in (0..node.child_count()).rev() {
-                    let c = node.child(i).unwrap();
+                    let c = node.child((i) as u32).unwrap();
                     if matches!(c.kind(), "identifier" | "property_identifier") {
                         let name = self.node_text(c).trim().to_string();
                         if !name.is_empty() && seen.insert(name.clone()) {
@@ -952,7 +952,7 @@ impl BaseParser {
                     return;
                 }
                 for i in 0..node.named_child_count() {
-                    if let Some(c) = node.named_child(i) {
+                    if let Some(c) = node.named_child((i) as u32) {
                         self.handle_heritage_expression(c, super_classes, seen);
                         return;
                     }
@@ -965,7 +965,7 @@ impl BaseParser {
             }
             _ => {
                 for i in 0..node.named_child_count() {
-                    if let Some(child) = node.named_child(i) {
+                    if let Some(child) = node.named_child((i) as u32) {
                         self.handle_heritage_expression(child, super_classes, seen);
                     }
                 }
@@ -979,16 +979,16 @@ impl BaseParser {
         super_classes: &mut Vec<String>,
     ) {
         for i in 0..class_node.child_count() {
-            let child = class_node.child(i).unwrap();
+            let child = class_node.child((i) as u32).unwrap();
             if child.kind() == "type_spec" {
                 for j in 0..child.child_count() {
-                    let sub = child.child(j).unwrap();
+                    let sub = child.child((j) as u32).unwrap();
                     if sub.kind() == "struct_type" {
                         for k in 0..sub.child_count() {
-                            let field = sub.child(k).unwrap();
+                            let field = sub.child((k) as u32).unwrap();
                             if field.kind() == "field_declaration_list" {
                                 for l in 0..field.child_count() {
-                                    let fd = field.child(l).unwrap();
+                                    let fd = field.child((l) as u32).unwrap();
                                     if fd.kind() == "field_declaration" {
                                         if let Some(embedded) =
                                             self.embedded_from_field_declaration(fd)
@@ -1008,13 +1008,13 @@ impl BaseParser {
     pub(crate) fn embedded_from_field_declaration(&self, fd: Node) -> Option<String> {
         // If there's a field_identifier, it's a named field, not embedded
         for i in 0..fd.child_count() {
-            let c = fd.child(i).unwrap();
+            let c = fd.child((i) as u32).unwrap();
             if c.kind() == "field_identifier" {
                 return None;
             }
         }
         for i in 0..fd.child_count() {
-            let c = fd.child(i).unwrap();
+            let c = fd.child((i) as u32).unwrap();
             if c.kind() == "*" {
                 continue;
             }
@@ -1030,7 +1030,7 @@ impl BaseParser {
             }
         }
         for i in 0..fd.named_child_count() {
-            if let Some(c) = fd.named_child(i) {
+            if let Some(c) = fd.named_child((i) as u32) {
                 if let Some(name) = self.parse_embedded_type_name(c) {
                     return Some(name);
                 }
@@ -1044,7 +1044,7 @@ impl BaseParser {
             "type_identifier" => Some(self.node_text(node)),
             "qualified_type" => {
                 for i in 0..node.child_count() {
-                    let c = node.child(i).unwrap();
+                    let c = node.child((i) as u32).unwrap();
                     if c.kind() == "type_identifier" {
                         return Some(self.node_text(c));
                     }
@@ -1053,7 +1053,7 @@ impl BaseParser {
             }
             "generic_type" => {
                 for i in 0..node.child_count() {
-                    let c = node.child(i).unwrap();
+                    let c = node.child((i) as u32).unwrap();
                     if matches!(
                         c.kind(),
                         "type_identifier" | "qualified_type" | "pointer_type"
@@ -1065,7 +1065,7 @@ impl BaseParser {
             }
             "pointer_type" => {
                 for i in 0..node.child_count() {
-                    let c = node.child(i).unwrap();
+                    let c = node.child((i) as u32).unwrap();
                     if matches!(
                         c.kind(),
                         "type_identifier"
@@ -1080,7 +1080,7 @@ impl BaseParser {
             }
             "parenthesized_type" => {
                 for i in 0..node.named_child_count() {
-                    if let Some(c) = node.named_child(i) {
+                    if let Some(c) = node.named_child((i) as u32) {
                         if let Some(name) = self.parse_embedded_type_name(c) {
                             return Some(name);
                         }

@@ -6,8 +6,6 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use super::types::IndexedFileRecord;
 use super::DbProjectAnalyzer;
 
-pub(super) const SCHEMA_VERSION: &str = "2";
-
 impl DbProjectAnalyzer {
     pub(crate) fn from_db_file(path: &Path) -> anyhow::Result<Self> {
         let conn = Connection::open(path)?;
@@ -120,6 +118,19 @@ impl DbProjectAnalyzer {
                 FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS annotations (
+                id INTEGER PRIMARY KEY,
+                file_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                signature TEXT NOT NULL,
+                start_line INTEGER NOT NULL,
+                end_line INTEGER NOT NULL,
+                target_name TEXT NOT NULL,
+                target_type TEXT NOT NULL,
+                target_signature TEXT NOT NULL,
+                FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
+            );
+
             CREATE TABLE IF NOT EXISTS python_properties (
                 id INTEGER PRIMARY KEY,
                 file_id INTEGER NOT NULL,
@@ -155,6 +166,8 @@ impl DbProjectAnalyzer {
             CREATE INDEX IF NOT EXISTS idx_calls_caller_class ON calls(caller, caller_class_name);
             CREATE INDEX IF NOT EXISTS idx_calls_caller_class_file ON calls(caller, caller_class_name, file_id);
             CREATE INDEX IF NOT EXISTS idx_imports_module ON imports(module);
+            CREATE INDEX IF NOT EXISTS idx_annotations_name ON annotations(name);
+            CREATE INDEX IF NOT EXISTS idx_annotations_name_file ON annotations(name, file_id);
             CREATE INDEX IF NOT EXISTS idx_python_properties_name_class ON python_properties(property_name, class_name);
             CREATE INDEX IF NOT EXISTS idx_python_property_callers_name ON python_property_callers(property_name);
         ",
@@ -165,32 +178,18 @@ impl DbProjectAnalyzer {
 
     fn migrate_schema(conn: &Connection) -> anyhow::Result<()> {
         let columns = Self::table_columns(conn, "files")?;
-        let mut needs_reindex = false;
         if !columns.contains("mtime_nanos") {
             conn.execute(
                 "ALTER TABLE files ADD COLUMN mtime_nanos INTEGER NOT NULL DEFAULT 0",
                 [],
             )?;
-            needs_reindex = true;
         }
         if !columns.contains("content_hash") {
             conn.execute(
                 "ALTER TABLE files ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''",
                 [],
             )?;
-            needs_reindex = true;
         }
-        conn.execute(
-            "
-            INSERT INTO metadata(key, value) VALUES ('schema_version', ?1)
-            ON CONFLICT(key) DO UPDATE SET value = excluded.value
-            ",
-            [if needs_reindex {
-                "needs_reindex"
-            } else {
-                SCHEMA_VERSION
-            }],
-        )?;
         Ok(())
     }
 
@@ -213,6 +212,7 @@ impl DbProjectAnalyzer {
             DELETE FROM fields;
             DELETE FROM calls;
             DELETE FROM imports;
+            DELETE FROM annotations;
             DELETE FROM files;
         ",
         )?;
@@ -276,9 +276,6 @@ impl DbProjectAnalyzer {
         root_path: &str,
         requested_language: Option<&str>,
     ) -> anyhow::Result<bool> {
-        if self.metadata_value("schema_version")?.as_deref() != Some(SCHEMA_VERSION) {
-            return Ok(false);
-        }
         if self.metadata_value("indexed_root_path")?.as_deref() != Some(root_path) {
             return Ok(false);
         }

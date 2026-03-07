@@ -687,6 +687,22 @@ fn cmd_sub_classes(path: &str, language: Option<LanguageFilter>, class_name: &st
 
 fn cmd_annotations(path: &str, language: Option<LanguageFilter>, query: &str) -> Value {
     let real_path = resolve_path(path);
+    if let Ok(Some(db)) = DbProjectAnalyzer::from_current_dir_if_compatible(
+        &real_path,
+        language.map(LanguageFilter::as_str),
+    ) {
+        match db.find_annotations(query) {
+            Ok(annotations) => {
+                return json!({
+                    "path": real_path,
+                    "files_searched": db.file_count(),
+                    "count": annotations.len(),
+                    "annotations": annotations.iter().map(|a| a.to_json_value(true)).collect::<Vec<_>>(),
+                });
+            }
+            Err(e) => return json!({"error": e.to_string()}),
+        }
+    }
     match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
         Ok(project) => {
             let annotations = project.find_annotations(query);

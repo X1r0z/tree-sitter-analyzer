@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use rusqlite::{params, params_from_iter, OptionalExtension, ToSql};
 use serde_json::json;
 
-use crate::nodes::{ClassInfo, FieldInfo, FunctionInfo, ImportInfo, Location};
+use crate::nodes::{AnnotationInfo, ClassInfo, FieldInfo, FunctionInfo, ImportInfo, Location};
 use crate::utils::{is_simple_query, sort_by_file_line, QueryMatcher};
 
 use super::helpers::{
@@ -218,6 +218,53 @@ impl DbProjectAnalyzer {
 
         rows.filter_map(|row| match row {
             Ok(import) if matcher.is_match(&import.module) => Some(Ok(import)),
+            Ok(_) => None,
+            Err(error) => Some(Err(error)),
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(Into::into)
+    }
+
+    pub(crate) fn find_annotations(&self, query: &str) -> anyhow::Result<Vec<AnnotationInfo>> {
+        let matcher = QueryMatcher::new(query);
+        let like = if !query.is_empty() && is_simple_query(query) {
+            format!("%{}%", query)
+        } else {
+            "%".to_string()
+        };
+        let mut sql = String::from(
+            "
+            SELECT f.path, a.name, a.signature, a.start_line, a.end_line, a.target_name, a.target_type, a.target_signature
+            FROM annotations a
+            JOIN files f ON f.id = a.file_id
+            WHERE a.name LIKE ?1
+            ",
+        );
+        let mut params: Vec<&dyn ToSql> = vec![&like];
+        if let Some(language) = self.requested_language.as_ref() {
+            sql.push_str(" AND f.language = ?2");
+            params.push(language);
+        }
+        sql.push_str(" ORDER BY f.path, a.start_line");
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(params), |row| {
+            Ok(AnnotationInfo {
+                name: row.get(1)?,
+                signature: row.get(2)?,
+                location: Location {
+                    file: row.get(0)?,
+                    start_line: row.get::<_, i64>(3)? as usize,
+                    end_line: row.get::<_, i64>(4)? as usize,
+                },
+                target_name: row.get(5)?,
+                target_type: row.get(6)?,
+                target_signature: row.get(7)?,
+            })
+        })?;
+
+        rows.filter_map(|row| match row {
+            Ok(annotation) if matcher.is_match(&annotation.name) => Some(Ok(annotation)),
             Ok(_) => None,
             Err(error) => Some(Err(error)),
         })

@@ -196,6 +196,7 @@ pub struct AnalyzerSnapshot {
     pub fields: Vec<FieldInfo>,
     pub calls: Vec<CallInfo>,
     pub imports: Vec<ImportInfo>,
+    pub annotations: Vec<AnnotationInfo>,
     pub python_properties: Vec<PythonPropertyInfo>,
     pub python_property_callers: Vec<PythonPropertyCallerInfo>,
 }

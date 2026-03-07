@@ -5,7 +5,6 @@ use anyhow::Context;
 use indicatif::ProgressBar;
 use rusqlite::{params, CachedStatement, Connection, Transaction};
 
-use super::schema::SCHEMA_VERSION;
 use super::types::{FileIndexData, IndexSyncPlan, IndexedFileEntry, IndexedFileRecord};
 use super::DbProjectAnalyzer;
 
@@ -50,7 +49,7 @@ impl DbProjectAnalyzer {
             0
         };
         let total_steps = 1
-            + 4
+            + 3
             + 1
             + plan.changed_snapshots.len() as u64
             + deleted_files as u64
@@ -70,8 +69,6 @@ impl DbProjectAnalyzer {
         Self::upsert_metadata(&tx, "language_filter", indexed_language)?;
         progress.inc(1);
         Self::upsert_metadata(&tx, "updated_at", &Self::current_timestamp_string()?)?;
-        progress.inc(1);
-        Self::upsert_metadata(&tx, "schema_version", SCHEMA_VERSION)?;
         progress.inc(1);
 
         if compatible {
@@ -180,6 +177,7 @@ struct SnapshotInserter<'tx> {
     insert_field: CachedStatement<'tx>,
     insert_call: CachedStatement<'tx>,
     insert_import: CachedStatement<'tx>,
+    insert_annotation: CachedStatement<'tx>,
     insert_python_property: CachedStatement<'tx>,
     insert_python_property_caller: CachedStatement<'tx>,
 }
@@ -223,6 +221,12 @@ impl<'tx> SnapshotInserter<'tx> {
             )?,
             insert_import: tx.prepare_cached(
                 "INSERT INTO imports(file_id, module, start_line) VALUES (?1, ?2, ?3)",
+            )?,
+            insert_annotation: tx.prepare_cached(
+                "
+                INSERT INTO annotations(file_id, name, signature, start_line, end_line, target_name, target_type, target_signature)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                ",
             )?,
             insert_python_property: tx.prepare_cached(
                 "INSERT INTO python_properties(file_id, property_name, class_name) VALUES (?1, ?2, ?3)",
@@ -304,6 +308,19 @@ impl<'tx> SnapshotInserter<'tx> {
                 file_id,
                 import.module,
                 import.location.start_line as i64
+            ])?;
+        }
+
+        for annotation in &snapshot.snapshot.annotations {
+            self.insert_annotation.execute(params![
+                file_id,
+                annotation.name,
+                annotation.signature,
+                annotation.location.start_line as i64,
+                annotation.location.end_line as i64,
+                annotation.target_name,
+                annotation.target_type,
+                annotation.target_signature
             ])?;
         }
 

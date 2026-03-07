@@ -492,6 +492,7 @@ impl CodeAnalyzer {
 
         let calls = self.calls();
         let imports = self.imports();
+        let annotations = self.annotations();
 
         let mut python_properties = Vec::new();
         let mut python_property_callers = Vec::new();
@@ -536,6 +537,7 @@ impl CodeAnalyzer {
             fields,
             calls,
             imports,
+            annotations,
             python_properties,
             python_property_callers,
         }

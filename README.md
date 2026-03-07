@@ -58,6 +58,7 @@ See [USAGE.md](USAGE.md) for complete documentation.
 
 | Tool | Description |
 |------|-------------|
+| `index` | Build a persistent project index in `./tsa.db` |
 | `functions` | Extract all function/method definitions |
 | `classes` | Extract all class/struct/interface definitions |
 | `fields` | Extract all field definitions |
@@ -69,7 +70,6 @@ See [USAGE.md](USAGE.md) for complete documentation.
 | `definition` | Extract source code of a function |
 | `super-classes` | Get all parent classes of a specific class |
 | `sub-classes` | Get all child classes that inherit from a specific class |
-| `index` | Build a persistent project index in `./tsa.db` |
 
 ## Development
 

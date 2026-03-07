@@ -58,6 +58,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Build a persistent project index in ./tsa.db
+    Index {
+        /// Directory path
+        path: String,
+        /// Only index files for a single language
+        #[arg(short = 'l', long, value_enum)]
+        language: Option<LanguageFilter>,
+    },
     /// Extract all function/method definitions
     Functions {
         /// Directory path
@@ -99,6 +107,17 @@ enum Commands {
         #[arg(short = 'l', long, value_enum)]
         language: Option<LanguageFilter>,
         /// Filter by module name (regex match)
+        #[arg(short, long)]
+        query: Option<String>,
+    },
+    /// Extract annotations (Java) / decorators (Python)
+    Annotations {
+        /// Directory path
+        path: String,
+        /// Only analyze files for a single language (java or python)
+        #[arg(short = 'l', long, value_enum)]
+        language: Option<LanguageFilter>,
+        /// Filter by annotation/decorator name (regex match)
         #[arg(short, long)]
         query: Option<String>,
     },
@@ -178,25 +197,6 @@ enum Commands {
         /// Class name to find children for
         #[arg(short, long)]
         class_name: String,
-    },
-    /// Extract annotations (Java) / decorators (Python)
-    Annotations {
-        /// Directory path
-        path: String,
-        /// Only analyze files for a single language (java or python)
-        #[arg(short = 'l', long, value_enum)]
-        language: Option<LanguageFilter>,
-        /// Filter by annotation/decorator name (regex match)
-        #[arg(short, long)]
-        query: Option<String>,
-    },
-    /// Build a persistent project index in ./tsa.db
-    Index {
-        /// Directory path
-        path: String,
-        /// Only index files for a single language
-        #[arg(short = 'l', long, value_enum)]
-        language: Option<LanguageFilter>,
     },
 }
 

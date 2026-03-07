@@ -94,6 +94,8 @@ tsa index . -l java
 
 `tsa index` writes `tsa.db` to the current working directory. When a compatible cache is present, `functions`, `classes`, `fields`, `imports`, `callers`, `callees`, `super-classes`, and `sub-classes` use it automatically. `definition` and `symbols` still analyze source files directly.
 
+**After indexing, always query from the project root directory** (e.g., `tsa callers . -f foo` instead of `tsa callers ./src/subdir -f foo`). Indexed lookups are fast enough that there is no need to narrow the query path — using the root ensures you never miss results from other parts of the project.
+
 ### Supported Languages
 
 | Language | Extensions |

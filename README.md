@@ -8,6 +8,7 @@ A code analysis toolkit using [tree-sitter](https://tree-sitter.github.io/tree-s
 - **Inheritance Analysis** - Extract class inheritance relationships, including parent classes and child classes
 - **Call Graph Analysis** - Build call graphs showing caller-callee relationships
 - **Import Analysis** - Extract import statements and dependencies
+- **Annotation Analysis** - Extract Java annotations and Python decorators with their targets
 - **Symbol Reference Tracking** - Find all references to a specific symbol
 - **Project Indexing** - Build a persistent `tsa.db` cache for faster repeated project queries
 
@@ -61,6 +62,7 @@ See [USAGE.md](USAGE.md) for complete documentation.
 | `classes` | Extract all class/struct/interface definitions |
 | `fields` | Extract all field definitions |
 | `imports` | Extract all import statements |
+| `annotations` | Extract Java annotations and Python decorators |
 | `callers` | Find functions that call a specific function |
 | `callees` | Find functions called by a specific function |
 | `symbols` | Find all references to a specific symbol |

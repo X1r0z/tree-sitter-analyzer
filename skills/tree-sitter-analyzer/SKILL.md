@@ -1,7 +1,7 @@
 ---
 name: "tree-sitter-analyzer"
 description: >
-  Structural code analysis via tree-sitter AST (functions, classes, imports, call graph, inheritance, symbol references).
+  Structural code analysis via tree-sitter AST (functions, classes, imports, annotations, call graph, inheritance, symbol references).
   Use for "who calls X?", "what does X call?", "where is X defined?", "list functions/classes", "class fields/methods",
   "subclasses/superclasses", "find symbol references", and any structural code understanding across files or directories.
   Supports optional project indexing with `tsa index` for repeated queries on the same repository.
@@ -28,7 +28,7 @@ Use this skill whenever you need answers about code structure or relationships:
 - **Definition lookup** — "Where is this function/class defined?", "Show me the source code of X"
 - **Class structure** — "What fields/methods does this class have?", "What are the subclasses/superclasses?"
 - **Symbol tracking** — "Find all references to this identifier across the project"
-- **Inventory** — "List all functions/classes/imports in this directory"
+- **Inventory** — "List all functions/classes/imports/annotations in this directory"
 - **Impact analysis** — "If I change this function, what else is affected?"
 - **Repeated project queries** — When you'll ask several structural questions about the same repo, build an index first with `tsa index`
 
@@ -41,7 +41,7 @@ tree-sitter-analyzer (tsa) is particularly powerful for security audits because 
 - **Sink reachability** — Start from a dangerous sink function, use `callers` recursively to build the call chain back to entry points and determine if user-controlled data can reach it
 - **Attack surface mapping** — Use `functions` + `classes` to inventory all public API endpoints, handlers, and entry points; then use `callees` to map what internal functions each endpoint reaches
 - **Privilege analysis** — Use `sub-classes` to find all implementations of permission/auth base classes; use `fields` to inspect their configuration
-- **Dependency mapping** — Use `imports` to audit which modules import dangerous libraries; use `symbols` to find every reference to security-critical identifiers
+- **Dependency mapping** — Use `imports` to audit which modules import dangerous libraries; use `annotations` to inspect framework metadata on handlers and models; use `symbols` to find every reference to security-critical identifiers
 
 ### Codebase Onboarding & Refactoring
 
@@ -69,6 +69,7 @@ Only use Grep instead of tree-sitter-analyzer (tsa) when:
 | Who calls function X? | `callers <path> -f X` |
 | Get function source code | `definition <path> -f X` |
 | List imports / find a module | `imports <path> [-q pattern]` |
+| List annotations / find a decorator | `annotations <path> [-q pattern]` |
 | Find all references to symbol | `symbols <path> -n NAME` |
 | Parent classes of X | `super-classes <path> -c X` |
 | Child classes of X | `sub-classes <path> -c X` |
@@ -92,7 +93,7 @@ tsa index .
 tsa index . -l java
 ```
 
-`tsa index` writes `tsa.db` to the current working directory. When a compatible cache is present, `functions`, `classes`, `fields`, `imports`, `callers`, `callees`, `super-classes`, and `sub-classes` use it automatically. `definition` and `symbols` still analyze source files directly.
+`tsa index` writes `tsa.db` to the current working directory. When a compatible cache is present, `functions`, `classes`, `fields`, `imports`, `annotations`, `callers`, `callees`, `super-classes`, and `sub-classes` use it automatically. `definition` and `symbols` still analyze source files directly.
 
 **After indexing, always query from the project root directory** (e.g., `tsa callers . -f foo` instead of `tsa callers ./src/subdir -f foo`). Indexed lookups are fast enough that there is no need to narrow the query path — using the root ensures you never miss results from other parts of the project.
 
@@ -196,6 +197,23 @@ tsa imports <path> [-l LANGUAGE] [-q QUERY]
 
 ```bash
 tsa imports ./src/ -q "^(os|sys)$"
+```
+
+### `annotations` — Extract Java annotations and Python decorators
+
+```bash
+tsa annotations <path> [-l LANGUAGE] [-q QUERY]
+```
+
+| Option | Description |
+|--------|-------------|
+| `-l, --language` | Only analyze files for a single language (`java` or `python`) |
+| `-q, --query` | Filter by annotation/decorator name (regex) |
+
+Use this for framework metadata and declarative behavior such as Java `@Transactional`, `@RequestMapping`, or Python `@property`, `@dataclass`, `@app.route`.
+
+```bash
+tsa annotations ./src/ -l python -q "^(property|dataclass)$"
 ```
 
 ### `callers` — Find who calls a function
@@ -309,6 +327,7 @@ tsa classes /path/to/project -q "Controller"
 tsa functions /path/to/project | jq -r '.functions[] | "\(.name)\t\(.file):\(.start_line)"'
 tsa classes /path/to/project | jq -r '.classes[] | "\(.name)\t\(.file):\(.start_line)"'
 tsa imports /path/to/project | jq -r '.imports[] | "\(.module)\t\(.file):\(.line)"'
+tsa annotations /path/to/project | jq -r '.annotations[] | "\(.name)\t\(.target_type) \(.target_name)\t\(.file):\(.line)"'
 ```
 
 ### Impact analysis (who calls X / what does X call)

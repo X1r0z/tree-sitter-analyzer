@@ -62,7 +62,7 @@ Notes:
 
 - The cache file is always written to the current working directory as `tsa.db`
 - Indexing shows a progress bar with processed files and total files
-- If a compatible `tsa.db` is present, `functions`, `classes`, `fields`, `imports`, `callers`, `callees`, `super-classes`, and `sub-classes` use the cache automatically
+- If a compatible `tsa.db` is present, `functions`, `classes`, `fields`, `imports`, `annotations`, `callers`, `callees`, `super-classes`, and `sub-classes` use the cache automatically
 - If no compatible cache is found, queries fall back to direct AST analysis
 - `definition` and `symbols` currently bypass the cache and always analyze source files directly
 
@@ -180,6 +180,43 @@ tsa imports ./src/ -q json
 # Find imports matching "^(os|sys)$" using regex
 tsa imports ./src/ -q "^(os|sys)$"
 ```
+
+When a compatible `tsa.db` exists, this command reads from the cache.
+
+### `annotations` - Extract Java Annotations and Python Decorators
+
+Extract Java annotations and Python decorators, along with the function, method, or class they are attached to.
+
+```bash
+tsa annotations <path> [-l LANGUAGE] [-q QUERY]
+```
+
+| Option | Description |
+|--------|-------------|
+| `-l, --language` | Only analyze files for a single language (`java` or `python`) |
+| `-q, --query` | Filter by annotation/decorator name (regex match) |
+
+Examples:
+
+```bash
+# List all annotations/decorators in a directory
+tsa annotations ./src/
+
+# Restrict to Python decorators
+tsa annotations ./src/ -l python
+
+# Find annotations containing "Test"
+tsa annotations ./src/ -q Test
+
+# Find decorators matching "^(dataclass|property)$" using regex
+tsa annotations ./src/ -l python -q "^(dataclass|property)$"
+```
+
+Notes:
+
+- Java results include annotations such as `@Transactional` and `@RequestMapping`
+- Python results include decorators such as `@property`, `@app.route`, and `@dataclass`
+- Output includes the annotation/decorator name, full signature, target name, target type, and target signature
 
 When a compatible `tsa.db` exists, this command reads from the cache.
 

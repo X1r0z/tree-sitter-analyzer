@@ -167,6 +167,48 @@ Array key: `imports`
 }
 ```
 
+## `annotations`
+
+Array key: `annotations`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Annotation or decorator name without the leading `@` |
+| `signature` | string | Full annotation/decorator text as it appears in source |
+| `line` | int | Start line number |
+| `file` | string | File path |
+| `target_name` | string | Name of the annotated/decorated class, function, or method |
+| `target_type` | string | Target kind, such as `class`, `function`, or `method` |
+| `target_signature` | string | Target declaration/signature text |
+
+```json
+{
+  "path": "/path/to/project",
+  "files_searched": 42,
+  "count": 2,
+  "annotations": [
+    {
+      "name": "dataclass",
+      "signature": "@dataclass",
+      "line": 3,
+      "file": "/path/to/project/src/models.py",
+      "target_name": "User",
+      "target_type": "class",
+      "target_signature": "class User:"
+    },
+    {
+      "name": "Transactional",
+      "signature": "@Transactional(readOnly = true)",
+      "line": 12,
+      "file": "/path/to/project/src/service/UserService.java",
+      "target_name": "findUser",
+      "target_type": "method",
+      "target_signature": "public User findUser(String id)"
+    }
+  ]
+}
+```
+
 ## `super-classes`
 
 Array key: `super_classes`

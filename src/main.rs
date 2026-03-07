@@ -515,6 +515,41 @@ fn cmd_callees(
 
 fn cmd_symbols(path: &str, language: Option<LanguageFilter>, name: &str) -> Value {
     let real_path = resolve_path(path);
+    if let Ok(Some(db)) = DbProjectAnalyzer::from_current_dir_if_compatible(
+        &real_path,
+        language.map(LanguageFilter::as_str),
+    ) {
+        match db.find_symbols(name) {
+            Ok(refs) => {
+                if refs.is_empty() {
+                    return json!({
+                        "path": real_path,
+                        "files_searched": db.file_count(),
+                        "count": 0,
+                        "name": name,
+                        "references": Vec::<Value>::new(),
+                    });
+                }
+                return match ProjectAnalyzer::new_with_language(
+                    &real_path,
+                    language.map(LanguageFilter::as_str),
+                ) {
+                    Ok(project) => {
+                        let refs = project.hydrate_symbol_contexts(refs);
+                        json!({
+                            "path": real_path,
+                            "files_searched": db.file_count(),
+                            "count": refs.len(),
+                            "name": name,
+                            "references": refs.iter().map(|symbol| symbol.to_json_value()).collect::<Vec<_>>(),
+                        })
+                    }
+                    Err(e) => json!({"error": e.to_string()}),
+                };
+            }
+            Err(e) => return json!({"error": e.to_string()}),
+        }
+    }
     match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
         Ok(project) => {
             let refs = project.find_symbols(name);

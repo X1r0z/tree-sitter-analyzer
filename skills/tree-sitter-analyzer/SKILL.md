@@ -247,6 +247,21 @@ tsa callees <path> [-l LANGUAGE] -f FUNCTION [-c CLASS_NAME]
 tsa callees ./src/ -f initialize -c Application
 ```
 
+### `symbols` — Find all references to an identifier
+
+```bash
+tsa symbols <path> [-l LANGUAGE] -n NAME
+```
+
+| Option | Description |
+|--------|-------------|
+| `-l, --language` | Only analyze files for a single language |
+| `-n, --name` | Identifier name (required) |
+
+```bash
+tsa symbols ./src/ -n CONFIG_PATH
+```
+
 ### `definition` — Get function source code
 
 ```bash
@@ -261,21 +276,6 @@ tsa definition <path> [-l LANGUAGE] -f FUNCTION [-c CLASS_NAME]
 
 ```bash
 tsa definition ./src/ -f parse_config
-```
-
-### `symbols` — Find all references to an identifier
-
-```bash
-tsa symbols <path> [-l LANGUAGE] -n NAME
-```
-
-| Option | Description |
-|--------|-------------|
-| `-l, --language` | Only analyze files for a single language |
-| `-n, --name` | Identifier name (required) |
-
-```bash
-tsa symbols ./src/ -n CONFIG_PATH
 ```
 
 ### `super-classes` — Get parent classes

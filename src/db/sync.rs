@@ -178,6 +178,7 @@ struct SnapshotInserter<'tx> {
     insert_call: CachedStatement<'tx>,
     insert_import: CachedStatement<'tx>,
     insert_annotation: CachedStatement<'tx>,
+    insert_symbol_ref: CachedStatement<'tx>,
     insert_python_property: CachedStatement<'tx>,
     insert_python_property_caller: CachedStatement<'tx>,
 }
@@ -226,6 +227,12 @@ impl<'tx> SnapshotInserter<'tx> {
                 "
                 INSERT INTO annotations(file_id, name, signature, start_line, end_line, target_name, target_type, target_signature)
                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                ",
+            )?,
+            insert_symbol_ref: tx.prepare_cached(
+                "
+                INSERT INTO symbol_refs(file_id, name, node_type, start_line, end_line, start_column, end_column)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                 ",
             )?,
             insert_python_property: tx.prepare_cached(
@@ -321,6 +328,18 @@ impl<'tx> SnapshotInserter<'tx> {
                 annotation.target_name,
                 annotation.target_type,
                 annotation.target_signature
+            ])?;
+        }
+
+        for symbol in &snapshot.snapshot.symbols {
+            self.insert_symbol_ref.execute(params![
+                file_id,
+                symbol.name,
+                symbol.node_type,
+                symbol.location.start_line as i64,
+                symbol.location.end_line as i64,
+                symbol.start_column as i64,
+                symbol.end_column as i64
             ])?;
         }
 

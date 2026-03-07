@@ -131,6 +131,18 @@ impl DbProjectAnalyzer {
                 FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS symbol_refs (
+                id INTEGER PRIMARY KEY,
+                file_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                node_type TEXT NOT NULL,
+                start_line INTEGER NOT NULL,
+                end_line INTEGER NOT NULL,
+                start_column INTEGER NOT NULL DEFAULT 0,
+                end_column INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
+            );
+
             CREATE TABLE IF NOT EXISTS python_properties (
                 id INTEGER PRIMARY KEY,
                 file_id INTEGER NOT NULL,
@@ -168,6 +180,7 @@ impl DbProjectAnalyzer {
             CREATE INDEX IF NOT EXISTS idx_imports_module ON imports(module);
             CREATE INDEX IF NOT EXISTS idx_annotations_name ON annotations(name);
             CREATE INDEX IF NOT EXISTS idx_annotations_name_file ON annotations(name, file_id);
+            CREATE INDEX IF NOT EXISTS idx_symbol_refs_name_file ON symbol_refs(name, file_id);
             CREATE INDEX IF NOT EXISTS idx_python_properties_name_class ON python_properties(property_name, class_name);
             CREATE INDEX IF NOT EXISTS idx_python_property_callers_name ON python_property_callers(property_name);
         ",
@@ -190,6 +203,20 @@ impl DbProjectAnalyzer {
                 [],
             )?;
         }
+        let symbol_columns = Self::table_columns(conn, "symbol_refs")?;
+        if !symbol_columns.contains("start_column") {
+            conn.execute(
+                "ALTER TABLE symbol_refs ADD COLUMN start_column INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+        if !symbol_columns.contains("end_column") {
+            conn.execute(
+                "ALTER TABLE symbol_refs ADD COLUMN end_column INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+        conn.execute("DROP INDEX IF EXISTS idx_symbol_refs_name", [])?;
         Ok(())
     }
 
@@ -213,6 +240,7 @@ impl DbProjectAnalyzer {
             DELETE FROM calls;
             DELETE FROM imports;
             DELETE FROM annotations;
+            DELETE FROM symbol_refs;
             DELETE FROM files;
         ",
         )?;

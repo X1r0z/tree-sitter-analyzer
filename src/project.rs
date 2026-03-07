@@ -301,11 +301,66 @@ impl ProjectAnalyzer {
             return Vec::new();
         }
         let symbol = name.to_string();
-        candidate_files
+        let refs: Vec<SymbolRefInfo> = candidate_files
             .par_iter()
             .flat_map(|f| {
                 self.analyze_file(f, |analyzer| analyzer.find_symbols(&symbol))
                     .unwrap_or_default()
+            })
+            .collect();
+        refs.into_iter()
+            .map(|symbol| symbol.to_json_value())
+            .collect()
+    }
+
+    pub fn hydrate_symbol_contexts(&self, candidates: Vec<SymbolRefInfo>) -> Vec<SymbolRefInfo> {
+        if candidates.is_empty() {
+            return Vec::new();
+        }
+
+        let mut candidate_keys_by_file: HashMap<String, HashSet<SymbolRefKey>> = HashMap::new();
+        for candidate in &candidates {
+            candidate_keys_by_file
+                .entry(candidate.location.file.clone())
+                .or_default()
+                .insert(SymbolRefKey::from_symbol(candidate));
+        }
+
+        let resolved: HashMap<SymbolRefKey, SymbolRefInfo> = candidate_keys_by_file
+            .par_iter()
+            .flat_map(|(file, expected)| {
+                self.analyze_file(file, |analyzer| {
+                    let expected_symbols: Vec<_> = expected
+                        .iter()
+                        .map(|key| SymbolRefInfo {
+                            name: key.name.clone(),
+                            node_type: key.node_type.clone(),
+                            location: Location {
+                                file: key.file.clone(),
+                                start_line: key.start_line,
+                                end_line: key.end_line,
+                            },
+                            start_column: key.start_column,
+                            end_column: key.end_column,
+                            context: String::new(),
+                        })
+                        .collect();
+                    analyzer.hydrate_symbol_contexts(&expected_symbols)
+                })
+                .unwrap_or_default()
+                .into_iter()
+                .map(|symbol| (SymbolRefKey::from_symbol(&symbol), symbol))
+                .collect::<Vec<_>>()
+            })
+            .collect();
+
+        candidates
+            .into_iter()
+            .filter_map(|candidate| {
+                resolved
+                    .get(&SymbolRefKey::from_symbol(&candidate))
+                    .cloned()
+                    .or(Some(candidate))
             })
             .collect()
     }

@@ -186,6 +186,55 @@ impl AnnotationInfo {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SymbolRefInfo {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub node_type: String,
+    pub location: Location,
+    #[serde(skip_serializing, skip_deserializing, default)]
+    pub start_column: usize,
+    #[serde(skip_serializing, skip_deserializing, default)]
+    pub end_column: usize,
+    #[serde(default)]
+    pub context: String,
+}
+
+impl SymbolRefInfo {
+    pub fn to_json_value(&self) -> Value {
+        json!({
+            "type": self.node_type,
+            "location": self.location,
+            "context": self.context,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Eq, Hash, PartialEq)]
+pub(crate) struct SymbolRefKey {
+    pub(crate) file: String,
+    pub(crate) name: String,
+    pub(crate) node_type: String,
+    pub(crate) start_line: usize,
+    pub(crate) end_line: usize,
+    pub(crate) start_column: usize,
+    pub(crate) end_column: usize,
+}
+
+impl SymbolRefKey {
+    pub(crate) fn from_symbol(symbol: &SymbolRefInfo) -> Self {
+        Self {
+            file: symbol.location.file.clone(),
+            name: symbol.name.clone(),
+            node_type: symbol.node_type.clone(),
+            start_line: symbol.location.start_line,
+            end_line: symbol.location.end_line,
+            start_column: symbol.start_column,
+            end_column: symbol.end_column,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PythonPropertyInfo {
     pub name: String,
@@ -207,6 +256,7 @@ pub struct AnalyzerSnapshot {
     pub calls: Vec<CallInfo>,
     pub imports: Vec<ImportInfo>,
     pub annotations: Vec<AnnotationInfo>,
+    pub symbols: Vec<SymbolRefInfo>,
     pub python_properties: Vec<PythonPropertyInfo>,
     pub python_property_callers: Vec<PythonPropertyCallerInfo>,
 }

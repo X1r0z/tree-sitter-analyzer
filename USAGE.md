@@ -62,9 +62,8 @@ Notes:
 
 - The cache file is always written to the current working directory as `tsa.db`
 - Indexing shows a progress bar with processed files and total files
-- If a compatible `tsa.db` is present, `functions`, `classes`, `fields`, `imports`, `annotations`, `callers`, `callees`, `super-classes`, and `sub-classes` use the cache automatically
+- If a compatible `tsa.db` is present, `functions`, `classes`, `fields`, `imports`, `annotations`, `callers`, `callees`, `symbols`, `definition`, `super-classes`, and `sub-classes` use the cache automatically
 - If no compatible cache is found, queries fall back to direct AST analysis
-- `definition` and `symbols` currently bypass the cache and always analyze source files directly
 
 ### `functions` - Extract Function Definitions
 
@@ -95,11 +94,6 @@ tsa functions ./src/ -q get
 tsa functions ./src/ -q "^get_"
 ```
 
-Cache behavior:
-
-- Reads from `tsa.db` when a compatible cache exists
-- Falls back to AST parsing when no compatible cache exists
-
 ### `classes` - Extract Class Definitions
 
 Extract all class/struct/interface definitions.
@@ -126,8 +120,6 @@ tsa classes ./src/ -q Handler
 tsa classes ./src/ -q "Service$"
 ```
 
-When a compatible `tsa.db` exists, this command reads from the cache.
-
 ### `fields` - Get Class Fields
 
 Get all fields of a specific class.
@@ -147,8 +139,6 @@ Examples:
 # Search across a project
 tsa fields ./src/ -c DatabaseConfig
 ```
-
-When a compatible `tsa.db` exists, this command reads from the cache.
 
 ### `imports` - Extract Import Statements
 
@@ -175,8 +165,6 @@ tsa imports ./src/ -q json
 # Find imports matching "^(os|sys)$" using regex
 tsa imports ./src/ -q "^(os|sys)$"
 ```
-
-When a compatible `tsa.db` exists, this command reads from the cache.
 
 ### `annotations` - Extract Java Annotations and Python Decorators
 
@@ -213,8 +201,6 @@ Notes:
 - Python results include decorators such as `@property`, `@app.route`, and `@dataclass`
 - Output includes the annotation/decorator name, full signature, target name, target type, and target signature
 
-When a compatible `tsa.db` exists, this command reads from the cache.
-
 ### `callers` - Find Function Callers
 
 Find all functions that call a specific function.
@@ -238,8 +224,6 @@ tsa callers ./src/ -f process_data
 # Find callers of a method within a class
 tsa callers ./src/ -f save -c DatabaseHandler
 ```
-
-When a compatible `tsa.db` exists, this command reads from the cache.
 
 ### `callees` - Find Called Functions
 
@@ -265,11 +249,9 @@ tsa callees ./src/ -f main
 tsa callees ./src/ -f initialize -c Application
 ```
 
-When a compatible `tsa.db` exists, this command reads from the cache.
-
 ### `symbols` - Find Symbol References
 
-Find all references to a specific identifier.
+Find code symbol references such as identifiers, type names, property names, field names, and supported import-path nodes.
 
 ```bash
 tsa symbols <path> [-l LANGUAGE] -n NAME
@@ -286,8 +268,6 @@ Examples:
 # Find all references to a symbol
 tsa symbols ./src/ -n CONFIG_PATH
 ```
-
-This command always performs direct AST analysis and does not use `tsa.db`.
 
 ### `definition` - Get Function Source Code
 
@@ -313,8 +293,6 @@ tsa definition ./src/ -f parse_config
 tsa definition ./src/ -f connect -c Database
 ```
 
-This command always performs direct AST analysis and does not use `tsa.db`.
-
 ### `super-classes` - Get Parent Classes
 
 Get all parent classes (superclasses) of a specific class.
@@ -335,8 +313,6 @@ Examples:
 tsa super-classes ./src/ -c AdminUser
 ```
 
-When a compatible `tsa.db` exists, this command reads from the cache.
-
 ### `sub-classes` - Get Child Classes
 
 Get all child classes (subclasses) that inherit from a specific class.
@@ -356,5 +332,3 @@ Examples:
 # Find child classes across a project
 tsa sub-classes ./src/ -c BaseModel
 ```
-
-When a compatible `tsa.db` exists, this command reads from the cache.

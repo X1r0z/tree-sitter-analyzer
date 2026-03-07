@@ -3,7 +3,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use rusqlite::{params, params_from_iter, OptionalExtension, ToSql};
 use serde_json::json;
 
-use crate::nodes::{AnnotationInfo, ClassInfo, FieldInfo, FunctionInfo, ImportInfo, Location};
+use crate::nodes::{
+    AnnotationInfo, ClassInfo, FieldInfo, FunctionInfo, ImportInfo, Location, SymbolRefInfo,
+};
 use crate::utils::{is_simple_query, sort_by_file_line, QueryMatcher};
 
 use super::helpers::{
@@ -271,6 +273,40 @@ impl DbProjectAnalyzer {
         })
         .collect::<Result<Vec<_>, _>>()
         .map_err(Into::into)
+    }
+
+    pub(crate) fn find_symbols(&self, name: &str) -> anyhow::Result<Vec<SymbolRefInfo>> {
+        let mut sql = String::from(
+            "
+            SELECT f.path, s.name, s.node_type, s.start_line, s.end_line, s.start_column, s.end_column
+            FROM symbol_refs s
+            JOIN files f ON f.id = s.file_id
+            WHERE s.name = ?1
+            ",
+        );
+        let mut params: Vec<&dyn ToSql> = vec![&name];
+        if let Some(language) = self.requested_language.as_ref() {
+            sql.push_str(" AND f.language = ?2");
+            params.push(language);
+        }
+        sql.push_str(" ORDER BY f.path, s.start_line, s.end_line, s.node_type");
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(params), |row| {
+            Ok(SymbolRefInfo {
+                name: row.get(1)?,
+                node_type: row.get(2)?,
+                location: Location {
+                    file: row.get(0)?,
+                    start_line: row.get::<_, i64>(3)? as usize,
+                    end_line: row.get::<_, i64>(4)? as usize,
+                },
+                start_column: row.get::<_, i64>(5)? as usize,
+                end_column: row.get::<_, i64>(6)? as usize,
+                context: String::new(),
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     pub(crate) fn find_callers(

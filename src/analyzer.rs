@@ -482,6 +482,97 @@ impl CodeAnalyzer {
         self.cached_imports().to_vec()
     }
 
+    fn is_symbol_ref_node(&self, node: Node<'_>) -> bool {
+        match self.parser.language.as_str() {
+            "python" => matches!(
+                node.kind(),
+                "identifier" | "dotted_name" | "relative_import"
+            ),
+            "javascript" | "typescript" | "tsx" => matches!(
+                node.kind(),
+                "identifier"
+                    | "property_identifier"
+                    | "private_property_identifier"
+                    | "field_identifier"
+                    | "type_identifier"
+            ),
+            "java" => matches!(
+                node.kind(),
+                "identifier" | "type_identifier" | "scoped_identifier" | "scoped_type_identifier"
+            ),
+            "go" => matches!(
+                node.kind(),
+                "identifier" | "field_identifier" | "type_identifier" | "qualified_type"
+            ),
+            _ => false,
+        }
+    }
+
+    fn collect_symbols(&self, name: Option<&str>) -> Vec<SymbolRefInfo> {
+        let Some(name_bytes) = name.map(str::as_bytes) else {
+            return self.collect_all_symbols();
+        };
+        if name_bytes.is_empty() {
+            return Vec::new();
+        }
+        if !self
+            .parser
+            .source
+            .windows(name_bytes.len())
+            .any(|w| w == name_bytes)
+        {
+            return Vec::new();
+        }
+
+        self.scan_symbols(|node| {
+            (self.parser.node_bytes(node) == name_bytes).then(|| SymbolRefInfo {
+                name: String::from_utf8_lossy(name_bytes).into_owned(),
+                node_type: node.kind().to_string(),
+                location: self.parser.node_location(node),
+                start_column: node.start_position().column,
+                end_column: node.end_position().column,
+                context: String::new(),
+            })
+        })
+    }
+
+    fn collect_all_symbols(&self) -> Vec<SymbolRefInfo> {
+        self.scan_symbols(|node| {
+            let name = self.parser.node_text(node);
+            (!name.is_empty()).then(|| SymbolRefInfo {
+                name,
+                node_type: node.kind().to_string(),
+                location: self.parser.node_location(node),
+                start_column: node.start_position().column,
+                end_column: node.end_position().column,
+                context: String::new(),
+            })
+        })
+    }
+
+    fn scan_symbols(
+        &self,
+        mut map_node: impl FnMut(Node<'_>) -> Option<SymbolRefInfo>,
+    ) -> Vec<SymbolRefInfo> {
+        let mut refs = Vec::new();
+        let mut stack = vec![self.parser.tree.root_node()];
+        while let Some(node) = stack.pop() {
+            if node.is_named() {
+                if self.is_symbol_ref_node(node) {
+                    if let Some(symbol) = map_node(node) {
+                        refs.push(symbol);
+                    }
+                }
+                for i in (0..node.named_child_count()).rev() {
+                    if let Some(child) = node.named_child(i as u32) {
+                        stack.push(child);
+                    }
+                }
+            }
+        }
+        refs
+    }
+
     pub fn snapshot_for_index(&mut self) -> AnalyzerSnapshot {
         let functions = self.functions();
         let classes = self.classes();
@@ -494,6 +585,7 @@ impl CodeAnalyzer {
         let calls = self.calls();
         let imports = self.imports();
         let annotations = self.annotations();
+        let symbols = self.collect_all_symbols();
 
         let mut python_properties = Vec::new();
         let mut python_property_callers = Vec::new();
@@ -539,6 +631,7 @@ impl CodeAnalyzer {
             calls,
             imports,
             annotations,
+            symbols,
             python_properties,
             python_property_callers,
         }
@@ -649,8 +742,11 @@ impl CodeAnalyzer {
         self.parser.extract_annotations()
     }
 
-    pub fn find_symbols(&mut self, name: &str) -> Vec<serde_json::Value> {
+    pub fn find_symbols(&mut self, name: &str) -> Vec<SymbolRefInfo> {
         let name_bytes = name.as_bytes();
+        if name_bytes.is_empty() {
+            return Vec::new();
+        }
         if !self
             .parser
             .source
@@ -660,31 +756,47 @@ impl CodeAnalyzer {
             return Vec::new();
         }
 
-        let mut refs = Vec::new();
-        let mut stack = vec![self.parser.tree.root_node()];
-        while let Some(node) = stack.pop() {
-            if node.is_named() && self.parser.node_bytes(node) == name_bytes {
-                let context = node
+        self.scan_symbols(|node| {
+            (self.parser.node_bytes(node) == name_bytes).then(|| SymbolRefInfo {
+                name: name.to_string(),
+                node_type: node.kind().to_string(),
+                location: self.parser.node_location(node),
+                start_column: node.start_position().column,
+                end_column: node.end_position().column,
+                context: node
                     .parent()
                     .map(|p| self.parser.node_text(p))
-                    .unwrap_or_default();
-                refs.push(serde_json::json!({
-                    "type": node.kind(),
-                    "location": {
-                        "file": self.parser.file_path,
-                        "start_line": node.start_position().row + 1,
-                        "end_line": node.end_position().row + 1,
-                    },
-                    "context": context,
-                }));
-            }
-            for i in (0..node.named_child_count()).rev() {
-                if let Some(child) = node.named_child(i as u32) {
-                    stack.push(child);
-                }
-            }
+                    .unwrap_or_default(),
+            })
+        })
+    }
+
+    pub fn hydrate_symbol_contexts(&mut self, candidates: &[SymbolRefInfo]) -> Vec<SymbolRefInfo> {
+        if candidates.is_empty() {
+            return Vec::new();
         }
-        refs
+
+        let expected: HashSet<SymbolRefKey> =
+            candidates.iter().map(SymbolRefKey::from_symbol).collect();
+        self.scan_symbols(|node| {
+            let symbol = SymbolRefInfo {
+                name: self.parser.node_text(node),
+                node_type: node.kind().to_string(),
+                location: self.parser.node_location(node),
+                start_column: node.start_position().column,
+                end_column: node.end_position().column,
+                context: String::new(),
+            };
+            expected
+                .contains(&SymbolRefKey::from_symbol(&symbol))
+                .then(|| SymbolRefInfo {
+                    context: node
+                        .parent()
+                        .map(|p| self.parser.node_text(p))
+                        .unwrap_or_default(),
+                    ..symbol
+                })
+        })
     }
 
     pub fn class_named(&mut self, class_name: &str) -> Option<ClassInfo> {

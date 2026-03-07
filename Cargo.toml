@@ -28,6 +28,7 @@ which = "8.0.1"
 streaming-iterator = "0.1"
 indicatif = "0.18.4"
 rusqlite = { version = "0.38.0", features = ["bundled"] }
+blake3 = "1"
 
 [dev-dependencies]
 tempfile = "3"

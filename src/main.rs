@@ -68,9 +68,6 @@ enum Commands {
         /// Filter by function name (regex match)
         #[arg(short, long)]
         query: Option<String>,
-        /// Include function body
-        #[arg(long)]
-        body: bool,
     },
     /// Extract all class/struct/interface definitions
     Classes {
@@ -227,8 +224,7 @@ fn run() -> i32 {
             path,
             language,
             query,
-            body,
-        } => cmd_functions(&path, language, query.as_deref().unwrap_or(""), body),
+        } => cmd_functions(&path, language, query.as_deref().unwrap_or("")),
         Commands::Classes {
             path,
             language,
@@ -296,12 +292,7 @@ fn run() -> i32 {
     }
 }
 
-fn cmd_functions(
-    path: &str,
-    language: Option<LanguageFilter>,
-    query: &str,
-    include_body: bool,
-) -> Value {
+fn cmd_functions(path: &str, language: Option<LanguageFilter>, query: &str) -> Value {
     let real_path = resolve_path(path);
     if let Ok(Some(db)) = DbProjectAnalyzer::from_current_dir_if_compatible(
         &real_path,
@@ -314,17 +305,12 @@ fn cmd_functions(
                     language.map(LanguageFilter::as_str),
                 ) {
                     Ok(project) => {
-                        let files_searched = if include_body {
-                            unique_function_file_count(&functions)
-                        } else {
-                            db.file_count()
-                        };
                         let functions = project.hydrate_function_bodies(functions);
                         json!({
                             "path": real_path,
-                            "files_searched": files_searched,
+                            "files_searched": db.file_count(),
                             "count": functions.len(),
-                            "functions": functions.iter().map(|f| f.to_json_value(include_body, true)).collect::<Vec<_>>(),
+                            "functions": functions.iter().map(|f| f.to_json_value(false, true)).collect::<Vec<_>>(),
                         })
                     }
                     Err(e) => json!({"error": e.to_string()}),
@@ -335,16 +321,12 @@ fn cmd_functions(
     }
     match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
         Ok(project) => {
-            let functions = if include_body {
-                project.find_functions_with_bodies(query)
-            } else {
-                project.find_functions(query)
-            };
+            let functions = project.find_functions(query);
             json!({
                 "path": real_path,
                 "files_searched": project.files.len(),
                 "count": functions.len(),
-                "functions": functions.iter().map(|f| f.to_json_value(include_body, true)).collect::<Vec<_>>(),
+                "functions": functions.iter().map(|f| f.to_json_value(false, true)).collect::<Vec<_>>(),
             })
         }
         Err(e) => json!({"error": e.to_string()}),

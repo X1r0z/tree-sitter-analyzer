@@ -141,14 +141,13 @@ Use this before running multiple structural queries against the same codebase.
 ### `functions` — Extract function/method definitions
 
 ```bash
-tsa functions <path> [-l LANGUAGE] [-q QUERY] [--body]
+tsa functions <path> [-l LANGUAGE] [-q QUERY]
 ```
 
 | Option | Description |
 |--------|-------------|
 | `-l, --language` | Only analyze files for a single language |
 | `-q, --query` | Filter by name (regex) |
-| `--body` | Include function body |
 
 ```bash
 tsa functions ./src/ -q "^get_"

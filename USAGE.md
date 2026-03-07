@@ -71,14 +71,13 @@ Notes:
 Extract all function/method definitions from source code.
 
 ```bash
-tsa functions <path> [-l LANGUAGE] [-q QUERY] [--body]
+tsa functions <path> [-l LANGUAGE] [-q QUERY]
 ```
 
 | Option | Description |
 |--------|-------------|
 | `-l, --language` | Only analyze files for a single language |
 | `-q, --query` | Filter by function name (regex match) |
-| `--body` | Include function body in output |
 
 Examples:
 
@@ -94,16 +93,12 @@ tsa functions ./src/ -q get
 
 # Filter functions starting with "get_" using regex
 tsa functions ./src/ -q "^get_"
-
-# Include function bodies
-tsa functions ./src/ --body
 ```
 
 Cache behavior:
 
 - Reads from `tsa.db` when a compatible cache exists
 - Falls back to AST parsing when no compatible cache exists
-- `--body` always performs direct AST analysis
 
 ### `classes` - Extract Class Definitions
 

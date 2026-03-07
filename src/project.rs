@@ -39,11 +39,7 @@ impl ProjectAnalyzer {
     }
 
     pub fn find_functions(&self, query: &str) -> Vec<FunctionInfo> {
-        self.collect_functions(query, false)
-    }
-
-    pub fn find_functions_with_bodies(&self, query: &str) -> Vec<FunctionInfo> {
-        self.collect_functions(query, true)
+        self.collect_functions(query)
     }
 
     pub fn hydrate_function_bodies(&self, candidates: Vec<FunctionInfo>) -> Vec<FunctionInfo> {
@@ -84,7 +80,7 @@ impl ProjectAnalyzer {
             .collect()
     }
 
-    fn collect_functions(&self, query: &str, include_body: bool) -> Vec<FunctionInfo> {
+    fn collect_functions(&self, query: &str) -> Vec<FunctionInfo> {
         let candidate_files = self.filter_candidates(query);
         if candidate_files.is_empty() {
             return Vec::new();
@@ -94,13 +90,7 @@ impl ProjectAnalyzer {
             .par_iter()
             .flat_map(|f| {
                 let funcs = self
-                    .analyze_file(f, |analyzer| {
-                        if include_body {
-                            analyzer.functions_with_bodies()
-                        } else {
-                            analyzer.functions()
-                        }
-                    })
+                    .analyze_file(f, |analyzer| analyzer.functions())
                     .unwrap_or_default();
                 if matcher.matches_all() {
                     funcs

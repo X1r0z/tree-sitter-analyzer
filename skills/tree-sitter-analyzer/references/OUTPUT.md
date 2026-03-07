@@ -52,7 +52,6 @@ Array key: `functions`
 | `is_method` | bool | Present if it's a class method |
 | `class_name` | string | Parent class (if method) |
 | `params` | object[] | Function/method parameters |
-| `body` | string | Function body (only with `--body`) |
 
 Each `params` item contains:
 

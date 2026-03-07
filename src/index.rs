@@ -18,10 +18,13 @@ pub(crate) fn build_index(path: &str, language: Option<&str>) -> Value {
     let total_files = project.files.len();
     let progress = ProgressBar::new(total_files as u64);
     progress.set_style(
-        ProgressStyle::with_template("[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} files")
-            .unwrap_or_else(|_| ProgressStyle::default_bar())
-            .progress_chars("##-"),
+        ProgressStyle::with_template(
+            "[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} files | {msg}",
+        )
+        .unwrap_or_else(|_| ProgressStyle::default_bar())
+        .progress_chars("##-"),
     );
+    progress.set_message("Analyzing files");
 
     let db_path = match db_path_in_current_dir() {
         Ok(path) => path,
@@ -68,7 +71,21 @@ pub(crate) fn build_index(path: &str, language: Option<&str>) -> Value {
         changed_snapshots: snapshots,
     };
 
-    if let Err(error) = DbProjectAnalyzer::update_database(&db_path, path, language, &plan) {
+    let db_progress = ProgressBar::new(0);
+    db_progress.set_style(
+        ProgressStyle::with_template(
+            "[{elapsed_precise}] [{bar:40.green/blue}] {pos}/{len} steps | {msg}",
+        )
+        .unwrap_or_else(|_| ProgressStyle::default_bar())
+        .progress_chars("##-"),
+    );
+    db_progress.set_message("Writing database");
+
+    let update_result =
+        DbProjectAnalyzer::update_database(&db_path, path, language, &plan, &db_progress);
+    db_progress.finish_and_clear();
+
+    if let Err(error) = update_result {
         return json!({ "error": error.to_string() });
     }
 

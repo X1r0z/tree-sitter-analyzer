@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
+use indicatif::ProgressBar;
 use rusqlite::{params, CachedStatement, Connection, Transaction};
 
 use super::schema::SCHEMA_VERSION;
@@ -14,11 +15,14 @@ impl DbProjectAnalyzer {
         root_path: &str,
         language: Option<&str>,
         plan: &IndexSyncPlan,
+        progress: &ProgressBar,
     ) -> anyhow::Result<()> {
         let mut conn = Connection::open(db_path)?;
         Self::init_schema(&conn)?;
         let tx = conn.transaction()?;
         let existing = Self::load_metadata_map(&tx)?;
+        progress.set_message("Loading metadata");
+        progress.inc(1);
         let indexed_language = language.unwrap_or("");
         let compatible = existing.get("indexed_root_path").map(String::as_str) == Some(root_path)
             && existing
@@ -27,42 +31,88 @@ impl DbProjectAnalyzer {
                 .unwrap_or("")
                 == indexed_language;
 
+        let existing_files = if compatible {
+            Self::load_indexed_files(&tx)?
+        } else {
+            HashMap::new()
+        };
+        let current_paths: std::collections::HashSet<&str> = plan
+            .current_files
+            .iter()
+            .map(|record| record.path.as_str())
+            .collect();
+        let deleted_files = if compatible {
+            existing_files
+                .keys()
+                .filter(|path| !current_paths.contains(path.as_str()))
+                .count()
+        } else {
+            0
+        };
+        let total_steps = 1
+            + 4
+            + 1
+            + plan.changed_snapshots.len() as u64
+            + deleted_files as u64
+            + u64::from(!compatible);
+        progress.set_length(total_steps);
+
         if !compatible {
+            progress.set_message("Clearing incompatible index");
             Self::clear_all(&tx)?;
+            progress.inc(1);
             Self::set_metadata(&tx, "created_at", &Self::current_timestamp_string()?)?;
         }
 
+        progress.set_message("Updating metadata");
         Self::upsert_metadata(&tx, "indexed_root_path", root_path)?;
+        progress.inc(1);
         Self::upsert_metadata(&tx, "language_filter", indexed_language)?;
+        progress.inc(1);
         Self::upsert_metadata(&tx, "updated_at", &Self::current_timestamp_string()?)?;
+        progress.inc(1);
         Self::upsert_metadata(&tx, "schema_version", SCHEMA_VERSION)?;
+        progress.inc(1);
 
         if compatible {
-            Self::sync_snapshots(&tx, &plan.current_files, &plan.changed_snapshots)?;
+            progress.set_message("Syncing changed files");
+            Self::sync_snapshots(
+                &tx,
+                &existing_files,
+                &plan.current_files,
+                &plan.changed_snapshots,
+                progress,
+            )?;
         } else {
+            progress.set_message("Writing file snapshots");
             let mut inserter = SnapshotInserter::new(&tx)?;
             for snapshot in &plan.changed_snapshots {
                 inserter.insert_snapshot(snapshot)?;
+                progress.inc(1);
             }
         }
+        progress.set_message("Committing transaction");
         tx.commit()?;
+        progress.inc(1);
         Ok(())
     }
 
     fn sync_snapshots(
         tx: &Transaction<'_>,
+        existing: &HashMap<String, IndexedFileEntry>,
         current_files: &[IndexedFileRecord],
         changed_snapshots: &[FileIndexData],
+        progress: &ProgressBar,
     ) -> anyhow::Result<()> {
-        let existing = Self::load_indexed_files(tx)?;
         let incoming: HashMap<&str, &IndexedFileRecord> = current_files
             .iter()
             .map(|record| (record.path.as_str(), record))
             .collect();
 
-        for (path, record) in &existing {
+        for (path, record) in existing.iter() {
             if !incoming.contains_key(path.as_str()) {
                 Self::delete_file_by_id(tx, record.id)?;
+                progress.inc(1);
             }
         }
 
@@ -77,8 +127,12 @@ impl DbProjectAnalyzer {
                 Some(record) => {
                     Self::delete_file_by_id(tx, record.id)?;
                     inserter.insert_snapshot(snapshot)?;
+                    progress.inc(1);
                 }
-                None => inserter.insert_snapshot(snapshot)?,
+                None => {
+                    inserter.insert_snapshot(snapshot)?;
+                    progress.inc(1);
+                }
             }
         }
         Ok(())

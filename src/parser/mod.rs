@@ -631,6 +631,44 @@ impl BaseParser {
         }
     }
 
+    pub(crate) fn extract_function_params(&self, function_node: Node) -> Vec<FunctionParamInfo> {
+        let target = self.unwrap_callable_node(function_node);
+        match self.language.as_str() {
+            "python" => self.extract_python_function_params(target),
+            "javascript" | "typescript" | "tsx" => self.extract_js_like_function_params(target),
+            "java" => self.extract_java_function_params(target),
+            "go" => self.extract_go_function_params(target),
+            _ => Vec::new(),
+        }
+    }
+
+    fn unwrap_callable_node<'a>(&self, node: Node<'a>) -> Node<'a> {
+        if node.kind() == "decorated_definition" {
+            if let Some(definition) = node.child_by_field_name("definition") {
+                return definition;
+            }
+        }
+        node
+    }
+
+    fn find_first_identifier_text(&self, node: Node) -> String {
+        let mut stack = vec![node];
+        while let Some(current) = stack.pop() {
+            if matches!(current.kind(), "identifier" | "keyword_identifier") {
+                let text = self.node_text(current);
+                if !text.is_empty() {
+                    return text;
+                }
+            }
+            for i in (0..current.named_child_count()).rev() {
+                if let Some(child) = current.named_child(i as u32) {
+                    stack.push(child);
+                }
+            }
+        }
+        String::new()
+    }
+
     fn extract_declared_field_infos(&self, class_node: Node, class_name: &str) -> Vec<FieldInfo> {
         self.collect_field_infos_from_declarations(class_node, class_name, false)
     }

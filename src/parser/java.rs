@@ -1,10 +1,51 @@
 use tree_sitter::Node;
 
 use super::BaseParser;
-use crate::nodes::{AnnotationInfo, FieldInfo};
+use crate::nodes::{AnnotationInfo, FieldInfo, FunctionParamInfo};
 
 #[allow(dead_code)]
 impl BaseParser {
+    pub(super) fn extract_java_function_params(
+        &self,
+        function_node: Node,
+    ) -> Vec<FunctionParamInfo> {
+        let Some(parameters) = function_node.child_by_field_name("parameters") else {
+            return Vec::new();
+        };
+
+        let mut params = Vec::new();
+        for i in 0..parameters.named_child_count() {
+            let Some(param) = parameters.named_child(i as u32) else {
+                continue;
+            };
+
+            let type_node = param.child_by_field_name("type");
+            let name = param
+                .child_by_field_name("name")
+                .map(|node| self.node_text(node))
+                .or_else(|| {
+                    (param.kind() == "receiver_parameter").then(|| {
+                        self.node_text(param)
+                            .split_whitespace()
+                            .last()
+                            .unwrap_or("")
+                            .to_string()
+                    })
+                })
+                .unwrap_or_default();
+
+            if name.is_empty() {
+                continue;
+            }
+
+            params.push(FunctionParamInfo {
+                name,
+                param_type: type_node.map(|node| self.node_text(node)),
+            });
+        }
+        params
+    }
+
     pub(super) fn extract_java_annotations(&self) -> Vec<AnnotationInfo> {
         let mut annotations = Vec::new();
         let mut stack = vec![self.tree.root_node()];

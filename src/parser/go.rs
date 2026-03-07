@@ -1,10 +1,63 @@
 use tree_sitter::Node;
 
 use super::BaseParser;
-use crate::nodes::FieldInfo;
+use crate::nodes::{FieldInfo, FunctionParamInfo};
 
 #[allow(dead_code)]
 impl BaseParser {
+    pub(super) fn extract_go_function_params(&self, function_node: Node) -> Vec<FunctionParamInfo> {
+        let Some(parameters) = function_node.child_by_field_name("parameters") else {
+            return Vec::new();
+        };
+
+        let mut params = Vec::new();
+        for i in 0..parameters.named_child_count() {
+            let Some(param) = parameters.named_child(i as u32) else {
+                continue;
+            };
+            if !matches!(
+                param.kind(),
+                "parameter_declaration" | "variadic_parameter_declaration"
+            ) {
+                continue;
+            }
+
+            let param_type = param.child_by_field_name("type").map(|node| {
+                let mut text = self.node_text(node);
+                if param.kind() == "variadic_parameter_declaration" && !text.starts_with("...") {
+                    text = format!("...{text}");
+                }
+                text
+            });
+            let mut names = Vec::new();
+
+            for j in 0..param.named_child_count() {
+                let Some(child) = param.named_child(j as u32) else {
+                    continue;
+                };
+                if child.kind() == "identifier" {
+                    names.push(self.node_text(child));
+                }
+            }
+
+            if names.is_empty() {
+                params.push(FunctionParamInfo {
+                    name: String::new(),
+                    param_type,
+                });
+                continue;
+            }
+
+            for name in names {
+                params.push(FunctionParamInfo {
+                    name,
+                    param_type: param_type.clone(),
+                });
+            }
+        }
+        params
+    }
+
     pub(super) fn find_language_specific_enclosing_class_name(&self, node: Node) -> Option<String> {
         if self.language == "go" && node.kind() == "method_declaration" {
             return self.extract_go_receiver_type_name(node);

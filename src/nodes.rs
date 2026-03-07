@@ -8,6 +8,13 @@ pub struct Location {
     pub end_line: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionParamInfo {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub param_type: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionInfo {
     pub name: String,
@@ -18,6 +25,8 @@ pub struct FunctionInfo {
     pub is_method: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub class_name: Option<String>,
+    #[serde(default)]
+    pub params: Vec<FunctionParamInfo>,
 }
 
 impl FunctionInfo {
@@ -35,6 +44,7 @@ impl FunctionInfo {
         if let Some(ref cn) = self.class_name {
             map.insert("class_name".into(), json!(cn));
         }
+        map.insert("params".into(), json!(self.params));
         if include_body && !self.body.is_empty() {
             map.insert("body".into(), json!(self.body));
         }

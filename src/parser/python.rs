@@ -3,10 +3,61 @@ use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
 use super::{BaseParser, PythonPropertyCallers, PythonPropertyDefinitions};
-use crate::nodes::{AnnotationInfo, FieldInfo};
+use crate::nodes::{AnnotationInfo, FieldInfo, FunctionParamInfo};
 
 #[allow(dead_code)]
 impl BaseParser {
+    pub(super) fn extract_python_function_params(
+        &self,
+        function_node: Node,
+    ) -> Vec<FunctionParamInfo> {
+        let Some(parameters) = function_node.child_by_field_name("parameters") else {
+            return Vec::new();
+        };
+
+        let mut params = Vec::new();
+        for i in 0..parameters.named_child_count() {
+            let Some(param) = parameters.named_child(i as u32) else {
+                continue;
+            };
+            if let Some(info) = self.build_python_param_info(param) {
+                params.push(info);
+            }
+        }
+        params
+    }
+
+    fn build_python_param_info(&self, param: Node) -> Option<FunctionParamInfo> {
+        let type_node = param.child_by_field_name("type");
+        let name = match param.kind() {
+            "identifier" => self.node_text(param),
+            "typed_parameter" | "typed_default_parameter" | "default_parameter" => param
+                .child_by_field_name("name")
+                .or_else(|| param.child_by_field_name("pattern"))
+                .or_else(|| param.child_by_field_name("left"))
+                .map(|node| self.node_text(node))
+                .unwrap_or_else(|| self.find_first_identifier_text(param)),
+            "list_splat_pattern" | "dictionary_splat_pattern" => {
+                self.node_text(param).trim_start_matches('*').to_string()
+            }
+            _ => param
+                .child_by_field_name("name")
+                .or_else(|| param.child_by_field_name("pattern"))
+                .or_else(|| param.child_by_field_name("left"))
+                .map(|node| self.node_text(node))
+                .unwrap_or_else(|| self.find_first_identifier_text(param)),
+        };
+
+        if name.is_empty() {
+            return None;
+        }
+
+        Some(FunctionParamInfo {
+            name,
+            param_type: type_node.map(|node| self.node_text(node)),
+        })
+    }
+
     pub(super) fn extract_python_decorators(&self) -> Vec<AnnotationInfo> {
         let mut annotations = Vec::new();
         let mut stack = vec![self.tree.root_node()];

@@ -51,7 +51,15 @@ Array key: `functions`
 | `file` | string | File path |
 | `is_method` | bool | Present if it's a class method |
 | `class_name` | string | Parent class (if method) |
+| `params` | object[] | Function/method parameters |
 | `body` | string | Function body (only with `--body`) |
+
+Each `params` item contains:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Parameter name |
+| `type` | string\|null | Parameter type if available |
 
 ```json
 {
@@ -63,7 +71,11 @@ Array key: `functions`
       "name": "main",
       "start_line": 1,
       "end_line": 24,
-      "file": "/path/to/project/src/app.py"
+      "file": "/path/to/project/src/app.py",
+      "params": [
+        {"name": "config_path", "type": "str"},
+        {"name": "verbose", "type": null}
+      ]
     },
     {
       "name": "connect",
@@ -71,7 +83,11 @@ Array key: `functions`
       "end_line": 55,
       "file": "/path/to/project/src/db.py",
       "is_method": true,
-      "class_name": "Database"
+      "class_name": "Database",
+      "params": [
+        {"name": "dsn", "type": "str"},
+        {"name": "timeout", "type": "int"}
+      ]
     }
   ]
 }
@@ -333,7 +349,15 @@ Array key: `functions`
 | `start_line` | int | Start line |
 | `end_line` | int | End line |
 | `file` | string | File path |
+| `params` | object[] | Function/method parameters |
 | `body` | string | Full source code |
+
+Each `params` item contains:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Parameter name |
+| `type` | string\|null | Parameter type if available |
 
 ```json
 {
@@ -347,6 +371,10 @@ Array key: `functions`
       "start_line": 10,
       "end_line": 30,
       "file": "/path/to/project/src/app.py",
+      "params": [
+        {"name": "config_path", "type": "str"},
+        {"name": "retries", "type": null}
+      ],
       "body": "def main():\n    config = load_config(CONFIG_PATH)\n    return process_data(config)\n"
     }
   ]

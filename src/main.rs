@@ -309,31 +309,26 @@ fn cmd_functions(
     ) {
         match db.find_functions(query) {
             Ok(functions) => {
-                if include_body {
-                    return match ProjectAnalyzer::new_with_language(
-                        &real_path,
-                        language.map(LanguageFilter::as_str),
-                    ) {
-                        Ok(project) => {
-                            let files_searched = unique_function_file_count(&functions);
-                            let functions = project.hydrate_function_bodies(functions);
-                            json!({
-                                "path": real_path,
-                                "files_searched": files_searched,
-                                "count": functions.len(),
-                                "functions": functions.iter().map(|f| f.to_json_value(true, true)).collect::<Vec<_>>(),
-                            })
-                        }
-                        Err(e) => json!({"error": e.to_string()}),
-                    };
-                }
-
-                return json!({
-                    "path": real_path,
-                    "files_searched": db.file_count(),
-                    "count": functions.len(),
-                    "functions": functions.iter().map(|f| f.to_json_value(false, true)).collect::<Vec<_>>(),
-                });
+                return match ProjectAnalyzer::new_with_language(
+                    &real_path,
+                    language.map(LanguageFilter::as_str),
+                ) {
+                    Ok(project) => {
+                        let files_searched = if include_body {
+                            unique_function_file_count(&functions)
+                        } else {
+                            db.file_count()
+                        };
+                        let functions = project.hydrate_function_bodies(functions);
+                        json!({
+                            "path": real_path,
+                            "files_searched": files_searched,
+                            "count": functions.len(),
+                            "functions": functions.iter().map(|f| f.to_json_value(include_body, true)).collect::<Vec<_>>(),
+                        })
+                    }
+                    Err(e) => json!({"error": e.to_string()}),
+                };
             }
             Err(e) => return json!({"error": e.to_string()}),
         }

@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use tree_sitter::Node;
 
 use super::BaseParser;
-use crate::nodes::FieldInfo;
+use crate::nodes::{FieldInfo, FunctionParamInfo};
 
 pub(crate) struct JsAliasEvent {
     pub(crate) start_byte: usize,
@@ -66,6 +66,78 @@ impl JsAliasResolverState {
 
 #[allow(dead_code)]
 impl BaseParser {
+    pub(super) fn extract_js_like_function_params(
+        &self,
+        function_node: Node,
+    ) -> Vec<FunctionParamInfo> {
+        let Some(parameters) = function_node.child_by_field_name("parameters") else {
+            return Vec::new();
+        };
+
+        let mut params = Vec::new();
+        for i in 0..parameters.named_child_count() {
+            let Some(param) = parameters.named_child(i as u32) else {
+                continue;
+            };
+            if let Some(info) = self.build_js_like_param_info(param) {
+                params.push(info);
+            }
+        }
+        params
+    }
+
+    fn build_js_like_param_info(&self, param: Node) -> Option<FunctionParamInfo> {
+        let name_node = self.resolve_js_like_param_name_node(param)?;
+        let name = self.node_text(name_node).trim().to_string();
+        if name.is_empty() {
+            return None;
+        }
+
+        Some(FunctionParamInfo {
+            name,
+            param_type: self.find_js_like_param_type(param),
+        })
+    }
+
+    fn resolve_js_like_param_name_node<'a>(&self, node: Node<'a>) -> Option<Node<'a>> {
+        match node.kind() {
+            "identifier"
+            | "property_identifier"
+            | "private_property_identifier"
+            | "object_pattern"
+            | "array_pattern" => Some(node),
+            "assignment_pattern" => node
+                .child_by_field_name("left")
+                .and_then(|left| self.resolve_js_like_param_name_node(left)),
+            "rest_pattern" => {
+                if let Some(pattern) = node.child_by_field_name("pattern") {
+                    return self.resolve_js_like_param_name_node(pattern);
+                }
+                node.named_child(0)
+                    .and_then(|child| self.resolve_js_like_param_name_node(child))
+            }
+            _ => node
+                .child_by_field_name("pattern")
+                .or_else(|| node.child_by_field_name("name"))
+                .and_then(|child| self.resolve_js_like_param_name_node(child))
+                .or_else(|| {
+                    node.named_child(0)
+                        .and_then(|child| self.resolve_js_like_param_name_node(child))
+                }),
+        }
+    }
+
+    fn find_js_like_param_type(&self, node: Node) -> Option<String> {
+        if let Some(type_node) = node.child_by_field_name("type") {
+            return Some(self.normalize_type_text(&self.node_text(type_node)));
+        }
+
+        node.child_by_field_name("pattern")
+            .or_else(|| node.child_by_field_name("name"))
+            .or_else(|| node.child_by_field_name("left"))
+            .and_then(|child| self.find_js_like_param_type(child))
+    }
+
     pub(crate) fn resolve_js_call_targets_for_identifier(
         &self,
         call_node: Node<'_>,

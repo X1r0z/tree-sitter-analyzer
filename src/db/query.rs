@@ -63,6 +63,7 @@ impl DbProjectAnalyzer {
                 body: String::new(),
                 is_method: row.get::<_, i64>(3)? != 0,
                 class_name: row.get(2)?,
+                params: Vec::new(),
             })
         })?;
 

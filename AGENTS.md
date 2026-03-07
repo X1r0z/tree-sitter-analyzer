@@ -1,28 +1,24 @@
 # AGENTS.md
 
-## Commands
-- Build: `cargo build --release`
-- Run: `cargo run --release -- <command> <path> [options]` (binary name: `tsa`)
+## Build & Run
+- Build: `cargo build` (debug) / `cargo build --release` (optimized, LTO enabled)
+- Run: `cargo run -- <subcommand>` — binary name is `tsa`
 - Lint: `cargo clippy`
-- Format: `cargo fmt`
-- Test: `cargo test`
+- Format: `cargo fmt` — check with `cargo fmt -- --check`
 
 ## Architecture
-- **src/main.rs** - CLI entry point using clap derive API, command dispatch, output formatting
-- **src/parser/** - Language-specific parsers (mod.rs: BaseParser trait/core; python.rs, javascript.rs, java.rs, go.rs)
-- **src/analyzer.rs** - CodeAnalyzer: single-file analysis facade wrapping BaseParser + AnalyzerCache
-- **src/cache.rs** - AnalyzerCache: lazy memoization of parsed results behind Mutex
-- **src/project.rs** - ProjectAnalyzer: multi-file parallel analysis using Rayon
-- **src/db.rs** - DbProjectAnalyzer: SQLite-backed persistent index (rusqlite) for querying indexed projects
-- **src/index.rs** - Index build/update logic with progress bar (indicatif)
-- **src/languages.rs** - Language configs: parser factories, tree-sitter queries, extension mapping
-- **src/nodes.rs** - Data structures (Location, FunctionInfo, ClassInfo, CallInfo, ImportInfo, FieldInfo, etc.)
-- **src/utils.rs** - File discovery (using `ignore` crate) and regex-based symbol filtering
-- Supported languages: Python, JavaScript/TypeScript, Java, Go
+Rust CLI tool using **clap** (derive) for arg parsing. Parses source code via **tree-sitter** grammars (Python, JS, TS, TSX, Java, Go) and provides structural analysis (functions, classes, imports, call graphs, inheritance, symbol references).
+- `src/main.rs` — CLI entry point, subcommand dispatch, JSON output via `serde_json`
+- `src/analyzer.rs` — `CodeAnalyzer`: core analysis logic (functions, classes, calls, imports, refs)
+- `src/parser/` — `BaseParser` + per-language modules (`python.rs`, `java.rs`, `go.rs`, `javascript.rs`) defining tree-sitter queries
+- `src/db/` — SQLite index (`rusqlite`) for project-wide queries: schema, sync, query helpers
+- `src/nodes.rs` — data structs (`FunctionInfo`, `ClassInfo`, etc.) for analysis results
+- `src/project.rs` — `ProjectAnalyzer`: multi-file analysis using `rayon` + `ignore` crate for gitignore-aware walking
+- `src/index.rs` — `build_index`: indexes a project into SQLite
+- `src/cache.rs` / `src/languages.rs` / `src/utils.rs` — internal helpers
 
 ## Code Style
-- Rust 2021 edition; use `anyhow` for error handling
-- Use `rayon` for parallel file analysis, `serde` + `serde_json` for JSON output
-- Use `streaming-iterator` for tree-sitter query cursor iteration
-- Visibility: prefer `pub(crate)` for internal APIs; only `pub` for items used outside the crate
-- Naming: snake_case for functions/variables, PascalCase for types/structs, UPPER_SNAKE for constants
+- Rust 2021 edition. Error handling via `anyhow::Result`. Visibility: prefer `pub(crate)`.
+- Imports: `std` first, then external crates, then `crate::` internal imports. Use `use crate::nodes::*` for node types.
+- Naming: snake_case for functions/variables, PascalCase for types/enums. CLI enums derive `clap::ValueEnum`.
+- Output is always JSON (via `serde_json::json!` macro). Print to stdout with `println!`.

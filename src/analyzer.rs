@@ -59,7 +59,6 @@ impl CodeAnalyzer {
                 } else {
                     String::new()
                 },
-                is_method: class_name.is_some(),
                 class_name,
                 params: self.parser.extract_function_params(func_node),
             });
@@ -278,7 +277,6 @@ impl CodeAnalyzer {
                                 caller: caller.clone(),
                                 caller_class_name: caller_class_name.clone(),
                                 object_name: obj_name.clone(),
-                                is_method_call: is_method,
                             });
                         }
                         pushed_resolved_calls = true;
@@ -292,7 +290,6 @@ impl CodeAnalyzer {
                         caller,
                         caller_class_name,
                         object_name: obj_name,
-                        is_method_call: is_method,
                     });
                 }
             }

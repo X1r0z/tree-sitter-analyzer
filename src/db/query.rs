@@ -40,7 +40,7 @@ impl DbProjectAnalyzer {
         };
         let mut sql = String::from(
             "
-            SELECT f.path, fn.name, fn.class_name, fn.is_method, fn.start_line, fn.end_line
+            SELECT f.path, fn.name, fn.class_name, fn.start_line, fn.end_line
             FROM functions fn
             JOIN files f ON f.id = fn.file_id
             WHERE fn.name LIKE ?1
@@ -59,11 +59,10 @@ impl DbProjectAnalyzer {
                 name: row.get(1)?,
                 location: Location {
                     file: row.get(0)?,
-                    start_line: row.get::<_, i64>(4)? as usize,
-                    end_line: row.get::<_, i64>(5)? as usize,
+                    start_line: row.get::<_, i64>(3)? as usize,
+                    end_line: row.get::<_, i64>(4)? as usize,
                 },
                 body: String::new(),
-                is_method: row.get::<_, i64>(3)? != 0,
                 class_name: row.get(2)?,
                 params: Vec::new(),
             })

@@ -59,7 +59,6 @@ impl DbProjectAnalyzer {
                 file_id INTEGER NOT NULL,
                 name TEXT NOT NULL,
                 class_name TEXT,
-                is_method INTEGER NOT NULL,
                 start_line INTEGER NOT NULL,
                 end_line INTEGER NOT NULL,
                 FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
@@ -104,7 +103,6 @@ impl DbProjectAnalyzer {
                 caller TEXT,
                 caller_class_name TEXT,
                 object_name TEXT,
-                is_method_call INTEGER NOT NULL,
                 start_line INTEGER NOT NULL,
                 end_line INTEGER NOT NULL,
                 FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE

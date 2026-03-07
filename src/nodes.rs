@@ -21,8 +21,6 @@ pub struct FunctionInfo {
     pub location: Location,
     #[serde(default)]
     pub body: String,
-    #[serde(default)]
-    pub is_method: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub class_name: Option<String>,
     #[serde(default)]
@@ -37,9 +35,6 @@ impl FunctionInfo {
         map.insert("end_line".into(), json!(self.location.end_line));
         if include_file {
             map.insert("file".into(), json!(self.location.file));
-        }
-        if self.is_method {
-            map.insert("is_method".into(), json!(true));
         }
         if let Some(ref cn) = self.class_name {
             map.insert("class_name".into(), json!(cn));
@@ -110,8 +105,6 @@ pub struct CallInfo {
     pub caller_class_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub object_name: Option<String>,
-    #[serde(default)]
-    pub is_method_call: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -49,7 +49,6 @@ Array key: `functions`
 | `start_line` | int | Start line |
 | `end_line` | int | End line |
 | `file` | string | File path |
-| `is_method` | bool | Present if it's a class method |
 | `class_name` | string | Parent class (if method) |
 | `params` | object[] | Function/method parameters |
 
@@ -81,7 +80,6 @@ Each `params` item contains:
       "start_line": 10,
       "end_line": 55,
       "file": "/path/to/project/src/db.py",
-      "is_method": true,
       "class_name": "Database",
       "params": [
         {"name": "dsn", "type": "str"},

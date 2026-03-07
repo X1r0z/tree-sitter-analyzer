@@ -192,8 +192,8 @@ impl<'tx> SnapshotInserter<'tx> {
             )?,
             insert_function: tx.prepare_cached(
                 "
-                INSERT INTO functions(file_id, name, class_name, is_method, start_line, end_line)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                INSERT INTO functions(file_id, name, class_name, start_line, end_line)
+                VALUES (?1, ?2, ?3, ?4, ?5)
                 ",
             )?,
             insert_class: tx.prepare_cached(
@@ -216,8 +216,8 @@ impl<'tx> SnapshotInserter<'tx> {
             )?,
             insert_call: tx.prepare_cached(
                 "
-                INSERT INTO calls(file_id, callee, caller, caller_class_name, object_name, is_method_call, start_line, end_line)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                INSERT INTO calls(file_id, callee, caller, caller_class_name, object_name, start_line, end_line)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                 ",
             )?,
             insert_import: tx.prepare_cached(
@@ -262,7 +262,6 @@ impl<'tx> SnapshotInserter<'tx> {
                 file_id,
                 function.name,
                 function.class_name,
-                function.is_method as i64,
                 function.location.start_line as i64,
                 function.location.end_line as i64
             ])?;
@@ -304,7 +303,6 @@ impl<'tx> SnapshotInserter<'tx> {
                 call.caller,
                 call.caller_class_name,
                 call.object_name,
-                call.is_method_call as i64,
                 call.location.start_line as i64,
                 call.location.end_line as i64
             ])?;

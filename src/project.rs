@@ -176,6 +176,30 @@ impl ProjectAnalyzer {
             })
             .collect()
     }
+    pub fn find_annotations(&self, query: &str) -> Vec<AnnotationInfo> {
+        let candidate_files = self.filter_candidates(query);
+        if candidate_files.is_empty() {
+            return Vec::new();
+        }
+        let matcher = QueryMatcher::new(query);
+        candidate_files
+            .par_iter()
+            .flat_map(|f| {
+                let annotations = self
+                    .analyze_file(f, |analyzer| analyzer.annotations())
+                    .unwrap_or_default();
+                if matcher.matches_all() {
+                    annotations
+                } else {
+                    annotations
+                        .into_iter()
+                        .filter(|a| matcher.is_match(&a.name))
+                        .collect()
+                }
+            })
+            .collect()
+    }
+
     pub fn find_callers(
         &self,
         function_name: &str,

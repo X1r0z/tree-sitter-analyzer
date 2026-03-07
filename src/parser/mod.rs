@@ -109,6 +109,68 @@ impl BaseParser {
         }
     }
 
+    pub(crate) fn source_text(&self, start_byte: usize, end_byte: usize) -> String {
+        String::from_utf8_lossy(&self.source[start_byte..end_byte]).into_owned()
+    }
+
+    pub(crate) fn extract_python_definition_header(&self, definition_node: Node) -> String {
+        let end_byte = definition_node
+            .child_by_field_name("body")
+            .map(|body| body.start_byte())
+            .unwrap_or_else(|| definition_node.end_byte());
+        self.source_text(definition_node.start_byte(), end_byte)
+            .trim_end()
+            .to_string()
+    }
+
+    pub(crate) fn extract_java_signature(&self, declaration_node: Node) -> String {
+        let end_byte = declaration_node
+            .child_by_field_name("body")
+            .map(|body| body.start_byte())
+            .unwrap_or_else(|| declaration_node.end_byte());
+        let start_byte = self.java_signature_start_byte(declaration_node);
+        self.source_text(start_byte, end_byte)
+            .trim_end()
+            .trim_end_matches(';')
+            .trim_end()
+            .to_string()
+    }
+
+    pub(crate) fn extract_java_class_header_line(&self, declaration_node: Node) -> String {
+        let signature = self.extract_java_signature(declaration_node);
+        signature
+            .lines()
+            .next()
+            .unwrap_or("")
+            .trim_end()
+            .to_string()
+    }
+
+    fn java_signature_start_byte(&self, declaration_node: Node) -> usize {
+        for i in 0..declaration_node.child_count() {
+            let Some(child) = declaration_node.child(i as u32) else {
+                continue;
+            };
+            match child.kind() {
+                "marker_annotation" | "annotation" => continue,
+                "modifiers" => {
+                    let mut cursor = child.walk();
+                    let mut modifier_children = child.children(&mut cursor);
+                    while let Some(modifier_child) = modifier_children.next() {
+                        if matches!(modifier_child.kind(), "marker_annotation" | "annotation") {
+                            continue;
+                        }
+                        return modifier_child.start_byte();
+                    }
+                    continue;
+                }
+                _ => return child.start_byte(),
+            }
+        }
+
+        declaration_node.start_byte()
+    }
+
     fn with_query<T>(&self, query_str: &str, f: impl FnOnce(&Query) -> T) -> Option<T> {
         if let Some(query) = find_compiled_query(&self.language, query_str) {
             return Some(f(query));
@@ -764,6 +826,14 @@ impl BaseParser {
             }
             "java" => self.extract_java_super_class_names(class_node),
             "go" => self.extract_go_super_class_names(class_node),
+            _ => Vec::new(),
+        }
+    }
+
+    pub(crate) fn extract_annotations(&self) -> Vec<AnnotationInfo> {
+        match self.language.as_str() {
+            "java" => self.extract_java_annotations(),
+            "python" => self.extract_python_decorators(),
             _ => Vec::new(),
         }
     }

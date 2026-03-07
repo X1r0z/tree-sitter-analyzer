@@ -150,6 +150,32 @@ impl FieldInfo {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnnotationInfo {
+    pub name: String,
+    pub signature: String,
+    pub location: Location,
+    pub target_name: String,
+    pub target_type: String,
+    pub target_signature: String,
+}
+
+impl AnnotationInfo {
+    pub fn to_json_value(&self, include_file: bool) -> serde_json::Value {
+        let mut map = serde_json::Map::new();
+        map.insert("name".into(), json!(self.name));
+        map.insert("signature".into(), json!(self.signature));
+        map.insert("line".into(), json!(self.location.start_line));
+        if include_file {
+            map.insert("file".into(), json!(self.location.file));
+        }
+        map.insert("target_name".into(), json!(self.target_name));
+        map.insert("target_type".into(), json!(self.target_type));
+        map.insert("target_signature".into(), json!(self.target_signature));
+        Value::Object(map)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PythonPropertyInfo {
     pub name: String,

@@ -182,6 +182,17 @@ enum Commands {
         #[arg(short, long)]
         class_name: String,
     },
+    /// Extract annotations (Java) / decorators (Python)
+    Annotations {
+        /// Directory path
+        path: String,
+        /// Only analyze files for a single language (java or python)
+        #[arg(short = 'l', long, value_enum)]
+        language: Option<LanguageFilter>,
+        /// Filter by annotation/decorator name (regex match)
+        #[arg(short, long)]
+        query: Option<String>,
+    },
     /// Build a persistent project index in ./tsa.db
     Index {
         /// Directory path
@@ -266,6 +277,11 @@ fn run() -> i32 {
             language,
             class_name,
         } => cmd_sub_classes(&path, language, &class_name),
+        Commands::Annotations {
+            path,
+            language,
+            query,
+        } => cmd_annotations(&path, language, query.as_deref().unwrap_or("")),
         Commands::Index { path, language } => cmd_index(&path, language),
     };
 
@@ -663,6 +679,22 @@ fn cmd_sub_classes(path: &str, language: Option<LanguageFilter>, class_name: &st
                 "count": sub_classes.len(),
                 "class_name": class_name,
                 "sub_classes": sub_classes.iter().map(|c| c.to_json_value(true)).collect::<Vec<_>>(),
+            })
+        }
+        Err(e) => json!({"error": e.to_string()}),
+    }
+}
+
+fn cmd_annotations(path: &str, language: Option<LanguageFilter>, query: &str) -> Value {
+    let real_path = resolve_path(path);
+    match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
+        Ok(project) => {
+            let annotations = project.find_annotations(query);
+            json!({
+                "path": real_path,
+                "files_searched": project.files.len(),
+                "count": annotations.len(),
+                "annotations": annotations.iter().map(|a| a.to_json_value(true)).collect::<Vec<_>>(),
             })
         }
         Err(e) => json!({"error": e.to_string()}),

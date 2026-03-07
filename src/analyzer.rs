@@ -642,6 +642,10 @@ impl CodeAnalyzer {
         callees
     }
 
+    pub fn annotations(&self) -> Vec<AnnotationInfo> {
+        self.parser.extract_annotations()
+    }
+
     pub fn find_symbols(&mut self, name: &str) -> Vec<serde_json::Value> {
         let name_bytes = name.as_bytes();
         if !self

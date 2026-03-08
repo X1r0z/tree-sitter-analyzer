@@ -331,6 +331,22 @@ fn resolve_call_targets(
                     }
                 }
             }
+            if let Some(param_name) = extract_instance_attr(object_name) {
+                for candidate in candidates {
+                    for param in caller
+                        .params
+                        .iter()
+                        .filter(|param| param.name == param_name)
+                    {
+                        if type_matches_class(
+                            param.param_type.as_deref(),
+                            candidate.class_name.as_deref(),
+                        ) {
+                            matched.insert(FunctionKey::from_function(candidate));
+                        }
+                    }
+                }
+            }
         }
     } else {
         if let Some(class_name) = caller.class_name.as_deref() {

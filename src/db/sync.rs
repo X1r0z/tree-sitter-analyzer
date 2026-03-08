@@ -171,6 +171,7 @@ struct SnapshotInserter<'tx> {
     tx: &'tx Transaction<'tx>,
     insert_file: CachedStatement<'tx>,
     insert_function: CachedStatement<'tx>,
+    insert_function_param: CachedStatement<'tx>,
     insert_class: CachedStatement<'tx>,
     insert_class_method: CachedStatement<'tx>,
     insert_class_super: CachedStatement<'tx>,
@@ -194,6 +195,12 @@ impl<'tx> SnapshotInserter<'tx> {
                 "
                 INSERT INTO functions(file_id, name, class_name, start_line, end_line)
                 VALUES (?1, ?2, ?3, ?4, ?5)
+                ",
+            )?,
+            insert_function_param: tx.prepare_cached(
+                "
+                INSERT INTO function_params(function_id, name, param_type, position)
+                VALUES (?1, ?2, ?3, ?4)
                 ",
             )?,
             insert_class: tx.prepare_cached(
@@ -265,6 +272,15 @@ impl<'tx> SnapshotInserter<'tx> {
                 function.location.start_line as i64,
                 function.location.end_line as i64
             ])?;
+            let function_id = self.tx.last_insert_rowid();
+            for (position, param) in function.params.iter().enumerate() {
+                self.insert_function_param.execute(params![
+                    function_id,
+                    param.name,
+                    param.param_type,
+                    position as i64
+                ])?;
+            }
         }
 
         for class in &snapshot.snapshot.classes {

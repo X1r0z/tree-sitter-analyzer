@@ -362,7 +362,13 @@ impl BaseParser {
                 let name = self.node_text(name_node);
                 let field_type = member
                     .child_by_field_name("type")
-                    .map(|t| self.normalize_type_text(&self.node_text(t)));
+                    .map(|t| self.normalize_type_text(&self.node_text(t)))
+                    .or_else(|| {
+                        member
+                            .child_by_field_name("value")
+                            .and_then(|value| self.infer_js_like_field_type_from_value(value))
+                    })
+                    .or_else(|| self.infer_js_like_field_type_from_member(member, name_node.id()));
                 if !name.is_empty() && seen.insert(name.clone()) {
                     fields.push(FieldInfo {
                         name,
@@ -486,6 +492,73 @@ impl BaseParser {
                     stack.push(child);
                 }
             }
+        }
+    }
+
+    fn infer_js_like_field_type_from_value(&self, value_node: Node<'_>) -> Option<String> {
+        match value_node.kind() {
+            "call_expression" => {
+                let function = value_node.child_by_field_name("function")?;
+                let arguments = value_node.child_by_field_name("arguments")?;
+                let is_supported_factory = matches!(
+                    function.kind(),
+                    "identifier" | "property_identifier" | "member_expression"
+                ) && matches!(
+                    self.node_text(function).as_str(),
+                    "inject" | "forwardRef" | "signal" | "computed"
+                );
+                if !is_supported_factory {
+                    return None;
+                }
+                self.first_js_like_type_name(arguments)
+            }
+            "new_expression" => value_node
+                .child_by_field_name("constructor")
+                .and_then(|constructor| self.js_like_type_name_from_node(constructor)),
+            _ => None,
+        }
+    }
+
+    fn infer_js_like_field_type_from_member(
+        &self,
+        member: Node<'_>,
+        name_node_id: usize,
+    ) -> Option<String> {
+        for i in 0..member.named_child_count() {
+            let child = member.named_child(i as u32)?;
+            if child.id() == name_node_id || child.kind().ends_with("modifier") {
+                continue;
+            }
+            if let Some(field_type) = self.infer_js_like_field_type_from_value(child) {
+                return Some(field_type);
+            }
+        }
+        None
+    }
+
+    fn first_js_like_type_name(&self, node: Node<'_>) -> Option<String> {
+        for i in 0..node.named_child_count() {
+            let child = node.named_child(i as u32)?;
+            if let Some(name) = self.js_like_type_name_from_node(child) {
+                return Some(name);
+            }
+        }
+        None
+    }
+
+    fn js_like_type_name_from_node(&self, node: Node<'_>) -> Option<String> {
+        match node.kind() {
+            "identifier" | "type_identifier" => {
+                let name = self.node_text(node);
+                (!name.is_empty()).then_some(name)
+            }
+            "member_expression" => node
+                .child_by_field_name("property")
+                .and_then(|property| self.js_like_type_name_from_node(property)),
+            "type_arguments" | "arguments" | "parenthesized_expression" => {
+                self.first_js_like_type_name(node)
+            }
+            _ => None,
         }
     }
 

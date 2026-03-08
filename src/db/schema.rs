@@ -64,6 +64,15 @@ impl DbProjectAnalyzer {
                 FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS function_params (
+                id INTEGER PRIMARY KEY,
+                function_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                param_type TEXT,
+                position INTEGER NOT NULL,
+                FOREIGN KEY(function_id) REFERENCES functions(id) ON DELETE CASCADE
+            );
+
             CREATE TABLE IF NOT EXISTS classes (
                 id INTEGER PRIMARY KEY,
                 file_id INTEGER NOT NULL,
@@ -163,6 +172,8 @@ impl DbProjectAnalyzer {
             CREATE INDEX IF NOT EXISTS idx_files_language_path ON files(language, path);
             CREATE INDEX IF NOT EXISTS idx_functions_name_class ON functions(name, class_name);
             CREATE INDEX IF NOT EXISTS idx_functions_name_class_file ON functions(name, class_name, file_id);
+            CREATE INDEX IF NOT EXISTS idx_function_params_function_id ON function_params(function_id, position);
+            CREATE INDEX IF NOT EXISTS idx_function_params_function_id_name ON function_params(function_id, name);
             CREATE INDEX IF NOT EXISTS idx_classes_name ON classes(name);
             CREATE INDEX IF NOT EXISTS idx_class_methods_class_id ON class_methods(class_id);
             CREATE INDEX IF NOT EXISTS idx_class_super_classes_class_id ON class_super_classes(class_id);
@@ -232,6 +243,7 @@ impl DbProjectAnalyzer {
             DELETE FROM class_super_classes;
             DELETE FROM python_property_callers;
             DELETE FROM python_properties;
+            DELETE FROM function_params;
             DELETE FROM functions;
             DELETE FROM classes;
             DELETE FROM fields;

@@ -35,6 +35,8 @@ pub(super) struct IndexedFileEntry {
 
 pub(super) type FieldTypesByName = HashMap<String, Vec<Option<String>>>;
 pub(super) type FieldTypeCache = HashMap<(i64, String), FieldTypesByName>;
+pub(super) type ParamTypesByName = HashMap<String, Vec<Option<String>>>;
+pub(super) type ParamTypeCache = HashMap<i64, ParamTypesByName>;
 
 #[derive(Debug)]
 pub(super) struct ClassBaseRow {
@@ -68,6 +70,7 @@ pub(super) struct CalleeLookupRow {
 
 #[derive(Debug, Clone)]
 pub(super) struct DbFunctionNode {
+    pub(super) function_id: i64,
     pub(super) file_id: i64,
     pub(super) function: FunctionInfo,
 }

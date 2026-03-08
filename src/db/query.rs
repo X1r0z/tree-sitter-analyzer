@@ -14,7 +14,7 @@ use super::helpers::{
 };
 use super::types::{
     classes_by_name, CallLookupRow, CalleeLookupRow, ClassBaseRow, DbFunctionNode, FieldTypeCache,
-    FieldTypesByName,
+    FieldTypesByName, ParamTypeCache, ParamTypesByName,
 };
 use super::DbProjectAnalyzer;
 
@@ -24,6 +24,7 @@ struct GraphTraversalState {
     neighbor_cache: HashMap<(GraphDirection, FunctionKey), Vec<DbFunctionNode>>,
     node_cache: HashMap<(String, Option<String>), Vec<DbFunctionNode>>,
     field_type_cache: FieldTypeCache,
+    param_type_cache: ParamTypeCache,
     is_property_cache: HashMap<(String, Option<String>), bool>,
 }
 
@@ -355,6 +356,8 @@ impl DbProjectAnalyzer {
         let mut results = Vec::new();
         let mut seen = HashSet::new();
         let mut field_type_cache = HashMap::new();
+        let mut param_type_cache = HashMap::new();
+        let mut node_cache = HashMap::new();
         for row in rows {
             let row = row?;
             if let Some(target_object) = target_object {
@@ -363,7 +366,27 @@ impl DbProjectAnalyzer {
                 }
             }
             if let Some(class_name) = class_name {
-                if !self.matches_call_target_class(&row, class_name, &mut field_type_cache)? {
+                let Some(caller_name) = row.caller.as_deref() else {
+                    continue;
+                };
+                let Some(caller) = self.resolve_enclosing_db_function(
+                    row.file_id,
+                    &row.file,
+                    caller_name,
+                    row.caller_class_name.as_deref(),
+                    row.line,
+                    &mut node_cache,
+                )?
+                else {
+                    continue;
+                };
+                if !self.matches_call_target_for_caller(
+                    &caller,
+                    row.object_name.as_deref(),
+                    class_name,
+                    &mut field_type_cache,
+                    &mut param_type_cache,
+                )? {
                     continue;
                 }
             }
@@ -611,6 +634,7 @@ impl DbProjectAnalyzer {
             neighbor_cache: HashMap::new(),
             node_cache: HashMap::new(),
             field_type_cache: HashMap::new(),
+            param_type_cache: HashMap::new(),
             is_property_cache: HashMap::new(),
         };
 
@@ -671,6 +695,7 @@ impl DbProjectAnalyzer {
                 direction,
                 &mut state.node_cache,
                 &mut state.field_type_cache,
+                &mut state.param_type_cache,
                 &mut state.is_property_cache,
             )?;
             state.neighbor_cache.insert(cache_key, loaded.clone());
@@ -720,15 +745,20 @@ impl DbProjectAnalyzer {
         direction: GraphDirection,
         node_cache: &mut HashMap<(String, Option<String>), Vec<DbFunctionNode>>,
         field_type_cache: &mut FieldTypeCache,
+        param_type_cache: &mut ParamTypeCache,
         is_property_cache: &mut HashMap<(String, Option<String>), bool>,
     ) -> anyhow::Result<Vec<DbFunctionNode>> {
         match direction {
             GraphDirection::Forward => {
-                self.load_forward_neighbors(node, node_cache, field_type_cache)
+                self.load_forward_neighbors(node, node_cache, field_type_cache, param_type_cache)
             }
-            GraphDirection::Backward => {
-                self.load_backward_neighbors(node, node_cache, field_type_cache, is_property_cache)
-            }
+            GraphDirection::Backward => self.load_backward_neighbors(
+                node,
+                node_cache,
+                field_type_cache,
+                param_type_cache,
+                is_property_cache,
+            ),
         }
     }
 
@@ -737,6 +767,7 @@ impl DbProjectAnalyzer {
         node: &DbFunctionNode,
         node_cache: &mut HashMap<(String, Option<String>), Vec<DbFunctionNode>>,
         field_type_cache: &mut FieldTypeCache,
+        param_type_cache: &mut ParamTypeCache,
     ) -> anyhow::Result<Vec<DbFunctionNode>> {
         let start_line = node.function.location.start_line as i64;
         let end_line = node.function.location.end_line as i64;
@@ -786,6 +817,7 @@ impl DbProjectAnalyzer {
                 object_name.as_deref(),
                 &candidates,
                 field_type_cache,
+                param_type_cache,
             )? {
                 let key = candidate.key();
                 if seen.insert(key) {
@@ -801,6 +833,7 @@ impl DbProjectAnalyzer {
         node: &DbFunctionNode,
         node_cache: &mut HashMap<(String, Option<String>), Vec<DbFunctionNode>>,
         field_type_cache: &mut FieldTypeCache,
+        param_type_cache: &mut ParamTypeCache,
         is_property_cache: &mut HashMap<(String, Option<String>), bool>,
     ) -> anyhow::Result<Vec<DbFunctionNode>> {
         let mut sql = String::from(
@@ -834,11 +867,6 @@ impl DbProjectAnalyzer {
         let mut results = Vec::new();
         for row in rows {
             let row = row?;
-            if let Some(class_name) = node.function.class_name.as_deref() {
-                if !self.matches_call_target_class(&row, class_name, field_type_cache)? {
-                    continue;
-                }
-            }
             let Some(caller_name) = row.caller.as_deref() else {
                 continue;
             };
@@ -851,6 +879,17 @@ impl DbProjectAnalyzer {
                 node_cache,
             )?;
             if let Some(caller) = caller {
+                if let Some(class_name) = node.function.class_name.as_deref() {
+                    if !self.matches_call_target_for_caller(
+                        &caller,
+                        row.object_name.as_deref(),
+                        class_name,
+                        field_type_cache,
+                        param_type_cache,
+                    )? {
+                        continue;
+                    }
+                }
                 let key = caller.key();
                 if seen.insert(key) {
                     results.push(caller);
@@ -922,6 +961,7 @@ impl DbProjectAnalyzer {
         object_name: Option<&str>,
         candidates: &[DbFunctionNode],
         field_type_cache: &mut FieldTypeCache,
+        param_type_cache: &mut ParamTypeCache,
     ) -> anyhow::Result<Vec<DbFunctionNode>> {
         let mut results = Vec::new();
         let mut seen = HashSet::new();
@@ -957,6 +997,22 @@ impl DbProjectAnalyzer {
                         for field_type in field_types.get(&attr_name).into_iter().flatten() {
                             if type_matches_class(
                                 field_type.as_deref(),
+                                candidate.function.class_name.as_deref().unwrap_or_default(),
+                            ) && seen.insert(candidate.key())
+                            {
+                                results.push(candidate.clone());
+                            }
+                        }
+                    }
+                }
+
+                if let Some(param_name) = extract_instance_attr(object_name) {
+                    let param_types =
+                        self.param_types_for_function(caller.function_id, param_type_cache)?;
+                    for candidate in candidates {
+                        for param_type in param_types.get(&param_name).into_iter().flatten() {
+                            if type_matches_class(
+                                param_type.as_deref(),
                                 candidate.function.class_name.as_deref().unwrap_or_default(),
                             ) && seen.insert(candidate.key())
                             {
@@ -1012,7 +1068,7 @@ impl DbProjectAnalyzer {
     ) -> anyhow::Result<Vec<DbFunctionNode>> {
         let mut sql = String::from(
             "
-            SELECT fn.file_id, f.path, fn.name, fn.class_name, fn.start_line, fn.end_line
+            SELECT fn.id, fn.file_id, f.path, fn.name, fn.class_name, fn.start_line, fn.end_line
             FROM functions fn
             JOIN files f ON f.id = fn.file_id
             WHERE fn.name = ?1
@@ -1098,16 +1154,17 @@ impl DbProjectAnalyzer {
 
     fn row_to_db_function_node(row: &rusqlite::Row<'_>) -> rusqlite::Result<DbFunctionNode> {
         Ok(DbFunctionNode {
-            file_id: row.get(0)?,
+            function_id: row.get(0)?,
+            file_id: row.get(1)?,
             function: FunctionInfo {
-                name: row.get(2)?,
+                name: row.get(3)?,
                 location: Location {
-                    file: row.get(1)?,
-                    start_line: row.get::<_, i64>(4)? as usize,
-                    end_line: row.get::<_, i64>(5)? as usize,
+                    file: row.get(2)?,
+                    start_line: row.get::<_, i64>(5)? as usize,
+                    end_line: row.get::<_, i64>(6)? as usize,
                 },
                 body: String::new(),
-                class_name: row.get(3)?,
+                class_name: row.get(4)?,
                 params: Vec::new(),
             },
         })
@@ -1264,28 +1321,25 @@ impl DbProjectAnalyzer {
         Ok(exists.is_some())
     }
 
-    fn matches_call_target_class(
+    fn matches_call_target_for_caller(
         &self,
-        row: &CallLookupRow,
+        caller: &DbFunctionNode,
+        object_name: Option<&str>,
         class_name: &str,
         field_type_cache: &mut FieldTypeCache,
+        param_type_cache: &mut ParamTypeCache,
     ) -> anyhow::Result<bool> {
-        if row.object_name.as_deref() == Some(class_name) {
+        if object_name == Some(class_name) {
             return Ok(true);
         }
-        if row.object_name.is_none() {
-            return Ok(row.caller_class_name.as_deref() == Some(class_name));
+        if object_name.is_none() {
+            return Ok(caller.function.class_name.as_deref() == Some(class_name));
         }
-        if matches!(
-            row.object_name.as_deref(),
-            Some("self") | Some("this") | Some("cls")
-        ) {
-            return Ok(row.caller_class_name.as_deref() == Some(class_name));
+        if matches!(object_name, Some("self") | Some("this") | Some("cls")) {
+            return Ok(caller.function.class_name.as_deref() == Some(class_name));
         }
 
-        let (Some(object_name), Some(caller_class_name)) =
-            (row.object_name.as_deref(), row.caller_class_name.as_deref())
-        else {
+        let Some(object_name) = object_name else {
             return Ok(false);
         };
 
@@ -1293,13 +1347,23 @@ impl DbProjectAnalyzer {
             return Ok(false);
         };
 
-        let field_types =
-            self.field_types_for_class(row.file_id, caller_class_name, field_type_cache)?;
-        for field_type in field_types.get(&attr_name).into_iter().flatten() {
-            if type_matches_class(field_type.as_deref(), class_name) {
+        if let Some(caller_class_name) = caller.function.class_name.as_deref() {
+            let field_types =
+                self.field_types_for_class(caller.file_id, caller_class_name, field_type_cache)?;
+            for field_type in field_types.get(&attr_name).into_iter().flatten() {
+                if type_matches_class(field_type.as_deref(), class_name) {
+                    return Ok(true);
+                }
+            }
+        }
+
+        let param_types = self.param_types_for_function(caller.function_id, param_type_cache)?;
+        for param_type in param_types.get(&attr_name).into_iter().flatten() {
+            if type_matches_class(param_type.as_deref(), class_name) {
                 return Ok(true);
             }
         }
+
         Ok(false)
     }
 
@@ -1330,6 +1394,35 @@ impl DbProjectAnalyzer {
             map.entry(name).or_default().push(field_type);
         }
         cache.insert(key, map.clone());
+        Ok(map)
+    }
+
+    fn param_types_for_function(
+        &self,
+        function_id: i64,
+        cache: &mut ParamTypeCache,
+    ) -> anyhow::Result<ParamTypesByName> {
+        if let Some(cached) = cache.get(&function_id) {
+            return Ok(cached.clone());
+        }
+
+        let mut stmt = self.conn.prepare(
+            "
+            SELECT name, param_type
+            FROM function_params
+            WHERE function_id = ?1
+            ORDER BY position
+            ",
+        )?;
+        let rows = stmt.query_map(params![function_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })?;
+        let mut map: ParamTypesByName = HashMap::new();
+        for row in rows {
+            let (name, param_type) = row?;
+            map.entry(name).or_default().push(param_type);
+        }
+        cache.insert(function_id, map.clone());
         Ok(map)
     }
 }

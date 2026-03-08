@@ -204,9 +204,11 @@ impl DbProjectAnalyzer {
             CREATE INDEX IF NOT EXISTS idx_files_language_path ON files(language, path);
             CREATE INDEX IF NOT EXISTS idx_functions_name_class ON functions(name, class_name);
             CREATE INDEX IF NOT EXISTS idx_functions_name_class_file ON functions(name, class_name, file_id);
+            CREATE INDEX IF NOT EXISTS idx_functions_file_id_start_line ON functions(file_id, start_line);
             CREATE INDEX IF NOT EXISTS idx_function_params_function_id ON function_params(function_id, position);
             CREATE INDEX IF NOT EXISTS idx_function_params_function_id_name ON function_params(function_id, name);
             CREATE INDEX IF NOT EXISTS idx_classes_name ON classes(name);
+            CREATE INDEX IF NOT EXISTS idx_classes_file_id_start_line ON classes(file_id, start_line);
             CREATE INDEX IF NOT EXISTS idx_class_methods_class_id ON class_methods(class_id);
             CREATE INDEX IF NOT EXISTS idx_class_super_classes_class_id ON class_super_classes(class_id);
             CREATE INDEX IF NOT EXISTS idx_class_super_classes_super_name ON class_super_classes(super_class_name);
@@ -214,16 +216,24 @@ impl DbProjectAnalyzer {
             CREATE INDEX IF NOT EXISTS idx_fields_class_name ON fields(class_name, name);
             CREATE INDEX IF NOT EXISTS idx_fields_file_class_name ON fields(file_id, class_name);
             CREATE INDEX IF NOT EXISTS idx_fields_file_class_name_name ON fields(file_id, class_name, name);
+            CREATE INDEX IF NOT EXISTS idx_fields_file_id_start_line ON fields(file_id, start_line);
             CREATE INDEX IF NOT EXISTS idx_calls_callee ON calls(callee);
             CREATE INDEX IF NOT EXISTS idx_calls_callee_file ON calls(callee, file_id);
             CREATE INDEX IF NOT EXISTS idx_calls_caller_class ON calls(caller, caller_class_name);
             CREATE INDEX IF NOT EXISTS idx_calls_caller_class_file ON calls(caller, caller_class_name, file_id);
+            CREATE INDEX IF NOT EXISTS idx_calls_file_caller_class_line ON calls(file_id, caller, caller_class_name, start_line);
+            CREATE INDEX IF NOT EXISTS idx_calls_file_callee_line ON calls(file_id, callee, start_line);
             CREATE INDEX IF NOT EXISTS idx_imports_module ON imports(module);
+            CREATE INDEX IF NOT EXISTS idx_imports_file_id_start_line ON imports(file_id, start_line);
             CREATE INDEX IF NOT EXISTS idx_annotations_name ON annotations(name);
             CREATE INDEX IF NOT EXISTS idx_annotations_name_file ON annotations(name, file_id);
+            CREATE INDEX IF NOT EXISTS idx_annotations_file_id_start_line ON annotations(file_id, start_line);
+            CREATE INDEX IF NOT EXISTS idx_symbol_refs_file_id_start_end_type ON symbol_refs(file_id, start_line, end_line, node_type);
             CREATE INDEX IF NOT EXISTS idx_symbol_refs_name_file ON symbol_refs(name, file_id);
             CREATE INDEX IF NOT EXISTS idx_python_properties_name_class ON python_properties(property_name, class_name);
+            CREATE INDEX IF NOT EXISTS idx_python_properties_file_name_class ON python_properties(file_id, property_name, class_name);
             CREATE INDEX IF NOT EXISTS idx_python_property_callers_name ON python_property_callers(property_name);
+            CREATE INDEX IF NOT EXISTS idx_python_property_callers_file_name_line ON python_property_callers(file_id, property_name, line);
         ",
         )?;
         Self::migrate_schema(conn)?;

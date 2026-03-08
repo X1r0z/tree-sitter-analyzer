@@ -21,7 +21,8 @@ pub(super) fn extract_instance_attr(object_name: &str) -> Option<String> {
             }
         }
     }
-    None
+    let candidate = object_name.split('.').next().unwrap_or(object_name);
+    (!candidate.is_empty()).then(|| candidate.to_string())
 }
 
 pub(super) fn type_matches_class(field_type: Option<&str>, class_name: &str) -> bool {

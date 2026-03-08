@@ -48,6 +48,12 @@ tsa functions ./src/ -l python
 # Find all callers of a function
 tsa callers ./src/ --function process_data
 
+# Trace callers backward in the call graph
+tsa graph ./src/ --function process_data --depth 2 --backward
+
+# Trace callees forward in the call graph
+tsa graph ./src/ --function process_data --depth 2 --forward
+
 # Get function definition
 tsa definition ./src/ --function main
 ```
@@ -66,6 +72,7 @@ See [USAGE.md](USAGE.md) for complete documentation.
 | `annotations` | Extract Java annotations and Python decorators |
 | `callers` | Find functions that call a specific function |
 | `callees` | Find functions called by a specific function |
+| `graph` | Trace callers backward or callees forward across multiple call levels |
 | `symbols` | Find all references to a specific symbol |
 | `definition` | Extract source code of a function |
 | `super-classes` | Get all parent classes of a specific class |

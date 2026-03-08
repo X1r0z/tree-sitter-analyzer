@@ -24,7 +24,7 @@ tree-sitter-analyzer (tsa) parses the actual AST (Abstract Syntax Tree) of sourc
 
 Use this skill whenever you need answers about code structure or relationships:
 
-- **Call graph analysis** — "Who calls this function?", "What does this function call?", "Trace the call chain from entry point to sink"
+- **Call graph analysis** — "Who calls this function?", "What does this function call?", "Trace the call graph from entry point to sink"
 - **Definition lookup** — "Where is this function/class defined?", "Show me the source code of X"
 - **Class structure** — "What fields/methods does this class have?", "What are the subclasses/superclasses?"
 - **Symbol tracking** — "Find all references to this identifier across the project"
@@ -38,7 +38,7 @@ tree-sitter-analyzer (tsa) is particularly powerful for security audits because 
 
 - **Dangerous function inventory** — Find all calls to security-sensitive functions (e.g., `eval`, `exec`, `os.system`, `subprocess.Popen`, `Runtime.exec`, `sql.Query`) by listing callees or searching symbols, then trace their callers to understand input sources
 - **Taint source tracing** — Identify functions that handle user input (e.g., `request.GET`, `req.body`, `Scanner.nextLine`), then use `callers` to trace how tainted data propagates through the codebase
-- **Sink reachability** — Start from a dangerous sink function, use `callers` recursively to build the call chain back to entry points and determine if user-controlled data can reach it
+- **Sink reachability** — Start from a dangerous sink function, use `callers` recursively to build the call graph back to entry points and determine if user-controlled data can reach it
 - **Attack surface mapping** — Use `functions` + `classes` to inventory all public API endpoints, handlers, and entry points; then use `callees` to map what internal functions each endpoint reaches
 - **Privilege analysis** — Use `sub-classes` to find all implementations of permission/auth base classes; use `fields` to inspect their configuration
 - **Dependency mapping** — Use `imports` to audit which modules import dangerous libraries; use `annotations` to inspect framework metadata on handlers and models; use `symbols` to find every reference to security-critical identifiers

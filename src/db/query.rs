@@ -4,7 +4,8 @@ use rusqlite::{params, params_from_iter, OptionalExtension, ToSql};
 use serde_json::json;
 
 use crate::nodes::{
-    AnnotationInfo, ClassInfo, FieldInfo, FunctionInfo, ImportInfo, Location, SymbolRefInfo,
+    AnnotationInfo, CallGraphPath, ClassInfo, FieldInfo, FunctionInfo, FunctionKey, GraphDirection,
+    GraphPathNode, ImportInfo, Location, SymbolRefInfo,
 };
 use crate::utils::{is_simple_query, sort_by_file_line, QueryMatcher};
 
@@ -12,9 +13,19 @@ use super::helpers::{
     extract_instance_attr, repeat_placeholders, split_function_target, type_matches_class,
 };
 use super::types::{
-    classes_by_name, CallLookupRow, CalleeLookupRow, ClassBaseRow, FieldTypeCache, FieldTypesByName,
+    classes_by_name, CallLookupRow, CalleeLookupRow, ClassBaseRow, DbFunctionNode, FieldTypeCache,
+    FieldTypesByName,
 };
 use super::DbProjectAnalyzer;
+
+struct GraphTraversalState {
+    results: Vec<CallGraphPath>,
+    seen_paths: HashSet<Vec<FunctionKey>>,
+    neighbor_cache: HashMap<(GraphDirection, FunctionKey), Vec<DbFunctionNode>>,
+    node_cache: HashMap<(String, Option<String>), Vec<DbFunctionNode>>,
+    field_type_cache: FieldTypeCache,
+    is_property_cache: HashMap<(String, Option<String>), bool>,
+}
 
 impl DbProjectAnalyzer {
     pub(crate) fn file_count(&self) -> usize {
@@ -582,6 +593,42 @@ impl DbProjectAnalyzer {
         Ok(result)
     }
 
+    pub(crate) fn find_graphs(
+        &self,
+        function_name: &str,
+        class_name: Option<&str>,
+        direction: GraphDirection,
+        max_depth: usize,
+    ) -> anyhow::Result<Vec<CallGraphPath>> {
+        let start_nodes = self.find_exact_function_nodes(function_name, class_name)?;
+        if start_nodes.is_empty() {
+            anyhow::bail!("Function '{}' not found", function_name);
+        }
+
+        let mut state = GraphTraversalState {
+            results: Vec::new(),
+            seen_paths: HashSet::new(),
+            neighbor_cache: HashMap::new(),
+            node_cache: HashMap::new(),
+            field_type_cache: HashMap::new(),
+            is_property_cache: HashMap::new(),
+        };
+
+        for start in &start_nodes {
+            let mut path = vec![start.clone()];
+            let mut visited = HashSet::from([start.key()]);
+            self.walk_graph_paths(direction, max_depth, &mut path, &mut visited, &mut state)?;
+        }
+
+        state.results.sort_by(|left, right| {
+            left.stacktrace
+                .cmp(&right.stacktrace)
+                .then(left.depth.cmp(&right.depth))
+                .then(left.path.len().cmp(&right.path.len()))
+        });
+        Ok(state.results)
+    }
+
     fn load_class_methods_map(
         &self,
         class_ids: &[i64],
@@ -604,6 +651,466 @@ impl DbProjectAnalyzer {
             map.entry(class_id).or_default().push(method_name);
         }
         Ok(map)
+    }
+
+    fn walk_graph_paths(
+        &self,
+        direction: GraphDirection,
+        remaining_depth: usize,
+        path: &mut Vec<DbFunctionNode>,
+        visited: &mut HashSet<FunctionKey>,
+        state: &mut GraphTraversalState,
+    ) -> anyhow::Result<()> {
+        let current = path.last().cloned().unwrap_or_else(|| unreachable!());
+        let cache_key = (direction, current.key());
+        let neighbors = if let Some(cached) = state.neighbor_cache.get(&cache_key) {
+            cached.clone()
+        } else {
+            let loaded = self.load_graph_neighbors(
+                &current,
+                direction,
+                &mut state.node_cache,
+                &mut state.field_type_cache,
+                &mut state.is_property_cache,
+            )?;
+            state.neighbor_cache.insert(cache_key, loaded.clone());
+            loaded
+        };
+
+        let next_nodes: Vec<_> = neighbors
+            .into_iter()
+            .filter(|neighbor| !visited.contains(&neighbor.key()))
+            .collect();
+
+        if remaining_depth == 0 || next_nodes.is_empty() {
+            let keys: Vec<_> = path.iter().map(DbFunctionNode::key).collect();
+            if state.seen_paths.insert(keys) {
+                state.results.push(Self::materialize_graph(path));
+            }
+            return Ok(());
+        }
+
+        for next in next_nodes {
+            let next_key = next.key();
+            visited.insert(next_key.clone());
+            path.push(next);
+            self.walk_graph_paths(direction, remaining_depth - 1, path, visited, state)?;
+            path.pop();
+            visited.remove(&next_key);
+        }
+        Ok(())
+    }
+
+    fn materialize_graph(path: &[DbFunctionNode]) -> CallGraphPath {
+        let path: Vec<GraphPathNode> = path
+            .iter()
+            .map(|node| node.function.to_graph_path_node())
+            .collect();
+        let stacktrace = path.iter().map(|node| node.display_name()).collect();
+        CallGraphPath {
+            depth: path.len().saturating_sub(1),
+            stacktrace,
+            path,
+        }
+    }
+
+    fn load_graph_neighbors(
+        &self,
+        node: &DbFunctionNode,
+        direction: GraphDirection,
+        node_cache: &mut HashMap<(String, Option<String>), Vec<DbFunctionNode>>,
+        field_type_cache: &mut FieldTypeCache,
+        is_property_cache: &mut HashMap<(String, Option<String>), bool>,
+    ) -> anyhow::Result<Vec<DbFunctionNode>> {
+        match direction {
+            GraphDirection::Forward => {
+                self.load_forward_neighbors(node, node_cache, field_type_cache)
+            }
+            GraphDirection::Backward => {
+                self.load_backward_neighbors(node, node_cache, field_type_cache, is_property_cache)
+            }
+        }
+    }
+
+    fn load_forward_neighbors(
+        &self,
+        node: &DbFunctionNode,
+        node_cache: &mut HashMap<(String, Option<String>), Vec<DbFunctionNode>>,
+        field_type_cache: &mut FieldTypeCache,
+    ) -> anyhow::Result<Vec<DbFunctionNode>> {
+        let start_line = node.function.location.start_line as i64;
+        let end_line = node.function.location.end_line as i64;
+        let mut sql = String::from(
+            "
+            SELECT callee, object_name
+            FROM calls
+            WHERE file_id = ?1 AND caller = ?2 AND start_line >= ?3 AND start_line <= ?4
+            ",
+        );
+
+        let rows = match node.function.class_name.as_deref() {
+            Some(class_name) => {
+                sql.push_str(" AND caller_class_name = ?5");
+                sql.push_str(" ORDER BY start_line");
+                let mut stmt = self.conn.prepare(&sql)?;
+                let rows = stmt.query_map(
+                    params![
+                        node.file_id,
+                        node.function.name,
+                        start_line,
+                        end_line,
+                        class_name
+                    ],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+                )?;
+                rows.collect::<Result<Vec<_>, _>>()?
+            }
+            None => {
+                sql.push_str(" AND caller_class_name IS NULL");
+                sql.push_str(" ORDER BY start_line");
+                let mut stmt = self.conn.prepare(&sql)?;
+                let rows = stmt.query_map(
+                    params![node.file_id, node.function.name, start_line, end_line],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+                )?;
+                rows.collect::<Result<Vec<_>, _>>()?
+            }
+        };
+
+        let mut seen = HashSet::new();
+        let mut results = Vec::new();
+        for (callee_name, object_name) in rows {
+            let candidates = self.load_function_nodes_by_name(&callee_name, node_cache)?;
+            for candidate in self.resolve_down_targets(
+                node,
+                object_name.as_deref(),
+                &candidates,
+                field_type_cache,
+            )? {
+                let key = candidate.key();
+                if seen.insert(key) {
+                    results.push(candidate);
+                }
+            }
+        }
+        Ok(results)
+    }
+
+    fn load_backward_neighbors(
+        &self,
+        node: &DbFunctionNode,
+        node_cache: &mut HashMap<(String, Option<String>), Vec<DbFunctionNode>>,
+        field_type_cache: &mut FieldTypeCache,
+        is_property_cache: &mut HashMap<(String, Option<String>), bool>,
+    ) -> anyhow::Result<Vec<DbFunctionNode>> {
+        let mut sql = String::from(
+            "
+            SELECT c.file_id, f.path, c.caller, c.caller_class_name, c.object_name, c.start_line
+            FROM calls c
+            JOIN files f ON f.id = c.file_id
+            WHERE c.callee = ?1
+            ",
+        );
+        let mut params: Vec<&dyn ToSql> = vec![&node.function.name];
+        if let Some(language) = self.requested_language.as_ref() {
+            sql.push_str(" AND f.language = ?2");
+            params.push(language);
+        }
+        sql.push_str(" ORDER BY f.path, c.start_line");
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(params), |row| {
+            Ok(CallLookupRow {
+                file_id: row.get(0)?,
+                file: row.get(1)?,
+                caller: row.get(2)?,
+                caller_class_name: row.get(3)?,
+                object_name: row.get(4)?,
+                line: row.get::<_, i64>(5)? as usize,
+            })
+        })?;
+
+        let mut seen = HashSet::new();
+        let mut results = Vec::new();
+        for row in rows {
+            let row = row?;
+            if let Some(class_name) = node.function.class_name.as_deref() {
+                if !self.matches_call_target_class(&row, class_name, field_type_cache)? {
+                    continue;
+                }
+            }
+            let Some(caller_name) = row.caller.as_deref() else {
+                continue;
+            };
+            let caller = self.resolve_enclosing_db_function(
+                row.file_id,
+                &row.file,
+                caller_name,
+                row.caller_class_name.as_deref(),
+                row.line,
+                node_cache,
+            )?;
+            if let Some(caller) = caller {
+                let key = caller.key();
+                if seen.insert(key) {
+                    results.push(caller);
+                }
+            }
+        }
+
+        let property_key = (node.function.name.clone(), node.function.class_name.clone());
+        let is_property = if let Some(value) = is_property_cache.get(&property_key) {
+            *value
+        } else {
+            let value =
+                self.is_python_property(&node.function.name, node.function.class_name.as_deref())?;
+            is_property_cache.insert(property_key.clone(), value);
+            value
+        };
+
+        if is_property {
+            let mut property_sql = String::from(
+                "
+                SELECT ppc.file_id, f.path, ppc.caller, ppc.line
+                FROM python_property_callers ppc
+                JOIN files f ON f.id = ppc.file_id
+                WHERE ppc.property_name = ?1
+                ",
+            );
+            let mut property_params: Vec<&dyn ToSql> = vec![&node.function.name];
+            if let Some(language) = self.requested_language.as_ref() {
+                property_sql.push_str(" AND f.language = ?2");
+                property_params.push(language);
+            }
+            property_sql.push_str(" ORDER BY f.path, ppc.line");
+
+            let mut property_stmt = self.conn.prepare(&property_sql)?;
+            let property_rows =
+                property_stmt.query_map(params_from_iter(property_params), |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)? as usize,
+                    ))
+                })?;
+
+            for row in property_rows {
+                let (file_id, file, caller_name, line) = row?;
+                if let Some(caller) = self.resolve_enclosing_db_function(
+                    file_id,
+                    &file,
+                    &caller_name,
+                    None,
+                    line,
+                    node_cache,
+                )? {
+                    let key = caller.key();
+                    if seen.insert(key) {
+                        results.push(caller);
+                    }
+                }
+            }
+        }
+
+        Ok(results)
+    }
+
+    fn resolve_down_targets(
+        &self,
+        caller: &DbFunctionNode,
+        object_name: Option<&str>,
+        candidates: &[DbFunctionNode],
+        field_type_cache: &mut FieldTypeCache,
+    ) -> anyhow::Result<Vec<DbFunctionNode>> {
+        let mut results = Vec::new();
+        let mut seen = HashSet::new();
+
+        match object_name {
+            Some("self") | Some("this") | Some("cls") => {
+                if let Some(class_name) = caller.function.class_name.as_deref() {
+                    for candidate in candidates {
+                        if candidate.function.class_name.as_deref() == Some(class_name)
+                            && seen.insert(candidate.key())
+                        {
+                            results.push(candidate.clone());
+                        }
+                    }
+                }
+            }
+            Some(object_name) => {
+                for candidate in candidates {
+                    if candidate.function.class_name.as_deref() == Some(object_name)
+                        && seen.insert(candidate.key())
+                    {
+                        results.push(candidate.clone());
+                    }
+                }
+
+                if let (Some(class_name), Some(attr_name)) = (
+                    caller.function.class_name.as_deref(),
+                    extract_instance_attr(object_name),
+                ) {
+                    let field_types =
+                        self.field_types_for_class(caller.file_id, class_name, field_type_cache)?;
+                    for candidate in candidates {
+                        for field_type in field_types.get(&attr_name).into_iter().flatten() {
+                            if type_matches_class(
+                                field_type.as_deref(),
+                                candidate.function.class_name.as_deref().unwrap_or_default(),
+                            ) && seen.insert(candidate.key())
+                            {
+                                results.push(candidate.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            None => {
+                if let Some(class_name) = caller.function.class_name.as_deref() {
+                    for candidate in candidates {
+                        if candidate.function.class_name.as_deref() == Some(class_name)
+                            && seen.insert(candidate.key())
+                        {
+                            results.push(candidate.clone());
+                        }
+                    }
+                }
+
+                let same_file_globals: Vec<_> = candidates
+                    .iter()
+                    .filter(|candidate| {
+                        candidate.function.class_name.is_none()
+                            && candidate.function.location.file == caller.function.location.file
+                    })
+                    .cloned()
+                    .collect();
+
+                if same_file_globals.is_empty() {
+                    for candidate in candidates {
+                        if candidate.function.class_name.is_none() && seen.insert(candidate.key()) {
+                            results.push(candidate.clone());
+                        }
+                    }
+                } else {
+                    for candidate in same_file_globals {
+                        if seen.insert(candidate.key()) {
+                            results.push(candidate);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(results)
+    }
+
+    fn find_exact_function_nodes(
+        &self,
+        function_name: &str,
+        class_name: Option<&str>,
+    ) -> anyhow::Result<Vec<DbFunctionNode>> {
+        let mut sql = String::from(
+            "
+            SELECT fn.file_id, f.path, fn.name, fn.class_name, fn.start_line, fn.end_line
+            FROM functions fn
+            JOIN files f ON f.id = fn.file_id
+            WHERE fn.name = ?1
+            ",
+        );
+        let language = self.requested_language.as_deref();
+        if class_name.is_some() {
+            sql.push_str(" AND fn.class_name = ?2");
+        }
+        if language.is_some() {
+            sql.push_str(if class_name.is_some() {
+                " AND f.language = ?3"
+            } else {
+                " AND f.language = ?2"
+            });
+        }
+        sql.push_str(" ORDER BY f.path, fn.start_line");
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows: Vec<DbFunctionNode> = match (class_name, language) {
+            (Some(class_name), Some(language)) => stmt
+                .query_map(params![function_name, class_name, language], |row| {
+                    Self::row_to_db_function_node(row)
+                })?
+                .collect::<Result<Vec<_>, _>>()?,
+            (Some(class_name), None) => stmt
+                .query_map(params![function_name, class_name], |row| {
+                    Self::row_to_db_function_node(row)
+                })?
+                .collect::<Result<Vec<_>, _>>()?,
+            (None, Some(language)) => stmt
+                .query_map(params![function_name, language], |row| {
+                    Self::row_to_db_function_node(row)
+                })?
+                .collect::<Result<Vec<_>, _>>()?,
+            (None, None) => stmt
+                .query_map([function_name], Self::row_to_db_function_node)?
+                .collect::<Result<Vec<_>, _>>()?,
+        };
+        Ok(rows)
+    }
+
+    fn load_function_nodes_by_name(
+        &self,
+        function_name: &str,
+        cache: &mut HashMap<(String, Option<String>), Vec<DbFunctionNode>>,
+    ) -> anyhow::Result<Vec<DbFunctionNode>> {
+        let key = (function_name.to_string(), None);
+        if let Some(cached) = cache.get(&key) {
+            return Ok(cached.clone());
+        }
+
+        let loaded = self.find_exact_function_nodes(function_name, None)?;
+        cache.insert(key, loaded.clone());
+        Ok(loaded)
+    }
+
+    fn resolve_enclosing_db_function(
+        &self,
+        file_id: i64,
+        file: &str,
+        function_name: &str,
+        class_name: Option<&str>,
+        line: usize,
+        cache: &mut HashMap<(String, Option<String>), Vec<DbFunctionNode>>,
+    ) -> anyhow::Result<Option<DbFunctionNode>> {
+        let cache_key = (function_name.to_string(), class_name.map(str::to_string));
+        let candidates = if let Some(cached) = cache.get(&cache_key) {
+            cached.clone()
+        } else {
+            let loaded = self.find_exact_function_nodes(function_name, class_name)?;
+            cache.insert(cache_key.clone(), loaded.clone());
+            loaded
+        };
+
+        Ok(candidates.into_iter().find(|candidate| {
+            candidate.file_id == file_id
+                && candidate.function.location.file == file
+                && candidate.function.location.start_line <= line
+                && line <= candidate.function.location.end_line
+        }))
+    }
+
+    fn row_to_db_function_node(row: &rusqlite::Row<'_>) -> rusqlite::Result<DbFunctionNode> {
+        Ok(DbFunctionNode {
+            file_id: row.get(0)?,
+            function: FunctionInfo {
+                name: row.get(2)?,
+                location: Location {
+                    file: row.get(1)?,
+                    start_line: row.get::<_, i64>(4)? as usize,
+                    end_line: row.get::<_, i64>(5)? as usize,
+                },
+                body: String::new(),
+                class_name: row.get(3)?,
+                params: Vec::new(),
+            },
+        })
     }
 
     fn load_class_super_classes_map(

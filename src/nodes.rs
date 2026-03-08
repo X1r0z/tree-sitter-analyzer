@@ -45,6 +45,16 @@ impl FunctionInfo {
         }
         Value::Object(map)
     }
+
+    pub(crate) fn to_graph_path_node(&self) -> GraphPathNode {
+        GraphPathNode {
+            file: self.location.file.clone(),
+            start_line: self.location.start_line,
+            end_line: self.location.end_line,
+            name: self.name.clone(),
+            class_name: self.class_name.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
@@ -66,6 +76,47 @@ impl FunctionKey {
             end_line: function.location.end_line,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Eq, Hash, PartialEq)]
+pub(crate) enum GraphDirection {
+    Backward,
+    Forward,
+}
+
+impl GraphDirection {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Backward => "backward",
+            Self::Forward => "forward",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, Hash, PartialEq)]
+pub struct GraphPathNode {
+    pub file: String,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub class_name: Option<String>,
+}
+
+impl GraphPathNode {
+    pub fn display_name(&self) -> String {
+        match self.class_name.as_deref() {
+            Some(class_name) => format!("{}.{}", class_name, self.name),
+            None => self.name.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, Hash, PartialEq)]
+pub struct CallGraphPath {
+    pub depth: usize,
+    pub stacktrace: Vec<String>,
+    pub path: Vec<GraphPathNode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -236,6 +287,7 @@ pub struct PythonPropertyInfo {
 
 #[derive(Debug, Clone)]
 pub struct PythonPropertyCallerInfo {
+    pub file: String,
     pub property_name: String,
     pub caller: String,
     pub line: usize,

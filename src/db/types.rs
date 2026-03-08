@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::nodes::{AnalyzerSnapshot, ClassInfo};
+use crate::nodes::{AnalyzerSnapshot, ClassInfo, FunctionInfo, FunctionKey};
 
 #[derive(Debug, Clone)]
 pub(crate) struct IndexedFileRecord {
@@ -64,6 +64,18 @@ pub(super) struct CalleeLookupRow {
     pub(super) object_name: Option<String>,
     pub(super) caller_class_name: Option<String>,
     pub(super) line: usize,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct DbFunctionNode {
+    pub(super) file_id: i64,
+    pub(super) function: FunctionInfo,
+}
+
+impl DbFunctionNode {
+    pub(super) fn key(&self) -> FunctionKey {
+        FunctionKey::from_function(&self.function)
+    }
 }
 
 pub(super) fn classes_by_name(classes: &[ClassInfo]) -> HashMap<String, Vec<ClassInfo>> {

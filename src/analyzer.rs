@@ -374,7 +374,8 @@ impl CodeAnalyzer {
                 }
             }
         }
-        None
+        let candidate = object_name.split('.').next().unwrap_or(object_name);
+        (!candidate.is_empty()).then(|| candidate.to_string())
     }
 
     fn type_matches_class(field_type: Option<&str>, class_name: &str) -> bool {
@@ -606,6 +607,7 @@ impl CodeAnalyzer {
                 for (property_name, entries) in callers {
                     for (caller, line) in entries {
                         python_property_callers.push(PythonPropertyCallerInfo {
+                            file: self.parser.file_path.clone(),
                             property_name: property_name.clone(),
                             caller: caller.clone(),
                             line: *line,

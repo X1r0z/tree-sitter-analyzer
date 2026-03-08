@@ -249,6 +249,33 @@ tsa callees ./src/ -f main
 tsa callees ./src/ -f initialize -c Application
 ```
 
+### `graph` - Trace Multi-hop Call Graphs
+
+Trace a function or method through multiple caller or callee hops.
+
+```bash
+tsa graph <path> [-l LANGUAGE] -f FUNCTION [-c CLASS_NAME] -d DEPTH (--backward | --forward)
+```
+
+| Option | Description |
+|--------|-------------|
+| `-l, --language` | Only analyze files for a single language |
+| `-f, --function` | Function name to trace (required) |
+| `-c, --class-name` | Class name to filter methods |
+| `-d, --depth` | Maximum traversal depth, must be >= 1 |
+| `--backward` | Traverse backward to callers |
+| `--forward` | Traverse forward to callees |
+
+Examples:
+
+```bash
+# Trace callers of a function backward for two levels
+tsa graph ./src/ -f process_data -d 2 --backward
+
+# Trace callees of a method forward for three levels
+tsa graph ./src/ -f initialize -c Application -d 3 --forward
+```
+
 ### `symbols` - Find Symbol References
 
 Find code symbol references such as identifiers, type names, property names, field names, and supported import-path nodes.

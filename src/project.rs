@@ -5,6 +5,7 @@ use rayon::prelude::*;
 
 use crate::analyzer::CodeAnalyzer;
 use crate::cache::TextFilterCache;
+use crate::graph::{CallGraph, RawPropertyCaller};
 use crate::nodes::*;
 use crate::utils::{
     find_files, is_simple_query, search_files_with_rg, sort_by_file_line, QueryMatcher,
@@ -293,6 +294,59 @@ impl ProjectAnalyzer {
                 .unwrap_or_default()
             })
             .collect()
+    }
+
+    pub fn find_graphs(
+        &self,
+        function_name: &str,
+        class_name: Option<&str>,
+        direction: GraphDirection,
+        max_depth: usize,
+    ) -> anyhow::Result<Vec<CallGraphPath>> {
+        let snapshots = self
+            .files
+            .par_iter()
+            .map(|file| {
+                let mut analyzer = CodeAnalyzer::new(file)?;
+                anyhow::Ok(analyzer.snapshot_for_index())
+            })
+            .collect::<Vec<_>>();
+
+        let mut functions = Vec::new();
+        let mut fields = Vec::new();
+        let mut calls = Vec::new();
+        let mut python_properties = Vec::new();
+        let mut property_callers = Vec::new();
+
+        for snapshot in snapshots {
+            let snapshot = snapshot?;
+            functions.extend(snapshot.functions);
+            fields.extend(snapshot.fields);
+            calls.extend(snapshot.calls);
+            python_properties.extend(snapshot.python_properties);
+            property_callers.extend(snapshot.python_property_callers.into_iter().map(|caller| {
+                RawPropertyCaller {
+                    file: caller.file,
+                    property_name: caller.property_name,
+                    caller: caller.caller,
+                    line: caller.line,
+                }
+            }));
+        }
+
+        let graph = CallGraph::build(
+            functions,
+            fields,
+            calls,
+            python_properties,
+            property_callers,
+        );
+        let start_nodes = graph.find_start_nodes(function_name, class_name);
+        if start_nodes.is_empty() {
+            anyhow::bail!("Function '{}' not found", function_name);
+        }
+
+        Ok(graph.collect_graphs(&start_nodes, direction, max_depth))
     }
 
     pub fn find_symbols(&self, name: &str) -> Vec<serde_json::Value> {

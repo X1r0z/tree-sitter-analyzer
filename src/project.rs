@@ -71,7 +71,7 @@ impl ProjectAnalyzer {
         self.files.len()
     }
 
-    pub(crate) fn files(&self) -> &[String] {
+    pub fn files(&self) -> &[String] {
         &self.files
     }
 
@@ -85,7 +85,7 @@ impl ProjectAnalyzer {
             candidate_keys_by_file
                 .entry(candidate.location.file.clone())
                 .or_default()
-                .insert(FunctionKey::from_function(candidate));
+                .insert(FunctionKey::from(candidate));
         }
 
         let resolved: HashMap<FunctionKey, FunctionInfo> = self
@@ -96,7 +96,7 @@ impl ProjectAnalyzer {
                         .unwrap_or_default()
                         .into_iter()
                         .filter_map(|function| {
-                            let key = FunctionKey::from_function(&function);
+                            let key = FunctionKey::from(&function);
                             expected.contains(&key).then_some((key, function))
                         })
                         .collect::<Vec<_>>()
@@ -109,7 +109,7 @@ impl ProjectAnalyzer {
             .into_iter()
             .filter_map(|candidate| {
                 resolved
-                    .get(&FunctionKey::from_function(&candidate))
+                    .get(&FunctionKey::from(&candidate))
                     .cloned()
                     .or(Some(candidate))
             })
@@ -369,7 +369,7 @@ impl ProjectAnalyzer {
             candidate_keys_by_file
                 .entry(candidate.location.file.clone())
                 .or_default()
-                .insert(SymbolRefKey::from_symbol(candidate));
+                .insert(SymbolRefKey::from(candidate));
         }
 
         let resolved: HashMap<SymbolRefKey, SymbolRefInfo> = self
@@ -396,7 +396,7 @@ impl ProjectAnalyzer {
                     })
                     .unwrap_or_default()
                     .into_iter()
-                    .map(|symbol| (SymbolRefKey::from_symbol(&symbol), symbol))
+                    .map(|symbol| (SymbolRefKey::from(&symbol), symbol))
                     .collect::<Vec<_>>()
                 },
             )
@@ -407,7 +407,7 @@ impl ProjectAnalyzer {
             .into_iter()
             .filter_map(|candidate| {
                 resolved
-                    .get(&SymbolRefKey::from_symbol(&candidate))
+                    .get(&SymbolRefKey::from(&candidate))
                     .cloned()
                     .or(Some(candidate))
             })

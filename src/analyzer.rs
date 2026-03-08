@@ -1,10 +1,11 @@
 mod symbols;
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 
 use tree_sitter::Node;
 
 use crate::cache::AnalyzerCache;
+use crate::languages::QueryKind;
 use crate::models::*;
 use crate::parser::BaseParser;
 use crate::utils::{extract_instance_attr, split_function_target, type_matches_class};
@@ -14,7 +15,6 @@ pub struct CodeAnalyzer {
     cache: AnalyzerCache,
 }
 
-#[allow(dead_code)]
 impl CodeAnalyzer {
     pub fn new(file_path: &str) -> anyhow::Result<Self> {
         let parser = BaseParser::new(file_path)?;
@@ -25,11 +25,9 @@ impl CodeAnalyzer {
     }
 
     fn build_functions(&self, include_body: bool) -> Vec<FunctionInfo> {
-        let mut func_pairs = self.parser.query_capture_pairs(
-            self.parser.language_info.function_query,
-            "function",
-            "name",
-        );
+        let mut func_pairs =
+            self.parser
+                .query_capture_pairs(QueryKind::Function, "function", "name");
         func_pairs.sort_by_key(|(f, _)| (f.start_byte(), std::cmp::Reverse(f.end_byte())));
 
         let mut functions = Vec::new();
@@ -102,11 +100,9 @@ impl CodeAnalyzer {
                 }
             }
 
-            let matches = self.parser.query_capture_pairs(
-                self.parser.language_info.class_query,
-                "class",
-                "name",
-            );
+            let matches = self
+                .parser
+                .query_capture_pairs(QueryKind::Class, "class", "name");
             let mut class_pairs = matches;
             class_pairs.sort_by_key(|(c, _)| (c.start_byte(), std::cmp::Reverse(c.end_byte())));
 
@@ -161,7 +157,7 @@ impl CodeAnalyzer {
         if self.cache.imports().is_none() {
             let module_nodes = self
                 .parser
-                .query_capture_nodes(self.parser.language_info.import_query, "module");
+                .query_capture_nodes_for(QueryKind::Import, "module");
 
             let mut imports = Vec::new();
             for node in module_nodes {
@@ -181,9 +177,7 @@ impl CodeAnalyzer {
             return;
         }
 
-        let mut call_matches = self
-            .parser
-            .query_call_matches(self.parser.language_info.call_query);
+        let mut call_matches = self.parser.query_call_matches_for(QueryKind::Call);
         let is_js_like = matches!(
             self.parser.language.as_str(),
             "javascript" | "typescript" | "tsx"
@@ -377,44 +371,8 @@ impl CodeAnalyzer {
         self.cached_functions_with_bodies().to_vec()
     }
 
-    pub fn function_named(&mut self, name: &str, class_name: Option<&str>) -> Option<FunctionInfo> {
-        self.cached_functions()
-            .iter()
-            .find(|f| {
-                f.name == name && (class_name.is_none() || f.class_name.as_deref() == class_name)
-            })
-            .cloned()
-    }
-
     pub fn has_function_named(&self, name: &str, class_name: Option<&str>) -> bool {
         self.parser.has_function_named(name, class_name)
-    }
-
-    pub fn function_definition_named(
-        &mut self,
-        name: &str,
-        class_name: Option<&str>,
-    ) -> Option<FunctionInfo> {
-        self.cached_functions_with_bodies()
-            .iter()
-            .find(|f| {
-                f.name == name && (class_name.is_none() || f.class_name.as_deref() == class_name)
-            })
-            .cloned()
-    }
-
-    pub fn find_functions_named(
-        &mut self,
-        name: &str,
-        class_name: Option<&str>,
-    ) -> Vec<FunctionInfo> {
-        self.cached_functions()
-            .iter()
-            .filter(|f| {
-                f.name == name && (class_name.is_none() || f.class_name.as_deref() == class_name)
-            })
-            .cloned()
-            .collect()
     }
 
     pub fn find_function_definitions(
@@ -639,68 +597,5 @@ impl CodeAnalyzer {
             .iter()
             .find(|c| c.name == class_name)
             .cloned()
-    }
-
-    pub fn find_super_classes(&mut self, class_name: &str) -> Vec<ClassInfo> {
-        let all_classes = self.cached_classes();
-        let class_map: HashMap<&str, &ClassInfo> =
-            all_classes.iter().map(|c| (c.name.as_str(), c)).collect();
-
-        let target = match class_map.get(class_name) {
-            Some(c) => *c,
-            None => return Vec::new(),
-        };
-
-        let mut result = Vec::new();
-        let mut visited: HashSet<String> = HashSet::new();
-        visited.insert(class_name.to_string());
-        let mut queue: VecDeque<&ClassInfo> = VecDeque::new();
-        queue.push_back(target);
-
-        while let Some(current) = queue.pop_front() {
-            for parent_name in &current.super_classes {
-                if visited.contains(parent_name) {
-                    continue;
-                }
-                visited.insert(parent_name.clone());
-                if let Some(&parent_class) = class_map.get(parent_name.as_str()) {
-                    result.push(parent_class.clone());
-                    queue.push_back(parent_class);
-                }
-            }
-        }
-        result
-    }
-
-    pub fn find_sub_classes(&mut self, class_name: &str) -> Vec<ClassInfo> {
-        let all_classes = self.cached_classes();
-        let mut inheritance_map: HashMap<&str, Vec<usize>> = HashMap::new();
-        for (index, cls) in all_classes.iter().enumerate() {
-            for parent in &cls.super_classes {
-                inheritance_map
-                    .entry(parent.as_str())
-                    .or_default()
-                    .push(index);
-            }
-        }
-
-        let mut result = Vec::new();
-        let mut visited: HashSet<String> = HashSet::new();
-        visited.insert(class_name.to_string());
-        let mut queue: VecDeque<String> = VecDeque::new();
-        queue.push_back(class_name.to_string());
-
-        while let Some(current_name) = queue.pop_front() {
-            if let Some(children) = inheritance_map.get(current_name.as_str()) {
-                for &child_index in children {
-                    let child = &all_classes[child_index];
-                    if visited.insert(child.name.clone()) {
-                        result.push(child.clone());
-                        queue.push_back(child.name.clone());
-                    }
-                }
-            }
-        }
-        result
     }
 }

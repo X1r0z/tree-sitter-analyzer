@@ -77,7 +77,7 @@ pub(super) struct DbFunctionNode {
 
 impl DbFunctionNode {
     pub(super) fn key(&self) -> FunctionKey {
-        FunctionKey::from_function(&self.function)
+        FunctionKey::from(&self.function)
     }
 }
 

@@ -5,10 +5,10 @@ use std::fs;
 use std::path::Path;
 
 use streaming_iterator::StreamingIterator;
-use tree_sitter::{Node, Parser, Query, QueryCursor, Tree};
+use tree_sitter::{Node, Parser, QueryCursor, Tree};
 
 use crate::languages::{
-    detect_language, find_compiled_query, find_language, find_language_info, LanguageInfo,
+    compiled_query, detect_language, find_language, find_language_info, QueryKind,
 };
 use crate::models::*;
 
@@ -17,7 +17,6 @@ pub(crate) struct BaseParser {
     pub(crate) language: String,
     pub(crate) source: Vec<u8>,
     pub(crate) tree: Tree,
-    pub(crate) language_info: &'static LanguageInfo,
     function_names_by_node: RefCell<HashMap<usize, Option<String>>>,
     class_names_by_node: RefCell<HashMap<usize, Option<String>>>,
     pub(super) js_alias_resolvers_by_function:
@@ -43,7 +42,7 @@ impl BaseParser {
             .ok_or_else(|| anyhow::anyhow!("Could not detect language for: {}", file_path))?;
         let ts_lang = find_language(language)
             .ok_or_else(|| anyhow::anyhow!("Unsupported language: {}", language))?;
-        let language_info = find_language_info(language)
+        find_language_info(language)
             .ok_or_else(|| anyhow::anyhow!("No language info for: {}", language))?;
 
         let source = fs::read(file_path)?;
@@ -58,7 +57,6 @@ impl BaseParser {
             language: language.to_string(),
             source,
             tree,
-            language_info,
             function_names_by_node: RefCell::new(HashMap::new()),
             class_names_by_node: RefCell::new(HashMap::new()),
             js_alias_resolvers_by_function: RefCell::new(HashMap::new()),
@@ -166,20 +164,20 @@ impl BaseParser {
         declaration_node.start_byte()
     }
 
-    fn with_query<T>(&self, query_str: &str, f: impl FnOnce(&Query) -> T) -> Option<T> {
-        if let Some(query) = find_compiled_query(&self.language, query_str) {
-            return Some(f(query));
-        }
-        let ts_lang = find_language(&self.language)?;
-        let query = match Query::new(&ts_lang, query_str) {
-            Ok(q) => q,
-            Err(_) => return None,
-        };
-        Some(f(&query))
+    fn with_compiled_query<T>(
+        &self,
+        kind: QueryKind,
+        f: impl FnOnce(&tree_sitter::Query) -> T,
+    ) -> Option<T> {
+        compiled_query(&self.language, kind).map(f)
     }
 
-    pub(crate) fn query_capture_nodes(&self, query_str: &str, capture_name: &str) -> Vec<Node<'_>> {
-        self.with_query(query_str, |query| {
+    pub(crate) fn query_capture_nodes_for(
+        &self,
+        kind: QueryKind,
+        capture_name: &str,
+    ) -> Vec<Node<'_>> {
+        self.with_compiled_query(kind, |query| {
             let Some(capture_index) = query
                 .capture_names()
                 .iter()
@@ -206,11 +204,11 @@ impl BaseParser {
 
     pub(crate) fn query_capture_pairs(
         &self,
-        query_str: &str,
+        kind: QueryKind,
         first_capture: &str,
         second_capture: &str,
     ) -> Vec<(Node<'_>, Node<'_>)> {
-        self.with_query(query_str, |query| {
+        self.with_compiled_query(kind, |query| {
             let capture_names = query.capture_names();
             let Some(first_index) = capture_names
                 .iter()
@@ -250,7 +248,7 @@ impl BaseParser {
     }
 
     pub(crate) fn has_function_named(&self, function_name: &str, class_name: Option<&str>) -> bool {
-        self.with_query(self.language_info.function_query, |query| {
+        self.with_compiled_query(QueryKind::Function, |query| {
             let capture_names = query.capture_names();
             let Some(function_index) = capture_names
                 .iter()
@@ -296,8 +294,8 @@ impl BaseParser {
         .unwrap_or(false)
     }
 
-    pub(crate) fn query_call_matches(&self, query_str: &str) -> Vec<CallQueryMatch<'_>> {
-        self.with_query(query_str, |query| {
+    pub(crate) fn query_call_matches_for(&self, kind: QueryKind) -> Vec<CallQueryMatch<'_>> {
+        self.with_compiled_query(kind, |query| {
             let capture_names = query.capture_names();
             let call_index = capture_names
                 .iter()
@@ -876,7 +874,7 @@ impl BaseParser {
     }
 
     pub(crate) fn find_field_infos_by_class_name(&self, class_name: &str) -> Vec<FieldInfo> {
-        let matches = self.query_capture_pairs(self.language_info.class_query, "class", "name");
+        let matches = self.query_capture_pairs(QueryKind::Class, "class", "name");
         let mut candidates: Vec<Node> = Vec::new();
 
         for (class_node, name_node) in matches {

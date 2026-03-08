@@ -36,7 +36,7 @@ pub fn find_files(path: &str, language: Option<&str>) -> Vec<String> {
     files
 }
 
-pub(crate) fn progress_style(unit: &str, bar_style: &str) -> ProgressStyle {
+pub fn progress_style(unit: &str, bar_style: &str) -> ProgressStyle {
     let template = format!(
         "{{msg}} [{{bar:40.{bar_style}}}] {{percent_floor}}% | {{pos}}/{{len}} {unit} | ETA {{eta_clamped}}"
     );
@@ -77,12 +77,7 @@ pub(crate) fn progress_style(unit: &str, bar_style: &str) -> ProgressStyle {
         .progress_chars("##-")
 }
 
-pub(crate) fn progress_bar(
-    total: usize,
-    unit: &str,
-    bar_style: &str,
-    message: &str,
-) -> ProgressBar {
+pub fn progress_bar(total: usize, unit: &str, bar_style: &str, message: &str) -> ProgressBar {
     let progress = if std::io::stderr().is_terminal() {
         ProgressBar::with_draw_target(Some(total as u64), ProgressDrawTarget::stderr_with_hz(20))
     } else {
@@ -144,17 +139,7 @@ pub fn sort_callees_by_file_line(results: &mut [CalleeInfo]) {
     });
 }
 
-pub fn sort_by_file_line(results: &mut [Value]) {
-    results.sort_by(|a, b| {
-        let fa = a["file"].as_str().unwrap_or("");
-        let fb = b["file"].as_str().unwrap_or("");
-        let la = a["line"].as_u64().unwrap_or(0);
-        let lb = b["line"].as_u64().unwrap_or(0);
-        fa.cmp(fb).then(la.cmp(&lb))
-    });
-}
-
-pub(crate) fn split_function_target(function_name: &str) -> (&str, Option<&str>) {
+pub fn split_function_target(function_name: &str) -> (&str, Option<&str>) {
     if function_name.contains('.') {
         let parts: Vec<&str> = function_name.rsplitn(2, '.').collect();
         (parts[0], Some(parts[1]))
@@ -163,7 +148,7 @@ pub(crate) fn split_function_target(function_name: &str) -> (&str, Option<&str>)
     }
 }
 
-pub(crate) fn extract_instance_attr(object_name: &str) -> Option<&str> {
+pub fn extract_instance_attr(object_name: &str) -> Option<&str> {
     for prefix in ["self.", "this.", "cls."] {
         if let Some(rest) = object_name.strip_prefix(prefix) {
             if !rest.is_empty() {
@@ -175,7 +160,7 @@ pub(crate) fn extract_instance_attr(object_name: &str) -> Option<&str> {
     (!candidate.is_empty()).then_some(candidate)
 }
 
-pub(crate) fn type_matches_class(field_type: Option<&str>, class_name: &str) -> bool {
+pub fn type_matches_class(field_type: Option<&str>, class_name: &str) -> bool {
     let Some(field_type) = field_type else {
         return false;
     };
@@ -184,7 +169,7 @@ pub(crate) fn type_matches_class(field_type: Option<&str>, class_name: &str) -> 
         .any(|token| !token.is_empty() && token == class_name)
 }
 
-pub(crate) fn relative_path(path: &str, root: &str) -> String {
+pub fn relative_path(path: &str, root: &str) -> String {
     let path = Path::new(path);
     let root = Path::new(root);
     path.strip_prefix(root)
@@ -192,7 +177,7 @@ pub(crate) fn relative_path(path: &str, root: &str) -> String {
         .unwrap_or_else(|_| path.to_string_lossy().to_string())
 }
 
-pub(crate) fn relativize_json_file_paths(value: &mut Value, root: &str) {
+pub fn relativize_json_file_paths(value: &mut Value, root: &str) {
     match value {
         Value::Object(map) => {
             for (key, nested) in map.iter_mut() {

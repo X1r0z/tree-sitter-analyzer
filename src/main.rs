@@ -6,6 +6,7 @@ mod graph;
 mod index;
 mod languages;
 mod models;
+mod output;
 mod parser;
 mod project;
 mod utils;
@@ -231,7 +232,7 @@ enum Commands {
     },
 }
 
-pub(crate) fn resolve_path(path: &str) -> String {
+pub fn resolve_path(path: &str) -> String {
     match std::fs::canonicalize(path) {
         Ok(path) => path.to_string_lossy().to_string(),
         Err(_) => {

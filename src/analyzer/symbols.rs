@@ -101,7 +101,7 @@ pub(crate) fn hydrate(parser: &BaseParser, candidates: &[SymbolRefInfo]) -> Vec<
     }
 
     let expected: std::collections::HashSet<SymbolRefKey> =
-        candidates.iter().map(SymbolRefKey::from_symbol).collect();
+        candidates.iter().map(SymbolRefKey::from).collect();
     scan_symbols(parser, |node| {
         let symbol = SymbolRefInfo {
             name: parser.node_text(node),
@@ -112,7 +112,7 @@ pub(crate) fn hydrate(parser: &BaseParser, candidates: &[SymbolRefInfo]) -> Vec<
             context: String::new(),
         };
         expected
-            .contains(&SymbolRefKey::from_symbol(&symbol))
+            .contains(&SymbolRefKey::from(&symbol))
             .then(|| SymbolRefInfo {
                 context: node
                     .parent()

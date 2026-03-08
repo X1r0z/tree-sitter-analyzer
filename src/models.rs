@@ -1,7 +1,6 @@
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Location {
@@ -29,47 +28,17 @@ pub struct FunctionInfo {
     pub params: Vec<FunctionParamInfo>,
 }
 
-impl FunctionInfo {
-    pub fn to_json_value(&self, include_body: bool, include_file: bool) -> Value {
-        let mut map = serde_json::Map::new();
-        map.insert("name".into(), json!(self.name));
-        map.insert("start_line".into(), json!(self.location.start_line));
-        map.insert("end_line".into(), json!(self.location.end_line));
-        if include_file {
-            map.insert("file".into(), json!(self.location.file));
-        }
-        if let Some(ref cn) = self.class_name {
-            map.insert("class_name".into(), json!(cn));
-        }
-        map.insert("params".into(), json!(self.params));
-        if include_body && !self.body.is_empty() {
-            map.insert("body".into(), json!(self.body));
-        }
-        Value::Object(map)
-    }
-
-    pub(crate) fn to_graph_path_node(&self) -> GraphPathNode {
-        GraphPathNode {
-            file: self.location.file.clone(),
-            start_line: self.location.start_line,
-            end_line: self.location.end_line,
-            name: self.name.clone(),
-            class_name: self.class_name.clone(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
-pub(crate) struct FunctionKey {
-    pub(crate) file: String,
-    pub(crate) name: String,
-    pub(crate) class_name: Option<String>,
-    pub(crate) start_line: usize,
-    pub(crate) end_line: usize,
+pub struct FunctionKey {
+    pub file: String,
+    pub name: String,
+    pub class_name: Option<String>,
+    pub start_line: usize,
+    pub end_line: usize,
 }
 
-impl FunctionKey {
-    pub(crate) fn from_function(function: &FunctionInfo) -> Self {
+impl From<&FunctionInfo> for FunctionKey {
+    fn from(function: &FunctionInfo) -> Self {
         Self {
             file: function.location.file.clone(),
             name: function.name.clone(),
@@ -81,20 +50,20 @@ impl FunctionKey {
 }
 
 #[derive(Debug, Clone, Copy, Eq, Hash, PartialEq)]
-pub(crate) enum GraphDirection {
+pub enum GraphDirection {
     Backward,
     Forward,
 }
 
 impl GraphDirection {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Backward => "backward",
             Self::Forward => "forward",
         }
     }
 
-    pub(crate) fn order_stacktrace<T>(self, mut frames: Vec<T>) -> Vec<T> {
+    pub fn order_stacktrace<T>(self, mut frames: Vec<T>) -> Vec<T> {
         if matches!(self, Self::Forward) {
             frames.reverse();
         }
@@ -136,6 +105,18 @@ pub struct CallGraphPath {
     pub path: Vec<GraphPathNode>,
 }
 
+impl From<&FunctionInfo> for GraphPathNode {
+    fn from(function: &FunctionInfo) -> Self {
+        Self {
+            file: function.location.file.clone(),
+            start_line: function.location.start_line,
+            end_line: function.location.end_line,
+            name: function.name.clone(),
+            class_name: function.class_name.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClassInfo {
     pub name: String,
@@ -146,21 +127,6 @@ pub struct ClassInfo {
     pub fields: Vec<String>,
     #[serde(default)]
     pub super_classes: Vec<String>,
-}
-
-impl ClassInfo {
-    pub fn to_json_value(&self, include_file: bool) -> Value {
-        let mut map = serde_json::Map::new();
-        map.insert("name".into(), json!(self.name));
-        map.insert("start_line".into(), json!(self.location.start_line));
-        map.insert("end_line".into(), json!(self.location.end_line));
-        map.insert("methods".into(), json!(self.methods));
-        map.insert("fields".into(), json!(self.fields));
-        if include_file {
-            map.insert("file".into(), json!(self.location.file));
-        }
-        Value::Object(map)
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -181,18 +147,6 @@ pub struct ImportInfo {
     pub location: Location,
 }
 
-impl ImportInfo {
-    pub fn to_json_value(&self, include_file: bool) -> Value {
-        let mut map = serde_json::Map::new();
-        map.insert("module".into(), json!(self.module));
-        map.insert("line".into(), json!(self.location.start_line));
-        if include_file {
-            map.insert("file".into(), json!(self.location.file));
-        }
-        Value::Object(map)
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FieldInfo {
     pub name: String,
@@ -203,21 +157,6 @@ pub struct FieldInfo {
     pub class_name: Option<String>,
 }
 
-impl FieldInfo {
-    pub fn to_json_value(&self, include_file: bool) -> Value {
-        let mut map = serde_json::Map::new();
-        map.insert("name".into(), json!(self.name));
-        map.insert("line".into(), json!(self.location.start_line));
-        if include_file {
-            map.insert("file".into(), json!(self.location.file));
-        }
-        if let Some(ref ft) = self.field_type {
-            map.insert("type".into(), json!(ft));
-        }
-        Value::Object(map)
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnnotationInfo {
     pub name: String,
@@ -226,22 +165,6 @@ pub struct AnnotationInfo {
     pub target_name: String,
     pub target_type: String,
     pub target_signature: String,
-}
-
-impl AnnotationInfo {
-    pub fn to_json_value(&self, include_file: bool) -> serde_json::Value {
-        let mut map = serde_json::Map::new();
-        map.insert("name".into(), json!(self.name));
-        map.insert("signature".into(), json!(self.signature));
-        map.insert("line".into(), json!(self.location.start_line));
-        if include_file {
-            map.insert("file".into(), json!(self.location.file));
-        }
-        map.insert("target_name".into(), json!(self.target_name));
-        map.insert("target_type".into(), json!(self.target_type));
-        map.insert("target_signature".into(), json!(self.target_signature));
-        Value::Object(map)
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -258,31 +181,11 @@ pub struct SymbolRefInfo {
     pub context: String,
 }
 
-impl SymbolRefInfo {
-    pub fn to_json_value(&self) -> Value {
-        json!({
-            "type": self.node_type,
-            "location": self.location,
-            "context": self.context,
-        })
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallerInfo {
     pub caller: String,
     pub line: usize,
     pub file: String,
-}
-
-impl CallerInfo {
-    pub fn to_json_value(&self) -> Value {
-        json!({
-            "caller": self.caller,
-            "line": self.line,
-            "file": self.file,
-        })
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -294,30 +197,19 @@ pub struct CalleeInfo {
     pub class_name: Option<String>,
 }
 
-impl CalleeInfo {
-    pub fn to_json_value(&self) -> Value {
-        json!({
-            "callee": self.callee,
-            "line": self.line,
-            "file": self.file,
-            "class_name": self.class_name,
-        })
-    }
-}
-
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
-pub(crate) struct SymbolRefKey {
-    pub(crate) file: String,
-    pub(crate) name: String,
-    pub(crate) node_type: String,
-    pub(crate) start_line: usize,
-    pub(crate) end_line: usize,
-    pub(crate) start_column: usize,
-    pub(crate) end_column: usize,
+pub struct SymbolRefKey {
+    pub file: String,
+    pub name: String,
+    pub node_type: String,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub start_column: usize,
+    pub end_column: usize,
 }
 
-impl SymbolRefKey {
-    pub(crate) fn from_symbol(symbol: &SymbolRefInfo) -> Self {
+impl From<&SymbolRefInfo> for SymbolRefKey {
+    fn from(symbol: &SymbolRefInfo) -> Self {
         Self {
             file: symbol.location.file.clone(),
             name: symbol.name.clone(),

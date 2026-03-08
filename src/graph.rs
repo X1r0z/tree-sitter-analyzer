@@ -52,7 +52,7 @@ impl CallGraph {
         let mut starting_keys = Vec::new();
         let mut defs_by_name: HashMap<String, Vec<FunctionInfo>> = HashMap::new();
         for function in functions {
-            let key = FunctionKey::from_function(&function);
+            let key = FunctionKey::from(&function);
             starting_keys.push(key.clone());
             defs_by_name
                 .entry(function.name.clone())
@@ -110,7 +110,7 @@ impl CallGraph {
 
             for callee in resolve_call_targets(&call, &caller, &defs_by_name, &fields_by_file_class)
             {
-                let caller_key = FunctionKey::from_function(&caller);
+                let caller_key = FunctionKey::from(&caller);
                 let call_site = CallSite {
                     file: call.location.file.clone(),
                     line: call.location.start_line,
@@ -142,8 +142,8 @@ impl CallGraph {
                 if !property_keys.contains(&(property.name.clone(), property.class_name.clone())) {
                     continue;
                 }
-                let caller_key = FunctionKey::from_function(&caller);
-                let property_key = FunctionKey::from_function(&property);
+                let caller_key = FunctionKey::from(&caller);
+                let property_key = FunctionKey::from(&property);
                 let call_site = CallSite {
                     file: property_caller.file.clone(),
                     line: property_caller.line,
@@ -284,7 +284,7 @@ impl CallGraph {
         let path: Vec<GraphPathNode> = steps
             .iter()
             .filter_map(|step| self.functions_by_key.get(&step.key))
-            .map(FunctionInfo::to_graph_path_node)
+            .map(GraphPathNode::from)
             .collect();
         let stacktrace = direction.order_stacktrace(
             path.iter()
@@ -387,7 +387,7 @@ fn resolve_call_targets(
                                 if candidate.class_name.as_deref().is_some_and(|class_name| {
                                     type_matches_class(field.field_type.as_deref(), class_name)
                                 }) {
-                                    matched.insert(FunctionKey::from_function(candidate));
+                                    matched.insert(FunctionKey::from(candidate));
                                 }
                             }
                         }
@@ -404,7 +404,7 @@ fn resolve_call_targets(
                         if candidate.class_name.as_deref().is_some_and(|class_name| {
                             type_matches_class(param.param_type.as_deref(), class_name)
                         }) {
-                            matched.insert(FunctionKey::from_function(candidate));
+                            matched.insert(FunctionKey::from(candidate));
                         }
                     }
                 }
@@ -429,12 +429,12 @@ fn resolve_call_targets(
             same_file_candidates
         };
         for candidate in classless_candidates {
-            matched.insert(FunctionKey::from_function(candidate));
+            matched.insert(FunctionKey::from(candidate));
         }
     }
 
     if matched.is_empty() && call.object_name.is_none() {
-        matched.extend(candidates.iter().map(FunctionKey::from_function));
+        matched.extend(candidates.iter().map(FunctionKey::from));
     }
 
     let mut matched: Vec<_> = matched.into_iter().collect();
@@ -446,7 +446,7 @@ fn filter_by_class_name(candidates: &[FunctionInfo], class_name: &str) -> Vec<Fu
     candidates
         .iter()
         .filter(|candidate| candidate.class_name.as_deref() == Some(class_name))
-        .map(FunctionKey::from_function)
+        .map(FunctionKey::from)
         .collect()
 }
 

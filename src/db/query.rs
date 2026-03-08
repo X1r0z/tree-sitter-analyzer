@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use rusqlite::{params, params_from_iter, OptionalExtension, ToSql};
-use serde_json::json;
 
 use super::prefilter::RegexPrefilter;
 use super::types::{
@@ -10,11 +9,12 @@ use super::types::{
 };
 use super::DbProjectAnalyzer;
 use crate::models::{
-    AnnotationInfo, CallGraphPath, ClassInfo, FieldInfo, FunctionInfo, FunctionKey, GraphDirection,
-    GraphPathNode, ImportInfo, Location, SymbolRefInfo,
+    AnnotationInfo, CallGraphPath, CalleeInfo, CallerInfo, ClassInfo, FieldInfo, FunctionInfo,
+    FunctionKey, GraphDirection, GraphPathNode, ImportInfo, Location, SymbolRefInfo,
 };
 use crate::utils::{
-    extract_instance_attr, sort_by_file_line, split_function_target, type_matches_class,
+    extract_instance_attr, sort_callees_by_file_line, sort_callers_by_file_line,
+    split_function_target, type_matches_class,
 };
 
 #[derive(Clone)]
@@ -341,7 +341,7 @@ impl DbProjectAnalyzer {
         &self,
         function_name: &str,
         class_name: Option<&str>,
-    ) -> anyhow::Result<Vec<serde_json::Value>> {
+    ) -> anyhow::Result<Vec<CallerInfo>> {
         let (target_function, target_object) = split_function_target(function_name);
         let mut sql = String::from(
             "
@@ -410,11 +410,11 @@ impl DbProjectAnalyzer {
             let caller = row.caller.unwrap_or_else(|| "<module>".to_string());
             let key = (row.file.clone(), caller.clone(), row.line);
             if seen.insert(key) {
-                results.push(json!({
-                    "caller": caller,
-                    "line": row.line,
-                    "file": row.file,
-                }));
+                results.push(CallerInfo {
+                    caller,
+                    line: row.line,
+                    file: row.file,
+                });
             }
         }
 
@@ -446,16 +446,12 @@ impl DbProjectAnalyzer {
                 let (file, caller, line) = row?;
                 let key = (file.clone(), caller.clone(), line);
                 if seen.insert(key) {
-                    results.push(json!({
-                        "caller": caller,
-                        "line": line,
-                        "file": file,
-                    }));
+                    results.push(CallerInfo { caller, line, file });
                 }
             }
         }
 
-        sort_by_file_line(&mut results);
+        sort_callers_by_file_line(&mut results);
         Ok(results)
     }
 
@@ -463,7 +459,7 @@ impl DbProjectAnalyzer {
         &self,
         function_name: &str,
         class_name: Option<&str>,
-    ) -> anyhow::Result<Vec<serde_json::Value>> {
+    ) -> anyhow::Result<Vec<CalleeInfo>> {
         let relevant_files = self.relevant_function_file_ids(function_name, class_name)?;
 
         let mut sql = String::from(
@@ -555,15 +551,15 @@ impl DbProjectAnalyzer {
                 row.caller_class_name.clone(),
             );
             if seen.insert(key) {
-                results.push(json!({
-                    "callee": callee_name,
-                    "line": row.line,
-                    "file": row.file,
-                    "class_name": row.caller_class_name,
-                }));
+                results.push(CalleeInfo {
+                    callee: callee_name,
+                    line: row.line,
+                    file: row.file,
+                    class_name: row.caller_class_name,
+                });
             }
         }
-        sort_by_file_line(&mut results);
+        sort_callees_by_file_line(&mut results);
         Ok(results)
     }
 
@@ -756,7 +752,7 @@ impl DbProjectAnalyzer {
     fn materialize_graph(direction: GraphDirection, steps: &[GraphTraceStep]) -> CallGraphPath {
         let path: Vec<GraphPathNode> = steps
             .iter()
-            .map(|step| step.node.function.to_graph_path_node())
+            .map(|step| GraphPathNode::from(&step.node.function))
             .collect();
         let stacktrace = direction.order_stacktrace(
             path.iter()

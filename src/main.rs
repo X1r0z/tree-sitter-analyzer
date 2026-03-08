@@ -359,21 +359,12 @@ fn cmd_functions(path: &str, language: Option<LanguageFilter>, query: &str) -> V
     ) {
         match db.find_functions(query) {
             Ok(functions) => {
-                return match ProjectAnalyzer::new_with_language(
-                    &real_path,
-                    language.map(LanguageFilter::as_str),
-                ) {
-                    Ok(project) => {
-                        let functions = project.hydrate_function_bodies(functions);
-                        json!({
-                            "path": real_path,
-                            "files_searched": db.file_count(),
-                            "count": functions.len(),
-                            "functions": functions.iter().map(|f| f.to_json_value(false, true)).collect::<Vec<_>>(),
-                        })
-                    }
-                    Err(e) => json!({"error": e.to_string()}),
-                };
+                return json!({
+                    "path": real_path,
+                    "files_searched": db.file_count(),
+                    "count": functions.len(),
+                    "functions": functions.iter().map(|f| f.to_json_value(false, true)).collect::<Vec<_>>(),
+                });
             }
             Err(e) => return json!({"error": e.to_string()}),
         }

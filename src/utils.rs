@@ -3,6 +3,7 @@ use std::path::Path;
 
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressState, ProgressStyle};
 use regex::Regex;
+use serde_json::Value;
 
 use crate::languages::{language_extensions, supported_extensions};
 
@@ -132,6 +133,36 @@ pub fn sort_by_file_line(results: &mut [serde_json::Value]) {
         let lb = b["line"].as_u64().unwrap_or(0);
         fa.cmp(fb).then(la.cmp(&lb))
     });
+}
+
+pub(crate) fn relative_path(path: &str, root: &str) -> String {
+    let path = Path::new(path);
+    let root = Path::new(root);
+    path.strip_prefix(root)
+        .map(|relative| relative.to_string_lossy().to_string())
+        .unwrap_or_else(|_| path.to_string_lossy().to_string())
+}
+
+pub(crate) fn relativize_json_file_paths(value: &mut Value, root: &str) {
+    match value {
+        Value::Object(map) => {
+            for (key, nested) in map.iter_mut() {
+                if key == "file" {
+                    if let Some(file) = nested.as_str() {
+                        *nested = Value::String(relative_path(file, root));
+                    }
+                    continue;
+                }
+                relativize_json_file_paths(nested, root);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                relativize_json_file_paths(item, root);
+            }
+        }
+        _ => {}
+    }
 }
 
 pub fn is_simple_query(query: &str) -> bool {

@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -91,6 +93,13 @@ impl GraphDirection {
             Self::Forward => "forward",
         }
     }
+
+    pub(crate) fn order_stacktrace<T>(self, mut frames: Vec<T>) -> Vec<T> {
+        if matches!(self, Self::Forward) {
+            frames.reverse();
+        }
+        frames
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, Hash, PartialEq)]
@@ -109,6 +118,14 @@ impl GraphPathNode {
             Some(class_name) => format!("{}.{}", class_name, self.name),
             None => self.name.clone(),
         }
+    }
+
+    pub fn stacktrace_name(&self, file: &str, line: usize) -> String {
+        let filename = Path::new(file)
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or(file);
+        format!("{}({}:{})", self.display_name(), filename, line)
     }
 }
 
@@ -196,9 +213,6 @@ impl FieldInfo {
         }
         if let Some(ref ft) = self.field_type {
             map.insert("type".into(), json!(ft));
-        }
-        if let Some(ref cn) = self.class_name {
-            map.insert("class_name".into(), json!(cn));
         }
         Value::Object(map)
     }

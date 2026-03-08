@@ -195,12 +195,6 @@ tsa annotations ./src/ -q Test
 tsa annotations ./src/ -l python -q "^(dataclass|property)$"
 ```
 
-Notes:
-
-- Java results include annotations such as `@Transactional` and `@RequestMapping`
-- Python results include decorators such as `@property`, `@app.route`, and `@dataclass`
-- Output includes the annotation/decorator name, full signature, target name, target type, and target signature
-
 ### `callers` - Find Function Callers
 
 Find all functions that call a specific function.

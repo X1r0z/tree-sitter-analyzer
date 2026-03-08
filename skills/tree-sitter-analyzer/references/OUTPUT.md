@@ -5,13 +5,14 @@ All commands output structured JSON by default. Every response shares a common e
 ```json
 {
   "path": "<analyzed path>",
-  "files_searched": <number>,
+  "searched_files": <number>,
   "count": <number of results>,
   ...command-specific array...
 }
 ```
 
-For cached queries, `files_searched` is the number of indexed files considered for the request. For uncached queries, it is the number of source files scanned directly.
+For cached queries, `searched_files` is the number of indexed files considered for the request. For uncached queries, it is the number of source files scanned directly.
+Any `file` or `location.file` value in result items is reported relative to `path`.
 
 ---
 
@@ -23,7 +24,7 @@ Builds or rebuilds `tsa.db` in the current working directory.
 |-------|------|-------------|
 | `path` | string | Indexed project path |
 | `database` | string | Output database path |
-| `files_discovered` | int | Number of candidate source files found |
+| `discovered_files` | int | Number of candidate source files found |
 | `indexed_files` | int | Number of files successfully indexed |
 | `failed_files` | int | Number of files that failed to index |
 | `errors` | string[] | Per-file indexing failures |
@@ -32,7 +33,7 @@ Builds or rebuilds `tsa.db` in the current working directory.
 {
   "path": "/path/to/project",
   "database": "/current/working/directory/tsa.db",
-  "files_discovered": 42,
+  "discovered_files": 42,
   "indexed_files": 42,
   "failed_files": 0,
   "errors": []
@@ -48,7 +49,7 @@ Array key: `functions`
 | `name` | string | Function/method name |
 | `start_line` | int | Start line |
 | `end_line` | int | End line |
-| `file` | string | File path |
+| `file` | string | File path relative to `path` |
 | `class_name` | string | Parent class (if method) |
 | `params` | object[] | Function/method parameters |
 
@@ -62,14 +63,14 @@ Each `params` item contains:
 ```json
 {
   "path": "/path/to/project",
-  "files_searched": 42,
+  "searched_files": 42,
   "count": 2,
   "functions": [
     {
       "name": "main",
       "start_line": 1,
       "end_line": 24,
-      "file": "/path/to/project/src/app.py",
+      "file": "src/app.py",
       "params": [
         {"name": "config_path", "type": "str"},
         {"name": "verbose", "type": null}
@@ -79,7 +80,7 @@ Each `params` item contains:
       "name": "connect",
       "start_line": 10,
       "end_line": 55,
-      "file": "/path/to/project/src/db.py",
+      "file": "src/db.py",
       "class_name": "Database",
       "params": [
         {"name": "dsn", "type": "str"},
@@ -101,12 +102,12 @@ Array key: `classes`
 | `end_line` | int | End line |
 | `methods` | string[] | Method names |
 | `fields` | string[] | Field names |
-| `file` | string | File path |
+| `file` | string | File path relative to `path` |
 
 ```json
 {
   "path": "/path/to/project",
-  "files_searched": 42,
+  "searched_files": 42,
   "count": 1,
   "classes": [
     {
@@ -115,7 +116,7 @@ Array key: `classes`
       "end_line": 120,
       "methods": ["__init__", "connect", "close"],
       "fields": ["dsn", "timeout"],
-      "file": "/path/to/project/src/db.py"
+      "file": "src/db.py"
     }
   ]
 }
@@ -129,30 +130,27 @@ Array key: `fields`
 |-------|------|-------------|
 | `name` | string | Field name |
 | `line` | int | Line number |
-| `file` | string | File path |
+| `file` | string | File path relative to `path` |
 | `type` | string | Type annotation (if available) |
-| `class_name` | string | Owning class |
 
 ```json
 {
   "path": "/path/to/project",
-  "files_searched": 42,
+  "searched_files": 42,
   "count": 2,
   "class_name": "Database",
   "fields": [
     {
       "name": "dsn",
       "line": 5,
-      "file": "/path/to/project/src/db.py",
-      "type": "str",
-      "class_name": "Database"
+      "file": "src/db.py",
+      "type": "str"
     },
     {
       "name": "timeout",
       "line": 6,
-      "file": "/path/to/project/src/db.py",
-      "type": "int",
-      "class_name": "Database"
+      "file": "src/db.py",
+      "type": "int"
     }
   ]
 }
@@ -166,16 +164,16 @@ Array key: `imports`
 |-------|------|-------------|
 | `module` | string | Module name |
 | `line` | int | Line number |
-| `file` | string | File path |
+| `file` | string | File path relative to `path` |
 
 ```json
 {
   "path": "/path/to/project",
-  "files_searched": 42,
+  "searched_files": 42,
   "count": 2,
   "imports": [
-    {"module": "os", "line": 1, "file": "/path/to/project/src/app.py"},
-    {"module": "json", "line": 2, "file": "/path/to/project/src/app.py"}
+    {"module": "os", "line": 1, "file": "src/app.py"},
+    {"module": "json", "line": 2, "file": "src/app.py"}
   ]
 }
 ```
@@ -189,7 +187,7 @@ Array key: `annotations`
 | `name` | string | Annotation or decorator name without the leading `@` |
 | `signature` | string | Full annotation/decorator text as it appears in source |
 | `line` | int | Start line number |
-| `file` | string | File path |
+| `file` | string | File path relative to `path` |
 | `target_name` | string | Name of the annotated/decorated class, function, or method |
 | `target_type` | string | Target kind, such as `class`, `function`, or `method` |
 | `target_signature` | string | Target declaration/signature text |
@@ -197,14 +195,14 @@ Array key: `annotations`
 ```json
 {
   "path": "/path/to/project",
-  "files_searched": 42,
+  "searched_files": 42,
   "count": 2,
   "annotations": [
     {
       "name": "dataclass",
       "signature": "@dataclass",
       "line": 3,
-      "file": "/path/to/project/src/models.py",
+      "file": "src/models.py",
       "target_name": "User",
       "target_type": "class",
       "target_signature": "class User:"
@@ -213,7 +211,7 @@ Array key: `annotations`
       "name": "Transactional",
       "signature": "@Transactional(readOnly = true)",
       "line": 12,
-      "file": "/path/to/project/src/service/UserService.java",
+      "file": "src/service/UserService.java",
       "target_name": "findUser",
       "target_type": "method",
       "target_signature": "public User findUser(String id)"
@@ -233,12 +231,12 @@ Array key: `super_classes`
 | `end_line` | int | End line |
 | `methods` | string[] | Method names |
 | `fields` | string[] | Field names |
-| `file` | string | File path |
+| `file` | string | File path relative to `path` |
 
 ```json
 {
   "path": "/path/to/project",
-  "files_searched": 42,
+  "searched_files": 42,
   "count": 1,
   "class_name": "AdminUser",
   "super_classes": [
@@ -248,7 +246,7 @@ Array key: `super_classes`
       "end_line": 80,
       "methods": ["__init__", "save"],
       "fields": ["id", "email"],
-      "file": "/path/to/project/src/models.py"
+      "file": "src/models.py"
     }
   ]
 }
@@ -265,12 +263,12 @@ Array key: `sub_classes`
 | `end_line` | int | End line |
 | `methods` | string[] | Method names |
 | `fields` | string[] | Field names |
-| `file` | string | File path |
+| `file` | string | File path relative to `path` |
 
 ```json
 {
   "path": "/path/to/project",
-  "files_searched": 42,
+  "searched_files": 42,
   "count": 1,
   "class_name": "User",
   "sub_classes": [
@@ -280,7 +278,7 @@ Array key: `sub_classes`
       "end_line": 140,
       "methods": ["has_permission"],
       "fields": ["role"],
-      "file": "/path/to/project/src/models.py"
+      "file": "src/models.py"
     }
   ]
 }
@@ -294,19 +292,18 @@ Array key: `callers`
 |-------|------|-------------|
 | `caller` | string | Calling function name |
 | `line` | int | Line of the call |
-| `file` | string | File path |
-| `target_class` | string\|null | Class of the callee (if method) |
+| `file` | string | File path relative to `path` |
 
 ```json
 {
   "path": "/path/to/project",
-  "files_searched": 42,
+  "searched_files": 42,
   "count": 2,
   "function": "process_data",
   "class_name": null,
   "callers": [
-    {"caller": "main", "line": 12, "file": "/path/to/project/src/app.py", "target_class": null},
-    {"caller": "handle_request", "line": 88, "file": "/path/to/project/src/api.py", "target_class": null}
+    {"caller": "main", "line": 12, "file": "src/app.py"},
+    {"caller": "handle_request", "line": 88, "file": "src/api.py"}
   ]
 }
 ```
@@ -319,19 +316,19 @@ Array key: `callees`
 |-------|------|-------------|
 | `callee` | string | Called function name |
 | `line` | int | Line of the call |
-| `file` | string | File path |
+| `file` | string | File path relative to `path` |
 | `class_name` | string\|null | Class scope (if method) |
 
 ```json
 {
   "path": "/path/to/project",
-  "files_searched": 42,
+  "searched_files": 42,
   "count": 2,
   "function": "main",
   "class_name": null,
   "callees": [
-    {"callee": "load_config", "line": 18, "file": "/path/to/project/src/app.py", "class_name": null},
-    {"callee": "process_data", "line": 25, "file": "/path/to/project/src/app.py", "class_name": null}
+    {"callee": "load_config", "line": 18, "file": "src/app.py", "class_name": null},
+    {"callee": "process_data", "line": 25, "file": "src/app.py", "class_name": null}
   ]
 }
 ```
@@ -345,7 +342,7 @@ Array key: `functions`
 | `name` | string | Function name |
 | `start_line` | int | Start line |
 | `end_line` | int | End line |
-| `file` | string | File path |
+| `file` | string | File path relative to `path` |
 | `params` | object[] | Function/method parameters |
 | `body` | string | Full source code |
 
@@ -359,7 +356,7 @@ Each `params` item contains:
 ```json
 {
   "path": "/path/to/project",
-  "files_searched": 42,
+  "searched_files": 42,
   "count": 1,
   "class_name": null,
   "functions": [
@@ -367,7 +364,7 @@ Each `params` item contains:
       "name": "main",
       "start_line": 10,
       "end_line": 30,
-      "file": "/path/to/project/src/app.py",
+      "file": "src/app.py",
       "params": [
         {"name": "config_path", "type": "str"},
         {"name": "retries", "type": null}
@@ -385,7 +382,7 @@ Array key: `references`
 | Field | Type | Description |
 |-------|------|-------------|
 | `type` | string | Node type (e.g. "identifier") |
-| `location.file` | string | File path |
+| `location.file` | string | File path relative to `path` |
 | `location.start_line` | int | Start line |
 | `location.end_line` | int | End line |
 | `context` | string | Surrounding source line |
@@ -393,18 +390,18 @@ Array key: `references`
 ```json
 {
   "path": "/path/to/project",
-  "files_searched": 42,
+  "searched_files": 42,
   "count": 2,
   "name": "CONFIG_PATH",
   "references": [
     {
       "type": "identifier",
-      "location": {"file": "/path/to/project/src/config.py", "start_line": 3, "end_line": 3},
+      "location": {"file": "src/config.py", "start_line": 3, "end_line": 3},
       "context": "CONFIG_PATH = \"/etc/myapp/config.json\""
     },
     {
       "type": "identifier",
-      "location": {"file": "/path/to/project/src/app.py", "start_line": 18, "end_line": 18},
+      "location": {"file": "src/app.py", "start_line": 18, "end_line": 18},
       "context": "load_config(CONFIG_PATH)"
     }
   ]

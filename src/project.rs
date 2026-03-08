@@ -226,7 +226,6 @@ impl ProjectAnalyzer {
                         "caller": caller,
                         "line": line,
                         "file": f,
-                        "target_class": cn.as_deref(),
                     })
                 })
                 .collect::<Vec<_>>()

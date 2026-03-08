@@ -19,10 +19,28 @@ use super::types::{
 };
 use super::DbProjectAnalyzer;
 
+#[derive(Clone)]
+struct CallSite {
+    file: String,
+    line: usize,
+}
+
+#[derive(Clone)]
+struct GraphNeighbor {
+    node: DbFunctionNode,
+    call_site: CallSite,
+}
+
+#[derive(Clone)]
+struct GraphTraceStep {
+    node: DbFunctionNode,
+    call_site: Option<CallSite>,
+}
+
 struct GraphTraversalState {
     results: Vec<CallGraphPath>,
     seen_paths: HashSet<Vec<FunctionKey>>,
-    neighbor_cache: HashMap<(GraphDirection, FunctionKey), Vec<DbFunctionNode>>,
+    neighbor_cache: HashMap<(GraphDirection, FunctionKey), Vec<GraphNeighbor>>,
     node_cache: HashMap<(String, Option<String>), Vec<DbFunctionNode>>,
     field_type_cache: FieldTypeCache,
     param_type_cache: ParamTypeCache,
@@ -392,7 +410,6 @@ impl DbProjectAnalyzer {
                     "caller": caller,
                     "line": row.line,
                     "file": row.file,
-                    "target_class": class_name,
                 }));
             }
         }
@@ -429,7 +446,6 @@ impl DbProjectAnalyzer {
                         "caller": caller,
                         "line": line,
                         "file": file,
-                        "target_class": class_name,
                     }));
                 }
             }
@@ -634,7 +650,10 @@ impl DbProjectAnalyzer {
         };
 
         for start in &start_nodes {
-            let mut path = vec![start.clone()];
+            let mut path = vec![GraphTraceStep {
+                node: start.clone(),
+                call_site: None,
+            }];
             let mut visited = HashSet::from([start.key()]);
             self.walk_graph_paths(direction, max_depth, &mut path, &mut visited, &mut state)?;
         }
@@ -679,11 +698,14 @@ impl DbProjectAnalyzer {
         &self,
         direction: GraphDirection,
         remaining_depth: usize,
-        path: &mut Vec<DbFunctionNode>,
+        path: &mut Vec<GraphTraceStep>,
         visited: &mut HashSet<FunctionKey>,
         state: &mut GraphTraversalState,
     ) -> anyhow::Result<()> {
-        let current = path.last().cloned().unwrap_or_else(|| unreachable!());
+        let current = path
+            .last()
+            .map(|step| step.node.clone())
+            .unwrap_or_else(|| unreachable!());
         let cache_key = (direction, current.key());
         let neighbors = if let Some(cached) = state.neighbor_cache.get(&cache_key) {
             cached.clone()
@@ -702,21 +724,24 @@ impl DbProjectAnalyzer {
 
         let next_nodes: Vec<_> = neighbors
             .into_iter()
-            .filter(|neighbor| !visited.contains(&neighbor.key()))
+            .filter(|neighbor| !visited.contains(&neighbor.node.key()))
             .collect();
 
         if remaining_depth == 0 || next_nodes.is_empty() {
-            let keys: Vec<_> = path.iter().map(DbFunctionNode::key).collect();
+            let keys: Vec<_> = path.iter().map(|step| step.node.key()).collect();
             if state.seen_paths.insert(keys) {
-                state.results.push(Self::materialize_graph(path));
+                state.results.push(Self::materialize_graph(direction, path));
             }
             return Ok(());
         }
 
         for next in next_nodes {
-            let next_key = next.key();
+            let next_key = next.node.key();
             visited.insert(next_key.clone());
-            path.push(next);
+            path.push(GraphTraceStep {
+                node: next.node,
+                call_site: Some(next.call_site),
+            });
             self.walk_graph_paths(direction, remaining_depth - 1, path, visited, state)?;
             path.pop();
             visited.remove(&next_key);
@@ -724,12 +749,24 @@ impl DbProjectAnalyzer {
         Ok(())
     }
 
-    fn materialize_graph(path: &[DbFunctionNode]) -> CallGraphPath {
-        let path: Vec<GraphPathNode> = path
+    fn materialize_graph(direction: GraphDirection, steps: &[GraphTraceStep]) -> CallGraphPath {
+        let path: Vec<GraphPathNode> = steps
             .iter()
-            .map(|node| node.function.to_graph_path_node())
+            .map(|step| step.node.function.to_graph_path_node())
             .collect();
-        let stacktrace = path.iter().map(|node| node.display_name()).collect();
+        let stacktrace = direction.order_stacktrace(
+            path.iter()
+                .zip(steps.iter())
+                .map(|(node, step)| {
+                    let (file, line) = step
+                        .call_site
+                        .as_ref()
+                        .map(|call_site| (call_site.file.as_str(), call_site.line))
+                        .unwrap_or((node.file.as_str(), node.start_line));
+                    node.stacktrace_name(file, line)
+                })
+                .collect(),
+        );
         CallGraphPath {
             depth: path.len().saturating_sub(1),
             stacktrace,
@@ -745,7 +782,7 @@ impl DbProjectAnalyzer {
         field_type_cache: &mut FieldTypeCache,
         param_type_cache: &mut ParamTypeCache,
         is_property_cache: &mut HashMap<(String, Option<String>), bool>,
-    ) -> anyhow::Result<Vec<DbFunctionNode>> {
+    ) -> anyhow::Result<Vec<GraphNeighbor>> {
         match direction {
             GraphDirection::Forward => {
                 self.load_forward_neighbors(node, node_cache, field_type_cache, param_type_cache)
@@ -766,12 +803,12 @@ impl DbProjectAnalyzer {
         node_cache: &mut HashMap<(String, Option<String>), Vec<DbFunctionNode>>,
         field_type_cache: &mut FieldTypeCache,
         param_type_cache: &mut ParamTypeCache,
-    ) -> anyhow::Result<Vec<DbFunctionNode>> {
+    ) -> anyhow::Result<Vec<GraphNeighbor>> {
         let start_line = node.function.location.start_line as i64;
         let end_line = node.function.location.end_line as i64;
         let mut sql = String::from(
             "
-            SELECT callee, object_name
+            SELECT callee, object_name, start_line
             FROM calls
             WHERE file_id = ?1 AND caller = ?2 AND start_line >= ?3 AND start_line <= ?4
             ",
@@ -790,7 +827,13 @@ impl DbProjectAnalyzer {
                         end_line,
                         class_name
                     ],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, i64>(2)? as usize,
+                        ))
+                    },
                 )?;
                 rows.collect::<Result<Vec<_>, _>>()?
             }
@@ -800,7 +843,13 @@ impl DbProjectAnalyzer {
                 let mut stmt = self.conn.prepare(&sql)?;
                 let rows = stmt.query_map(
                     params![node.file_id, node.function.name, start_line, end_line],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, i64>(2)? as usize,
+                        ))
+                    },
                 )?;
                 rows.collect::<Result<Vec<_>, _>>()?
             }
@@ -808,7 +857,7 @@ impl DbProjectAnalyzer {
 
         let mut seen = HashSet::new();
         let mut results = Vec::new();
-        for (callee_name, object_name) in rows {
+        for (callee_name, object_name, line) in rows {
             let candidates = self.load_function_nodes_by_name(&callee_name, node_cache)?;
             for candidate in self.resolve_down_targets(
                 node,
@@ -819,7 +868,13 @@ impl DbProjectAnalyzer {
             )? {
                 let key = candidate.key();
                 if seen.insert(key) {
-                    results.push(candidate);
+                    results.push(GraphNeighbor {
+                        node: candidate,
+                        call_site: CallSite {
+                            file: node.function.location.file.clone(),
+                            line,
+                        },
+                    });
                 }
             }
         }
@@ -833,7 +888,7 @@ impl DbProjectAnalyzer {
         field_type_cache: &mut FieldTypeCache,
         param_type_cache: &mut ParamTypeCache,
         is_property_cache: &mut HashMap<(String, Option<String>), bool>,
-    ) -> anyhow::Result<Vec<DbFunctionNode>> {
+    ) -> anyhow::Result<Vec<GraphNeighbor>> {
         let mut sql = String::from(
             "
             SELECT c.file_id, f.path, c.caller, c.caller_class_name, c.object_name, c.start_line
@@ -890,7 +945,13 @@ impl DbProjectAnalyzer {
                 }
                 let key = caller.key();
                 if seen.insert(key) {
-                    results.push(caller);
+                    results.push(GraphNeighbor {
+                        node: caller,
+                        call_site: CallSite {
+                            file: row.file.clone(),
+                            line: row.line,
+                        },
+                    });
                 }
             }
         }
@@ -944,7 +1005,10 @@ impl DbProjectAnalyzer {
                 )? {
                     let key = caller.key();
                     if seen.insert(key) {
-                        results.push(caller);
+                        results.push(GraphNeighbor {
+                            node: caller,
+                            call_site: CallSite { file, line },
+                        });
                     }
                 }
             }

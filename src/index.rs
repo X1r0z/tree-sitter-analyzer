@@ -77,7 +77,7 @@ pub(crate) fn build_index(path: &str, language: Option<&str>) -> Value {
     json!({
         "path": path,
         "database": db_path.to_string_lossy(),
-        "files_discovered": total_files,
+        "discovered_files": total_files,
         "indexed_files": plan.current_files.len(),
         "reparsed_files": plan.changed_snapshots.len(),
         "failed_files": errors.len(),

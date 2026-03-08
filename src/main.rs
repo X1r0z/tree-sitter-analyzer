@@ -20,6 +20,7 @@ use crate::db::DbProjectAnalyzer;
 use crate::index::build_index;
 use crate::nodes::GraphDirection;
 use crate::project::ProjectAnalyzer;
+use crate::utils::relativize_json_file_paths;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum LanguageFilter {
@@ -258,7 +259,7 @@ fn parse_positive_depth(value: &str) -> Result<usize, String> {
 fn run() -> i32 {
     let cli = Cli::parse();
 
-    let result = match cli.command {
+    let mut result = match cli.command {
         Commands::Functions {
             path,
             language,
@@ -340,6 +341,11 @@ fn run() -> i32 {
         Commands::Index { path, language } => cmd_index(&path, language),
     };
 
+    if result.get("error").is_none() {
+        let root_path = result["path"].as_str().unwrap_or_default().to_string();
+        relativize_json_file_paths(&mut result, &root_path);
+    }
+
     println!(
         "{}",
         serde_json::to_string_pretty(&result).unwrap_or_default()
@@ -361,7 +367,7 @@ fn cmd_functions(path: &str, language: Option<LanguageFilter>, query: &str) -> V
             Ok(functions) => {
                 return json!({
                     "path": real_path,
-                    "files_searched": db.file_count(),
+                    "searched_files": db.file_count(),
                     "count": functions.len(),
                     "functions": functions.iter().map(|f| f.to_json_value(false, true)).collect::<Vec<_>>(),
                 });
@@ -374,7 +380,7 @@ fn cmd_functions(path: &str, language: Option<LanguageFilter>, query: &str) -> V
             let functions = project.find_functions(query);
             json!({
                 "path": real_path,
-                "files_searched": project.files.len(),
+                "searched_files": project.files.len(),
                 "count": functions.len(),
                 "functions": functions.iter().map(|f| f.to_json_value(false, true)).collect::<Vec<_>>(),
             })
@@ -393,7 +399,7 @@ fn cmd_classes(path: &str, language: Option<LanguageFilter>, query: &str) -> Val
             Ok(classes) => {
                 return json!({
                     "path": real_path,
-                    "files_searched": db.file_count(),
+                    "searched_files": db.file_count(),
                     "count": classes.len(),
                     "classes": classes.iter().map(|c| c.to_json_value(true)).collect::<Vec<_>>(),
                 });
@@ -406,7 +412,7 @@ fn cmd_classes(path: &str, language: Option<LanguageFilter>, query: &str) -> Val
             let classes = project.find_classes(query);
             json!({
                 "path": real_path,
-                "files_searched": project.files.len(),
+                "searched_files": project.files.len(),
                 "count": classes.len(),
                 "classes": classes.iter().map(|c| c.to_json_value(true)).collect::<Vec<_>>(),
             })
@@ -425,7 +431,7 @@ fn cmd_fields(path: &str, language: Option<LanguageFilter>, class_name: &str) ->
             Ok(fields) => {
                 return json!({
                     "path": real_path,
-                    "files_searched": db.file_count(),
+                    "searched_files": db.file_count(),
                     "count": fields.len(),
                     "class_name": class_name,
                     "fields": fields.iter().map(|f| f.to_json_value(true)).collect::<Vec<_>>(),
@@ -439,7 +445,7 @@ fn cmd_fields(path: &str, language: Option<LanguageFilter>, class_name: &str) ->
             let fields = project.find_fields(class_name);
             json!({
                 "path": real_path,
-                "files_searched": project.files.len(),
+                "searched_files": project.files.len(),
                 "count": fields.len(),
                 "class_name": class_name,
                 "fields": fields.iter().map(|f| f.to_json_value(true)).collect::<Vec<_>>(),
@@ -459,7 +465,7 @@ fn cmd_imports(path: &str, language: Option<LanguageFilter>, query: &str) -> Val
             Ok(imports) => {
                 return json!({
                     "path": real_path,
-                    "files_searched": db.file_count(),
+                    "searched_files": db.file_count(),
                     "count": imports.len(),
                     "imports": imports.iter().map(|i| i.to_json_value(true)).collect::<Vec<_>>(),
                 });
@@ -472,7 +478,7 @@ fn cmd_imports(path: &str, language: Option<LanguageFilter>, query: &str) -> Val
             let imports = project.find_imports(query);
             json!({
                 "path": real_path,
-                "files_searched": project.files.len(),
+                "searched_files": project.files.len(),
                 "count": imports.len(),
                 "imports": imports.iter().map(|i| i.to_json_value(true)).collect::<Vec<_>>(),
             })
@@ -496,7 +502,7 @@ fn cmd_callers(
             Ok(callers) => {
                 return json!({
                     "path": real_path,
-                    "files_searched": db.file_count(),
+                    "searched_files": db.file_count(),
                     "count": callers.len(),
                     "function": function_name,
                     "class_name": class_name,
@@ -511,7 +517,7 @@ fn cmd_callers(
             let callers = project.find_callers(function_name, class_name);
             json!({
                 "path": real_path,
-                "files_searched": project.files.len(),
+                "searched_files": project.files.len(),
                 "count": callers.len(),
                 "function": function_name,
                 "class_name": class_name,
@@ -537,7 +543,7 @@ fn cmd_callees(
             Ok(callees) => {
                 return json!({
                     "path": real_path,
-                    "files_searched": db.file_count(),
+                    "searched_files": db.file_count(),
                     "count": callees.len(),
                     "function": function_name,
                     "class_name": class_name,
@@ -552,7 +558,7 @@ fn cmd_callees(
             let callees = project.find_callees(function_name, class_name);
             json!({
                 "path": real_path,
-                "files_searched": project.files.len(),
+                "searched_files": project.files.len(),
                 "count": callees.len(),
                 "function": function_name,
                 "class_name": class_name,
@@ -580,7 +586,7 @@ fn cmd_graph(
             Ok(graphs) => {
                 return json!({
                     "path": real_path,
-                    "files_searched": db.file_count(),
+                    "searched_files": db.file_count(),
                     "count": graphs.len(),
                     "function": function_name,
                     "class_name": class_name,
@@ -597,7 +603,7 @@ fn cmd_graph(
         Ok(project) => match project.find_graphs(function_name, class_name, direction, max_depth) {
             Ok(graphs) => json!({
                 "path": real_path,
-                "files_searched": project.files.len(),
+                "searched_files": project.files.len(),
                 "count": graphs.len(),
                 "function": function_name,
                 "class_name": class_name,
@@ -622,7 +628,7 @@ fn cmd_symbols(path: &str, language: Option<LanguageFilter>, name: &str) -> Valu
                 if refs.is_empty() {
                     return json!({
                         "path": real_path,
-                        "files_searched": db.file_count(),
+                        "searched_files": db.file_count(),
                         "count": 0,
                         "name": name,
                         "references": Vec::<Value>::new(),
@@ -636,7 +642,7 @@ fn cmd_symbols(path: &str, language: Option<LanguageFilter>, name: &str) -> Valu
                         let refs = project.hydrate_symbol_contexts(refs);
                         json!({
                             "path": real_path,
-                            "files_searched": db.file_count(),
+                            "searched_files": db.file_count(),
                             "count": refs.len(),
                             "name": name,
                             "references": refs.iter().map(|symbol| symbol.to_json_value()).collect::<Vec<_>>(),
@@ -653,7 +659,7 @@ fn cmd_symbols(path: &str, language: Option<LanguageFilter>, name: &str) -> Valu
             let refs = project.find_symbols(name);
             json!({
                 "path": real_path,
-                "files_searched": project.files.len(),
+                "searched_files": project.files.len(),
                 "count": refs.len(),
                 "name": name,
                 "references": refs,
@@ -692,11 +698,11 @@ fn cmd_definition(
                     language.map(LanguageFilter::as_str),
                 ) {
                     Ok(project) => {
-                        let files_searched = unique_function_file_count(&functions);
+                        let searched_files = unique_function_file_count(&functions);
                         let functions = project.hydrate_function_bodies(functions);
                         json!({
                             "path": real_path,
-                            "files_searched": files_searched,
+                            "searched_files": searched_files,
                             "count": functions.len(),
                             "class_name": class_name,
                             "functions": functions.iter().map(|f| f.to_json_value(true, true)).collect::<Vec<_>>(),
@@ -717,7 +723,7 @@ fn cmd_definition(
             }
             json!({
                 "path": real_path,
-                "files_searched": project.files.len(),
+                "searched_files": project.files.len(),
                 "count": functions.len(),
                 "class_name": class_name,
                 "functions": functions.iter().map(|f| f.to_json_value(true, true)).collect::<Vec<_>>(),
@@ -737,7 +743,7 @@ fn cmd_super_classes(path: &str, language: Option<LanguageFilter>, class_name: &
             Ok(super_classes) => {
                 return json!({
                     "path": real_path,
-                    "files_searched": db.file_count(),
+                    "searched_files": db.file_count(),
                     "count": super_classes.len(),
                     "class_name": class_name,
                     "super_classes": super_classes.iter().map(|c| c.to_json_value(true)).collect::<Vec<_>>(),
@@ -751,7 +757,7 @@ fn cmd_super_classes(path: &str, language: Option<LanguageFilter>, class_name: &
             let super_classes = project.find_super_classes(class_name);
             json!({
                 "path": real_path,
-                "files_searched": project.files.len(),
+                "searched_files": project.files.len(),
                 "count": super_classes.len(),
                 "class_name": class_name,
                 "super_classes": super_classes.iter().map(|c| c.to_json_value(true)).collect::<Vec<_>>(),
@@ -771,7 +777,7 @@ fn cmd_sub_classes(path: &str, language: Option<LanguageFilter>, class_name: &st
             Ok(sub_classes) => {
                 return json!({
                     "path": real_path,
-                    "files_searched": db.file_count(),
+                    "searched_files": db.file_count(),
                     "count": sub_classes.len(),
                     "class_name": class_name,
                     "sub_classes": sub_classes.iter().map(|c| c.to_json_value(true)).collect::<Vec<_>>(),
@@ -785,7 +791,7 @@ fn cmd_sub_classes(path: &str, language: Option<LanguageFilter>, class_name: &st
             let sub_classes = project.find_sub_classes(class_name);
             json!({
                 "path": real_path,
-                "files_searched": project.files.len(),
+                "searched_files": project.files.len(),
                 "count": sub_classes.len(),
                 "class_name": class_name,
                 "sub_classes": sub_classes.iter().map(|c| c.to_json_value(true)).collect::<Vec<_>>(),
@@ -805,7 +811,7 @@ fn cmd_annotations(path: &str, language: Option<LanguageFilter>, query: &str) ->
             Ok(annotations) => {
                 return json!({
                     "path": real_path,
-                    "files_searched": db.file_count(),
+                    "searched_files": db.file_count(),
                     "count": annotations.len(),
                     "annotations": annotations.iter().map(|a| a.to_json_value(true)).collect::<Vec<_>>(),
                 });
@@ -818,7 +824,7 @@ fn cmd_annotations(path: &str, language: Option<LanguageFilter>, query: &str) ->
             let annotations = project.find_annotations(query);
             json!({
                 "path": real_path,
-                "files_searched": project.files.len(),
+                "searched_files": project.files.len(),
                 "count": annotations.len(),
                 "annotations": annotations.iter().map(|a| a.to_json_value(true)).collect::<Vec<_>>(),
             })

@@ -14,11 +14,29 @@ pub(crate) struct RawPropertyCaller {
 }
 
 #[derive(Debug, Clone)]
+struct CallSite {
+    file: String,
+    line: usize,
+}
+
+#[derive(Debug, Clone)]
+struct GraphNeighbor {
+    key: FunctionKey,
+    call_site: CallSite,
+}
+
+#[derive(Debug, Clone)]
+struct GraphTraceStep {
+    key: FunctionKey,
+    call_site: Option<CallSite>,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct CallGraph {
     functions_by_key: HashMap<FunctionKey, FunctionInfo>,
     starting_keys: Vec<FunctionKey>,
-    forward_edges: HashMap<FunctionKey, Vec<FunctionKey>>,
-    backward_edges: HashMap<FunctionKey, Vec<FunctionKey>>,
+    forward_edges: HashMap<FunctionKey, Vec<GraphNeighbor>>,
+    backward_edges: HashMap<FunctionKey, Vec<GraphNeighbor>>,
 }
 
 impl CallGraph {
@@ -76,7 +94,8 @@ impl CallGraph {
                 .sort_by_key(|function| (function.location.start_line, function.location.end_line));
         }
 
-        let mut forward_edge_sets: HashMap<FunctionKey, HashSet<FunctionKey>> = HashMap::new();
+        let mut forward_edge_sets: HashMap<FunctionKey, HashMap<FunctionKey, CallSite>> =
+            HashMap::new();
         for call in calls {
             let Some(caller) = resolve_enclosing_function(
                 &functions_by_file_context,
@@ -90,10 +109,16 @@ impl CallGraph {
 
             for callee in resolve_call_targets(&call, &caller, &defs_by_name, &fields_by_file_class)
             {
+                let caller_key = FunctionKey::from_function(&caller);
+                let call_site = CallSite {
+                    file: call.location.file.clone(),
+                    line: call.location.start_line,
+                };
                 forward_edge_sets
-                    .entry(FunctionKey::from_function(&caller))
+                    .entry(caller_key)
                     .or_default()
-                    .insert(callee);
+                    .entry(callee)
+                    .or_insert(call_site);
             }
         }
 
@@ -116,21 +141,30 @@ impl CallGraph {
                 if !property_keys.contains(&(property.name.clone(), property.class_name.clone())) {
                     continue;
                 }
+                let caller_key = FunctionKey::from_function(&caller);
+                let property_key = FunctionKey::from_function(&property);
+                let call_site = CallSite {
+                    file: property_caller.file.clone(),
+                    line: property_caller.line,
+                };
                 forward_edge_sets
-                    .entry(FunctionKey::from_function(&caller))
+                    .entry(caller_key)
                     .or_default()
-                    .insert(FunctionKey::from_function(&property));
+                    .entry(property_key)
+                    .or_insert(call_site);
             }
         }
 
         let forward_edges = freeze_edges(forward_edge_sets);
-        let mut backward_edge_sets: HashMap<FunctionKey, HashSet<FunctionKey>> = HashMap::new();
+        let mut backward_edge_sets: HashMap<FunctionKey, HashMap<FunctionKey, CallSite>> =
+            HashMap::new();
         for (caller, callees) in &forward_edges {
             for callee in callees {
                 backward_edge_sets
-                    .entry(callee.clone())
+                    .entry(callee.key.clone())
                     .or_default()
-                    .insert(caller.clone());
+                    .entry(caller.clone())
+                    .or_insert_with(|| callee.call_site.clone());
             }
         }
 
@@ -171,7 +205,10 @@ impl CallGraph {
         let mut paths = Vec::new();
         let mut seen = HashSet::new();
         for start in start_nodes {
-            let mut current_path = vec![start.clone()];
+            let mut current_path = vec![GraphTraceStep {
+                key: start.clone(),
+                call_site: None,
+            }];
             let mut visited = HashSet::from([start.clone()]);
             self.walk(
                 direction,
@@ -190,7 +227,7 @@ impl CallGraph {
         &self,
         direction: GraphDirection,
         remaining_depth: usize,
-        current_path: &mut Vec<FunctionKey>,
+        current_path: &mut Vec<GraphTraceStep>,
         visited: &mut HashSet<FunctionKey>,
         results: &mut Vec<CallGraphPath>,
         seen_paths: &mut HashSet<Vec<FunctionKey>>,
@@ -200,27 +237,31 @@ impl CallGraph {
             .cloned()
             .unwrap_or_else(|| unreachable!());
         let neighbors = match direction {
-            GraphDirection::Backward => self.backward_edges.get(&current),
-            GraphDirection::Forward => self.forward_edges.get(&current),
+            GraphDirection::Backward => self.backward_edges.get(&current.key),
+            GraphDirection::Forward => self.forward_edges.get(&current.key),
         };
 
         let next_nodes: Vec<_> = neighbors
             .into_iter()
             .flatten()
-            .filter(|neighbor| !visited.contains(*neighbor))
+            .filter(|neighbor| !visited.contains(&neighbor.key))
             .cloned()
             .collect();
 
         if remaining_depth == 0 || next_nodes.is_empty() {
-            if seen_paths.insert(current_path.clone()) {
-                results.push(self.materialize_graph(current_path));
+            let keys: Vec<_> = current_path.iter().map(|step| step.key.clone()).collect();
+            if seen_paths.insert(keys) {
+                results.push(self.materialize_graph(direction, current_path));
             }
             return;
         }
 
         for next in next_nodes {
-            visited.insert(next.clone());
-            current_path.push(next.clone());
+            visited.insert(next.key.clone());
+            current_path.push(GraphTraceStep {
+                key: next.key.clone(),
+                call_site: Some(next.call_site.clone()),
+            });
             self.walk(
                 direction,
                 remaining_depth - 1,
@@ -230,17 +271,33 @@ impl CallGraph {
                 seen_paths,
             );
             current_path.pop();
-            visited.remove(&next);
+            visited.remove(&next.key);
         }
     }
 
-    fn materialize_graph(&self, keys: &[FunctionKey]) -> CallGraphPath {
-        let path: Vec<GraphPathNode> = keys
+    fn materialize_graph(
+        &self,
+        direction: GraphDirection,
+        steps: &[GraphTraceStep],
+    ) -> CallGraphPath {
+        let path: Vec<GraphPathNode> = steps
             .iter()
-            .filter_map(|key| self.functions_by_key.get(key))
+            .filter_map(|step| self.functions_by_key.get(&step.key))
             .map(FunctionInfo::to_graph_path_node)
             .collect();
-        let stacktrace = path.iter().map(|node| node.display_name()).collect();
+        let stacktrace = direction.order_stacktrace(
+            path.iter()
+                .zip(steps.iter())
+                .map(|(node, step)| {
+                    let (file, line) = step
+                        .call_site
+                        .as_ref()
+                        .map(|call_site| (call_site.file.as_str(), call_site.line))
+                        .unwrap_or((node.file.as_str(), node.start_line));
+                    node.stacktrace_name(file, line)
+                })
+                .collect(),
+        );
         CallGraphPath {
             depth: path.len().saturating_sub(1),
             stacktrace,
@@ -250,13 +307,19 @@ impl CallGraph {
 }
 
 fn freeze_edges(
-    edges: HashMap<FunctionKey, HashSet<FunctionKey>>,
-) -> HashMap<FunctionKey, Vec<FunctionKey>> {
+    edges: HashMap<FunctionKey, HashMap<FunctionKey, CallSite>>,
+) -> HashMap<FunctionKey, Vec<GraphNeighbor>> {
     edges
         .into_iter()
         .map(|(key, values)| {
-            let mut values: Vec<_> = values.into_iter().collect();
-            values.sort_by(compare_keys);
+            let mut values: Vec<_> = values
+                .into_iter()
+                .map(|(neighbor_key, call_site)| GraphNeighbor {
+                    key: neighbor_key,
+                    call_site,
+                })
+                .collect();
+            values.sort_by(|left, right| compare_keys(&left.key, &right.key));
             (key, values)
         })
         .collect()

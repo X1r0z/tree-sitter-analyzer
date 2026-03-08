@@ -233,6 +233,8 @@ pub struct PythonPropertyCallerInfo {
     pub file: String,
     pub property_name: String,
     pub caller: String,
+    pub caller_class_name: Option<String>,
+    pub object_name: Option<String>,
     pub line: usize,
 }
 

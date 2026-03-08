@@ -12,6 +12,8 @@ pub(crate) struct RawPropertyCaller {
     pub(crate) file: String,
     pub(crate) property_name: String,
     pub(crate) caller: String,
+    pub(crate) caller_class_name: Option<String>,
+    pub(crate) object_name: Option<String>,
     pub(crate) line: usize,
 }
 
@@ -123,7 +125,7 @@ impl CallGraph {
                 &functions_by_file_context,
                 &property_caller.file,
                 Some(&property_caller.caller),
-                None,
+                property_caller.caller_class_name.as_deref(),
                 property_caller.line,
             ) else {
                 continue;
@@ -135,6 +137,14 @@ impl CallGraph {
                 .unwrap_or_default();
             for property in candidate_defs {
                 if !property_keys.contains(&(property.name.clone(), property.class_name.clone())) {
+                    continue;
+                }
+                if !matches_property_target(
+                    &caller,
+                    property_caller.object_name.as_deref(),
+                    property.class_name.as_deref(),
+                    &fields_by_file_class,
+                ) {
                     continue;
                 }
                 let caller_key = FunctionKey::from(&caller);
@@ -250,6 +260,62 @@ impl CallGraph {
             path,
         }
     }
+}
+
+fn matches_property_target(
+    caller: &FunctionInfo,
+    object_name: Option<&str>,
+    class_name: Option<&str>,
+    fields_by_file_class: &HashMap<(String, String), Vec<FieldInfo>>,
+) -> bool {
+    let Some(class_name) = class_name else {
+        return false;
+    };
+
+    if object_name == Some(class_name) {
+        return true;
+    }
+    if object_name.is_none() {
+        return caller.class_name.as_deref() == Some(class_name);
+    }
+    if matches!(object_name, Some("self") | Some("this") | Some("cls")) {
+        return caller.class_name.as_deref() == Some(class_name);
+    }
+
+    let Some(object_name) = object_name else {
+        return false;
+    };
+    if object_name
+        .split('(')
+        .next()
+        .and_then(|head| head.rsplit('.').next())
+        .is_some_and(|name| name == class_name)
+    {
+        return true;
+    }
+
+    let Some(attr_name) = extract_instance_attr(object_name) else {
+        return false;
+    };
+
+    if let Some(caller_class_name) = caller.class_name.as_deref() {
+        if let Some(fields) =
+            fields_by_file_class.get(&(caller.location.file.clone(), caller_class_name.to_string()))
+        {
+            for field in fields {
+                if field.name != attr_name {
+                    continue;
+                }
+                if type_matches_class(field.field_type.as_deref(), class_name) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    caller.params.iter().any(|param| {
+        param.name == attr_name && type_matches_class(param.param_type.as_deref(), class_name)
+    })
 }
 
 fn freeze_edges(

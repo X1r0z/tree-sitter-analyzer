@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
 use super::{BaseParser, PythonPropertyCallers, PythonPropertyDefinitions};
-use crate::models::{AnnotationInfo, FieldInfo, FunctionParamInfo};
+use crate::models::{AnnotationInfo, FieldInfo, FunctionParamInfo, PythonPropertyCallerInfo};
 
 impl BaseParser {
     pub(super) fn extract_python_function_params(
@@ -163,8 +163,10 @@ impl BaseParser {
         }
 
         let mut properties = HashSet::new();
-        let mut callers_by_property: HashMap<String, Vec<(String, usize)>> = HashMap::new();
-        let mut seen_callers: HashSet<(String, String, usize)> = HashSet::new();
+        let mut callers_by_property: HashMap<String, Vec<PythonPropertyCallerInfo>> =
+            HashMap::new();
+        let mut seen_callers: HashSet<(String, String, Option<String>, Option<String>, usize)> =
+            HashSet::new();
         let mut stack = vec![self.tree.root_node()];
 
         while let Some(node) = stack.pop() {
@@ -201,19 +203,32 @@ impl BaseParser {
                     }
                 }
                 "attribute" => {
-                    let Some(property_name) = self.extract_attribute_callee_name(node) else {
+                    let (property_name, object_name) = self.extract_attribute_parts(node);
+                    if property_name.is_empty() {
                         continue;
-                    };
-                    let caller = self
-                        .find_enclosing_function_name(node)
-                        .unwrap_or_else(|| "<module>".to_string());
+                    }
+                    let (caller, caller_class_name, _) = self.find_enclosing_context(node);
+                    let caller = caller.unwrap_or_else(|| "<module>".to_string());
                     let line = node.start_position().row + 1;
-                    let seen_key = (property_name.clone(), caller.clone(), line);
+                    let seen_key = (
+                        property_name.clone(),
+                        caller.clone(),
+                        caller_class_name.clone(),
+                        object_name.clone(),
+                        line,
+                    );
                     if seen_callers.insert(seen_key) {
                         callers_by_property
-                            .entry(property_name)
+                            .entry(property_name.clone())
                             .or_default()
-                            .push((caller, line));
+                            .push(PythonPropertyCallerInfo {
+                                file: self.file_path.clone(),
+                                property_name: property_name.clone(),
+                                caller,
+                                caller_class_name,
+                                object_name,
+                                line,
+                            });
                     }
                 }
                 _ => {}

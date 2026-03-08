@@ -32,7 +32,7 @@ pub(crate) struct CallQueryMatch<'a> {
 
 pub(crate) type PythonPropertyKey = (String, Option<String>);
 pub(crate) type PythonPropertyDefinitions = HashSet<PythonPropertyKey>;
-pub(crate) type PythonPropertyCallers = HashMap<String, Vec<(String, usize)>>;
+pub(crate) type PythonPropertyCallers = HashMap<String, Vec<PythonPropertyCallerInfo>>;
 
 impl BaseParser {
     pub(crate) fn new(file_path: &str) -> anyhow::Result<Self> {
@@ -364,10 +364,6 @@ impl BaseParser {
         )
     }
 
-    pub(crate) fn find_enclosing_function_name(&self, node: Node) -> Option<String> {
-        self.find_enclosing_context(node).0
-    }
-
     pub(crate) fn find_enclosing_function_node<'a>(&self, node: Node<'a>) -> Option<Node<'a>> {
         self.find_enclosing_context(node).2
     }
@@ -580,39 +576,6 @@ impl BaseParser {
             }
         }
         (callee, obj_name)
-    }
-
-    pub(crate) fn extract_attribute_callee_name(&self, node: Node) -> Option<String> {
-        let callee_node = match node.kind() {
-            "attribute" => node.child_by_field_name("attribute"),
-            "member_expression" => node.child_by_field_name("property"),
-            "selector_expression" => node.child_by_field_name("field"),
-            _ => {
-                let mut last_identifier = None;
-                for i in 0..node.named_child_count() {
-                    let Some(child) = node.named_child(i as u32) else {
-                        continue;
-                    };
-                    if matches!(
-                        child.kind(),
-                        "identifier"
-                            | "property_identifier"
-                            | "private_property_identifier"
-                            | "field_identifier"
-                    ) {
-                        last_identifier = Some(child);
-                    }
-                }
-                last_identifier
-            }
-        }?;
-
-        let callee = self.node_text(callee_node);
-        if callee.is_empty() {
-            None
-        } else {
-            Some(callee)
-        }
     }
 
     pub(crate) fn extract_function_params(&self, function_node: Node) -> Vec<FunctionParamInfo> {

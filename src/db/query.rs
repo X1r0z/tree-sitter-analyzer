@@ -415,7 +415,7 @@ impl DbProjectAnalyzer {
         if self.is_python_property(function_name, class_name)? {
             let mut property_sql = String::from(
                 "
-                SELECT f.path, ppc.caller, ppc.line
+                SELECT ppc.file_id, f.path, ppc.caller, ppc.caller_class_name, ppc.object_name, ppc.line
                 FROM python_property_callers ppc
                 JOIN files f ON f.id = ppc.file_id
                 WHERE ppc.property_name = ?1
@@ -431,16 +431,42 @@ impl DbProjectAnalyzer {
             let property_rows =
                 property_stmt.query_map(params_from_iter(property_params), |row| {
                     Ok((
-                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(0)?,
                         row.get::<_, String>(1)?,
-                        row.get::<_, i64>(2)? as usize,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, i64>(5)? as usize,
                     ))
                 })?;
             for row in property_rows {
-                let (file, caller, line) = row?;
-                let key = (file.clone(), caller.clone(), line);
+                let (file_id, file, caller_name, caller_class_name, object_name, line) = row?;
+                if let Some(class_name) = class_name {
+                    let caller = self.resolve_enclosing_db_function(
+                        file_id,
+                        &file,
+                        &caller_name,
+                        caller_class_name.as_deref(),
+                        line,
+                        &mut node_cache,
+                    )?;
+                    if !self.matches_property_target_for_caller(
+                        caller.as_ref(),
+                        object_name.as_deref(),
+                        class_name,
+                        &mut field_type_cache,
+                        &mut param_type_cache,
+                    )? {
+                        continue;
+                    }
+                }
+                let key = (file.clone(), caller_name.clone(), line);
                 if seen.insert(key) {
-                    results.push(CallerInfo { caller, line, file });
+                    results.push(CallerInfo {
+                        caller: caller_name,
+                        line,
+                        file,
+                    });
                 }
             }
         }
@@ -926,7 +952,7 @@ impl DbProjectAnalyzer {
         if is_property {
             let mut property_sql = String::from(
                 "
-                SELECT ppc.file_id, f.path, ppc.caller, ppc.line
+                SELECT ppc.file_id, f.path, ppc.caller, ppc.caller_class_name, ppc.object_name, ppc.line
                 FROM python_property_callers ppc
                 JOIN files f ON f.id = ppc.file_id
                 WHERE ppc.property_name = ?1
@@ -946,20 +972,31 @@ impl DbProjectAnalyzer {
                         row.get::<_, i64>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
-                        row.get::<_, i64>(3)? as usize,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, i64>(5)? as usize,
                     ))
                 })?;
 
             for row in property_rows {
-                let (file_id, file, caller_name, line) = row?;
+                let (file_id, file, caller_name, caller_class_name, object_name, line) = row?;
                 if let Some(caller) = self.resolve_enclosing_db_function(
                     file_id,
                     &file,
                     &caller_name,
-                    None,
+                    caller_class_name.as_deref(),
                     line,
                     node_cache,
                 )? {
+                    if !self.matches_property_target_for_caller(
+                        Some(&caller),
+                        object_name.as_deref(),
+                        node.function.class_name.as_deref().unwrap_or_default(),
+                        field_type_cache,
+                        param_type_cache,
+                    )? {
+                        continue;
+                    }
                     let key = caller.key();
                     if seen.insert(key) {
                         results.push(GraphNeighbor {
@@ -1344,6 +1381,37 @@ impl DbProjectAnalyzer {
         Ok(exists.is_some())
     }
 
+    fn matches_property_target_for_caller(
+        &self,
+        caller: Option<&DbFunctionNode>,
+        object_name: Option<&str>,
+        class_name: &str,
+        field_type_cache: &mut FieldTypeCache,
+        param_type_cache: &mut ParamTypeCache,
+    ) -> anyhow::Result<bool> {
+        if object_name == Some(class_name) {
+            return Ok(true);
+        }
+        if object_name
+            .and_then(|object_name| object_name.split('(').next())
+            .and_then(|head| head.rsplit('.').next())
+            .is_some_and(|name| name == class_name)
+        {
+            return Ok(true);
+        }
+
+        let Some(caller) = caller else {
+            return Ok(false);
+        };
+        self.matches_call_target_for_caller(
+            caller,
+            object_name,
+            class_name,
+            field_type_cache,
+            param_type_cache,
+        )
+    }
+
     fn matches_call_target_for_caller(
         &self,
         caller: &DbFunctionNode,
@@ -1447,5 +1515,101 @@ impl DbProjectAnalyzer {
         }
         cache.insert(function_id, map.clone());
         Ok(map)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use indicatif::ProgressBar;
+    use tempfile::tempdir;
+
+    use super::DbProjectAnalyzer;
+    use crate::analyzer::CodeAnalyzer;
+    use crate::db::{file_record_from_path, FileIndexData, IndexSyncPlan};
+    use crate::models::GraphDirection;
+
+    const PYTHON_PROPERTY_COLLISION: &str = r#"class Alpha:
+    @property
+    def value(self):
+        return 1
+
+
+class Beta:
+    @property
+    def value(self):
+        return 2
+
+
+def read_alpha(obj: Alpha):
+    return obj.value
+
+
+def read_beta(obj: Beta):
+    return obj.value
+"#;
+
+    fn build_python_index() -> anyhow::Result<(tempfile::TempDir, DbProjectAnalyzer)> {
+        let temp = tempdir()?;
+        let file = temp.path().join("sample.py");
+        fs::write(&file, PYTHON_PROPERTY_COLLISION)?;
+
+        let file_path = file.to_str().unwrap();
+        let record = file_record_from_path(file_path, "python")?;
+        let mut analyzer = CodeAnalyzer::new(file_path)?;
+        let snapshot = analyzer.snapshot_for_index();
+        let plan = IndexSyncPlan {
+            current_files: vec![record.clone()],
+            changed_snapshots: vec![FileIndexData {
+                file: record,
+                snapshot,
+            }],
+        };
+
+        let db_path = temp.path().join("tsa.db");
+        DbProjectAnalyzer::update_database(
+            &db_path,
+            temp.path().to_str().unwrap(),
+            Some("python"),
+            &plan,
+            &ProgressBar::hidden(),
+        )?;
+
+        let mut db = DbProjectAnalyzer::from_db_file(&db_path)?;
+        db.requested_language = Some("python".to_string());
+        Ok((temp, db))
+    }
+
+    #[test]
+    fn indexed_property_callers_are_disambiguated_by_receiver_type() -> anyhow::Result<()> {
+        let (_temp, db) = build_python_index()?;
+
+        let alpha_callers = db.find_callers("value", Some("Alpha"))?;
+        assert_eq!(alpha_callers.len(), 1);
+        assert_eq!(alpha_callers[0].caller, "read_alpha");
+
+        let beta_callers = db.find_callers("value", Some("Beta"))?;
+        assert_eq!(beta_callers.len(), 1);
+        assert_eq!(beta_callers[0].caller, "read_beta");
+
+        Ok(())
+    }
+
+    #[test]
+    fn indexed_property_graphs_are_disambiguated_by_receiver_type() -> anyhow::Result<()> {
+        let (_temp, db) = build_python_index()?;
+
+        let alpha_graphs = db.find_graphs("value", Some("Alpha"), GraphDirection::Backward, 1)?;
+        assert_eq!(alpha_graphs.len(), 1);
+        assert_eq!(alpha_graphs[0].path[0].class_name.as_deref(), Some("Alpha"));
+        assert_eq!(alpha_graphs[0].path[1].name, "read_alpha");
+
+        let beta_graphs = db.find_graphs("value", Some("Beta"), GraphDirection::Backward, 1)?;
+        assert_eq!(beta_graphs.len(), 1);
+        assert_eq!(beta_graphs[0].path[0].class_name.as_deref(), Some("Beta"));
+        assert_eq!(beta_graphs[0].path[1].name, "read_beta");
+
+        Ok(())
     }
 }

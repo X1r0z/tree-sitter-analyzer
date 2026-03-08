@@ -331,35 +331,90 @@ impl CodeAnalyzer {
         self.cache.set_python_properties(properties, callers);
     }
 
-    fn matches_call_target_class(&mut self, call: &CallInfo, class_name: &str) -> bool {
-        if call.object_name.as_deref() == Some(class_name) {
+    fn find_enclosing_function_info(
+        &mut self,
+        function_name: &str,
+        class_name: Option<&str>,
+        line: usize,
+    ) -> Option<FunctionInfo> {
+        self.cached_functions()
+            .iter()
+            .find(|function| {
+                function.name == function_name
+                    && function.class_name.as_deref() == class_name
+                    && function.location.start_line <= line
+                    && line <= function.location.end_line
+            })
+            .cloned()
+    }
+
+    fn matches_target_class(
+        &mut self,
+        caller_name: Option<&str>,
+        caller_class_name: Option<&str>,
+        object_name: Option<&str>,
+        line: usize,
+        class_name: &str,
+    ) -> bool {
+        if object_name == Some(class_name) {
             return true;
         }
-        if call.object_name.is_none() {
-            return call.caller_class_name.as_deref() == Some(class_name);
+        if object_name.is_none() {
+            return caller_class_name == Some(class_name);
         }
-        if matches!(
-            call.object_name.as_deref(),
-            Some("self") | Some("this") | Some("cls")
-        ) {
-            return call.caller_class_name.as_deref() == Some(class_name);
+        if matches!(object_name, Some("self") | Some("this") | Some("cls")) {
+            return caller_class_name == Some(class_name);
         }
-        if let (Some(object_name), Some(caller_class_name)) = (
-            call.object_name.as_deref(),
-            call.caller_class_name.as_deref(),
-        ) {
-            if let Some(attr_name) = extract_instance_attr(object_name) {
-                for field in self.fields(caller_class_name) {
-                    if field.name != attr_name {
-                        continue;
-                    }
-                    if type_matches_class(field.field_type.as_deref(), class_name) {
-                        return true;
-                    }
+
+        let Some(object_name) = object_name else {
+            return false;
+        };
+
+        if object_name
+            .split('(')
+            .next()
+            .and_then(|head| head.rsplit('.').next())
+            .is_some_and(|name| name == class_name)
+        {
+            return true;
+        }
+
+        let Some(attr_name) = extract_instance_attr(object_name) else {
+            return false;
+        };
+
+        if let Some(caller_class_name) = caller_class_name {
+            for field in self.fields(caller_class_name) {
+                if field.name != attr_name {
+                    continue;
+                }
+                if type_matches_class(field.field_type.as_deref(), class_name) {
+                    return true;
                 }
             }
         }
-        false
+
+        let Some(caller_name) = caller_name else {
+            return false;
+        };
+        let Some(caller) = self.find_enclosing_function_info(caller_name, caller_class_name, line)
+        else {
+            return false;
+        };
+
+        caller.params.iter().any(|param| {
+            param.name == attr_name && type_matches_class(param.param_type.as_deref(), class_name)
+        })
+    }
+
+    fn matches_call_target_class(&mut self, call: &CallInfo, class_name: &str) -> bool {
+        self.matches_target_class(
+            call.caller.as_deref(),
+            call.caller_class_name.as_deref(),
+            call.object_name.as_deref(),
+            call.location.start_line,
+            class_name,
+        )
     }
 
     pub fn functions(&mut self) -> Vec<FunctionInfo> {
@@ -453,12 +508,14 @@ impl CodeAnalyzer {
             }
             if let Some(callers) = self.cache.python_property_callers() {
                 for (property_name, entries) in callers {
-                    for (caller, line) in entries {
+                    for caller in entries {
                         python_property_callers.push(PythonPropertyCallerInfo {
-                            file: self.parser.file_path.clone(),
                             property_name: property_name.clone(),
-                            caller: caller.clone(),
-                            line: *line,
+                            file: caller.file.clone(),
+                            caller: caller.caller.clone(),
+                            caller_class_name: caller.caller_class_name.clone(),
+                            object_name: caller.object_name.clone(),
+                            line: caller.line,
                         });
                     }
                 }
@@ -529,16 +586,27 @@ impl CodeAnalyzer {
                 properties.contains(&(function_name.to_string(), class_name.map(str::to_string)))
             })
         {
-            for (caller, line) in self
+            for caller in self
                 .cache
                 .python_property_callers()
                 .and_then(|callers| callers.get(function_name))
                 .cloned()
                 .unwrap_or_default()
             {
-                let key = (caller.clone(), line);
+                if let Some(class_name) = class_name {
+                    if !self.matches_target_class(
+                        Some(&caller.caller),
+                        caller.caller_class_name.as_deref(),
+                        caller.object_name.as_deref(),
+                        caller.line,
+                        class_name,
+                    ) {
+                        continue;
+                    }
+                }
+                let key = (caller.caller.clone(), caller.line);
                 if seen.insert(key) {
-                    callers.push((caller, line));
+                    callers.push((caller.caller, caller.line));
                 }
             }
         }
@@ -596,5 +664,51 @@ impl CodeAnalyzer {
             .iter()
             .find(|c| c.name == class_name)
             .cloned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    use super::CodeAnalyzer;
+
+    const PYTHON_PROPERTY_COLLISION: &str = r#"class Alpha:
+    @property
+    def value(self):
+        return 1
+
+
+class Beta:
+    @property
+    def value(self):
+        return 2
+
+
+def read_alpha(obj: Alpha):
+    return obj.value
+
+
+def read_beta(obj: Beta):
+    return obj.value
+"#;
+
+    #[test]
+    fn python_property_callers_are_disambiguated_by_receiver_type() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let file = temp.path().join("sample.py");
+        fs::write(&file, PYTHON_PROPERTY_COLLISION)?;
+
+        let mut analyzer = CodeAnalyzer::new(file.to_str().unwrap())?;
+
+        let alpha_callers = analyzer.find_function_callers("value", Some("Alpha"));
+        assert_eq!(alpha_callers, vec![("read_alpha".to_string(), 14)]);
+
+        let beta_callers = analyzer.find_function_callers("value", Some("Beta"));
+        assert_eq!(beta_callers, vec![("read_beta".to_string(), 18)]);
+
+        Ok(())
     }
 }

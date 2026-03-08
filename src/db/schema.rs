@@ -195,6 +195,8 @@ impl DbProjectAnalyzer {
                 file_id INTEGER NOT NULL,
                 property_name TEXT NOT NULL,
                 caller TEXT NOT NULL,
+                caller_class_name TEXT,
+                object_name TEXT,
                 line INTEGER NOT NULL,
                 FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
             );
@@ -233,6 +235,7 @@ impl DbProjectAnalyzer {
             CREATE INDEX IF NOT EXISTS idx_python_properties_name_class ON python_properties(property_name, class_name);
             CREATE INDEX IF NOT EXISTS idx_python_properties_file_name_class ON python_properties(file_id, property_name, class_name);
             CREATE INDEX IF NOT EXISTS idx_python_property_callers_name ON python_property_callers(property_name);
+            CREATE INDEX IF NOT EXISTS idx_python_property_callers_name_caller_class ON python_property_callers(property_name, caller_class_name);
             CREATE INDEX IF NOT EXISTS idx_python_property_callers_file_name_line ON python_property_callers(file_id, property_name, line);
         ",
         )?;
@@ -267,7 +270,24 @@ impl DbProjectAnalyzer {
                 [],
             )?;
         }
+        let property_caller_columns = Self::table_columns(conn, "python_property_callers")?;
+        if !property_caller_columns.contains("caller_class_name") {
+            conn.execute(
+                "ALTER TABLE python_property_callers ADD COLUMN caller_class_name TEXT",
+                [],
+            )?;
+        }
+        if !property_caller_columns.contains("object_name") {
+            conn.execute(
+                "ALTER TABLE python_property_callers ADD COLUMN object_name TEXT",
+                [],
+            )?;
+        }
         conn.execute("DROP INDEX IF EXISTS idx_symbol_refs_name", [])?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_python_property_callers_name_caller_class ON python_property_callers(property_name, caller_class_name)",
+            [],
+        )?;
         Self::ensure_trigram_fts(conn, "functions_fts", "name", "functions", "id", "name")?;
         Self::ensure_trigram_fts(conn, "classes_fts", "name", "classes", "id", "name")?;
         Self::ensure_trigram_fts(conn, "imports_fts", "module", "imports", "id", "module")?;

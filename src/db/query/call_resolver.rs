@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use rusqlite::{params, OptionalExtension};
 
-use super::call_relations::DbFunctionNode;
-use super::DbQueryContext;
+use super::call_edges::IndexedFunction;
+use super::QueryContext;
 use crate::utils::{extract_instance_attr, type_matches_class};
 
 pub(super) type FieldTypesByName = HashMap<String, Vec<Option<String>>>;
@@ -12,11 +12,11 @@ pub(super) type ParamTypesByName = HashMap<String, Vec<Option<String>>>;
 pub(super) type ParamTypeCache = HashMap<i64, ParamTypesByName>;
 
 pub(crate) struct CallTargetResolver<'a> {
-    ctx: DbQueryContext<'a>,
+    ctx: QueryContext<'a>,
 }
 
 impl<'a> CallTargetResolver<'a> {
-    pub(crate) fn new(ctx: DbQueryContext<'a>) -> Self {
+    pub(crate) fn new(ctx: QueryContext<'a>) -> Self {
         Self { ctx }
     }
 
@@ -62,7 +62,7 @@ impl<'a> CallTargetResolver<'a> {
 
     pub(super) fn matches_property_target(
         &self,
-        caller: Option<&DbFunctionNode>,
+        caller: Option<&IndexedFunction>,
         object_name: Option<&str>,
         class_name: &str,
         field_type_cache: &mut FieldTypeCache,
@@ -93,7 +93,7 @@ impl<'a> CallTargetResolver<'a> {
 
     pub(super) fn matches_call_target(
         &self,
-        caller: &DbFunctionNode,
+        caller: &IndexedFunction,
         object_name: Option<&str>,
         class_name: &str,
         field_type_cache: &mut FieldTypeCache,
@@ -143,12 +143,12 @@ impl<'a> CallTargetResolver<'a> {
 
     pub(super) fn resolve_forward_targets(
         &self,
-        caller: &DbFunctionNode,
+        caller: &IndexedFunction,
         object_name: Option<&str>,
-        candidates: &[DbFunctionNode],
+        candidates: &[IndexedFunction],
         field_type_cache: &mut FieldTypeCache,
         param_type_cache: &mut ParamTypeCache,
-    ) -> anyhow::Result<Vec<DbFunctionNode>> {
+    ) -> anyhow::Result<Vec<IndexedFunction>> {
         let mut results = Vec::new();
         let mut seen = std::collections::HashSet::new();
 

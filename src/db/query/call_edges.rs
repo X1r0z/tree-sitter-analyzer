@@ -2,13 +2,13 @@ use std::collections::{HashMap, HashSet};
 
 use rusqlite::{params, params_from_iter, ToSql};
 
-use super::call_resolution::CallTargetResolver;
-use super::DbQueryContext;
+use super::call_resolver::CallTargetResolver;
+use super::QueryContext;
 use crate::models::{CalleeInfo, CallerInfo, FunctionInfo, FunctionKey, Location};
 use crate::utils::{sort_callees_by_file_line, sort_callers_by_file_line, split_function_target};
 
 #[derive(Debug)]
-pub(super) struct CallLookupRow {
+pub(super) struct CallerRow {
     file_id: i64,
     file: String,
     caller: Option<String>,
@@ -18,7 +18,7 @@ pub(super) struct CallLookupRow {
 }
 
 #[derive(Debug)]
-pub(super) struct CalleeLookupRow {
+pub(super) struct CalleeRow {
     file_id: i64,
     file: String,
     callee: String,
@@ -28,24 +28,24 @@ pub(super) struct CalleeLookupRow {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct DbFunctionNode {
+pub(super) struct IndexedFunction {
     pub(super) function_id: i64,
     pub(super) file_id: i64,
     pub(super) function: FunctionInfo,
 }
 
-impl DbFunctionNode {
+impl IndexedFunction {
     pub(super) fn key(&self) -> FunctionKey {
         FunctionKey::from(&self.function)
     }
 }
 
-pub(crate) struct CallRelationQuery<'a> {
-    ctx: DbQueryContext<'a>,
+pub(crate) struct CallEdgeQuery<'a> {
+    ctx: QueryContext<'a>,
 }
 
-impl<'a> CallRelationQuery<'a> {
-    pub(crate) fn new(ctx: DbQueryContext<'a>) -> Self {
+impl<'a> CallEdgeQuery<'a> {
+    pub(crate) fn new(ctx: QueryContext<'a>) -> Self {
         Self { ctx }
     }
 
@@ -73,7 +73,7 @@ impl<'a> CallRelationQuery<'a> {
 
         let mut stmt = self.ctx.conn.prepare(&sql)?;
         let rows = stmt.query_map(params_from_iter(params), |row| {
-            Ok(CallLookupRow {
+            Ok(CallerRow {
                 file_id: row.get(0)?,
                 file: row.get(1)?,
                 caller: row.get(2)?,
@@ -99,7 +99,7 @@ impl<'a> CallRelationQuery<'a> {
                 let Some(caller_name) = row.caller.as_deref() else {
                     continue;
                 };
-                let Some(caller) = self.resolve_enclosing_function_node(
+                let Some(caller) = self.resolve_enclosing_function(
                     row.file_id,
                     &row.file,
                     caller_name,
@@ -161,7 +161,7 @@ impl<'a> CallRelationQuery<'a> {
             for row in property_rows {
                 let (file_id, file, caller_name, caller_class_name, object_name, line) = row?;
                 if let Some(class_name) = class_name {
-                    let caller = self.resolve_enclosing_function_node(
+                    let caller = self.resolve_enclosing_function(
                         file_id,
                         &file,
                         &caller_name,
@@ -199,7 +199,7 @@ impl<'a> CallRelationQuery<'a> {
         function_name: &str,
         class_name: Option<&str>,
     ) -> anyhow::Result<Vec<CalleeInfo>> {
-        let relevant_files = self.relevant_function_file_ids(function_name, class_name)?;
+        let relevant_files = self.matching_function_file_ids(function_name, class_name)?;
 
         let mut sql = String::from(
             "
@@ -223,10 +223,10 @@ impl<'a> CallRelationQuery<'a> {
         sql.push_str(" ORDER BY f.path, c.start_line");
 
         let mut stmt = self.ctx.conn.prepare(&sql)?;
-        let rows: Vec<CalleeLookupRow> = match (class_name, language) {
+        let rows: Vec<CalleeRow> = match (class_name, language) {
             (Some(class_name), Some(language)) => stmt
                 .query_map(params![function_name, class_name, language], |row| {
-                    Ok(CalleeLookupRow {
+                    Ok(CalleeRow {
                         file_id: row.get(0)?,
                         file: row.get(1)?,
                         callee: row.get(2)?,
@@ -238,7 +238,7 @@ impl<'a> CallRelationQuery<'a> {
                 .collect::<Result<Vec<_>, _>>()?,
             (Some(class_name), None) => stmt
                 .query_map(params![function_name, class_name], |row| {
-                    Ok(CalleeLookupRow {
+                    Ok(CalleeRow {
                         file_id: row.get(0)?,
                         file: row.get(1)?,
                         callee: row.get(2)?,
@@ -250,7 +250,7 @@ impl<'a> CallRelationQuery<'a> {
                 .collect::<Result<Vec<_>, _>>()?,
             (None, Some(language)) => stmt
                 .query_map(params![function_name, language], |row| {
-                    Ok(CalleeLookupRow {
+                    Ok(CalleeRow {
                         file_id: row.get(0)?,
                         file: row.get(1)?,
                         callee: row.get(2)?,
@@ -262,7 +262,7 @@ impl<'a> CallRelationQuery<'a> {
                 .collect::<Result<Vec<_>, _>>()?,
             (None, None) => stmt
                 .query_map([function_name], |row| {
-                    Ok(CalleeLookupRow {
+                    Ok(CalleeRow {
                         file_id: row.get(0)?,
                         file: row.get(1)?,
                         callee: row.get(2)?,
@@ -302,11 +302,11 @@ impl<'a> CallRelationQuery<'a> {
         Ok(results)
     }
 
-    pub(super) fn load_exact_function_nodes(
+    pub(super) fn load_exact_functions(
         &self,
         function_name: &str,
         class_name: Option<&str>,
-    ) -> anyhow::Result<Vec<DbFunctionNode>> {
+    ) -> anyhow::Result<Vec<IndexedFunction>> {
         let mut sql = String::from(
             "
             SELECT fn.id, fn.file_id, f.path, fn.name, fn.class_name, fn.start_line, fn.end_line
@@ -329,58 +329,58 @@ impl<'a> CallRelationQuery<'a> {
         sql.push_str(" ORDER BY f.path, fn.start_line");
 
         let mut stmt = self.ctx.conn.prepare(&sql)?;
-        let rows: Vec<DbFunctionNode> = match (class_name, language) {
+        let rows: Vec<IndexedFunction> = match (class_name, language) {
             (Some(class_name), Some(language)) => stmt
                 .query_map(params![function_name, class_name, language], |row| {
-                    Self::function_node_from_row(row)
+                    Self::function_from_row(row)
                 })?
                 .collect::<Result<Vec<_>, _>>()?,
             (Some(class_name), None) => stmt
                 .query_map(params![function_name, class_name], |row| {
-                    Self::function_node_from_row(row)
+                    Self::function_from_row(row)
                 })?
                 .collect::<Result<Vec<_>, _>>()?,
             (None, Some(language)) => stmt
                 .query_map(params![function_name, language], |row| {
-                    Self::function_node_from_row(row)
+                    Self::function_from_row(row)
                 })?
                 .collect::<Result<Vec<_>, _>>()?,
             (None, None) => stmt
-                .query_map([function_name], Self::function_node_from_row)?
+                .query_map([function_name], Self::function_from_row)?
                 .collect::<Result<Vec<_>, _>>()?,
         };
         Ok(rows)
     }
 
-    pub(super) fn load_function_nodes_by_name(
+    pub(super) fn load_functions_by_name(
         &self,
         function_name: &str,
-        cache: &mut HashMap<(String, Option<String>), Vec<DbFunctionNode>>,
-    ) -> anyhow::Result<Vec<DbFunctionNode>> {
+        cache: &mut HashMap<(String, Option<String>), Vec<IndexedFunction>>,
+    ) -> anyhow::Result<Vec<IndexedFunction>> {
         let key = (function_name.to_string(), None);
         if let Some(cached) = cache.get(&key) {
             return Ok(cached.clone());
         }
 
-        let loaded = self.load_exact_function_nodes(function_name, None)?;
+        let loaded = self.load_exact_functions(function_name, None)?;
         cache.insert(key, loaded.clone());
         Ok(loaded)
     }
 
-    pub(super) fn resolve_enclosing_function_node(
+    pub(super) fn resolve_enclosing_function(
         &self,
         file_id: i64,
         file: &str,
         function_name: &str,
         class_name: Option<&str>,
         line: usize,
-        cache: &mut HashMap<(String, Option<String>), Vec<DbFunctionNode>>,
-    ) -> anyhow::Result<Option<DbFunctionNode>> {
+        cache: &mut HashMap<(String, Option<String>), Vec<IndexedFunction>>,
+    ) -> anyhow::Result<Option<IndexedFunction>> {
         let cache_key = (function_name.to_string(), class_name.map(str::to_string));
         let candidates = if let Some(cached) = cache.get(&cache_key) {
             cached.clone()
         } else {
-            let loaded = self.load_exact_function_nodes(function_name, class_name)?;
+            let loaded = self.load_exact_functions(function_name, class_name)?;
             cache.insert(cache_key.clone(), loaded.clone());
             loaded
         };
@@ -393,7 +393,7 @@ impl<'a> CallRelationQuery<'a> {
         }))
     }
 
-    fn relevant_function_file_ids(
+    fn matching_function_file_ids(
         &self,
         function_name: &str,
         class_name: Option<&str>,
@@ -439,8 +439,8 @@ impl<'a> CallRelationQuery<'a> {
         Ok(rows.into_iter().collect())
     }
 
-    fn function_node_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DbFunctionNode> {
-        Ok(DbFunctionNode {
+    fn function_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<IndexedFunction> {
+        Ok(IndexedFunction {
             function_id: row.get(0)?,
             file_id: row.get(1)?,
             function: FunctionInfo {

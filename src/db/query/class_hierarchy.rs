@@ -1,20 +1,20 @@
 use std::collections::HashMap;
 
-use super::{CatalogQuery, DbQueryContext};
+use super::{LookupQuery, QueryContext};
 use crate::models::ClassInfo;
 use crate::walk::bfs::collect_reachable;
 
 pub(crate) struct ClassHierarchyQuery<'a> {
-    ctx: DbQueryContext<'a>,
+    ctx: QueryContext<'a>,
 }
 
 impl<'a> ClassHierarchyQuery<'a> {
-    pub(crate) fn new(ctx: DbQueryContext<'a>) -> Self {
+    pub(crate) fn new(ctx: QueryContext<'a>) -> Self {
         Self { ctx }
     }
 
     pub(crate) fn find_super_classes(&self, class_name: &str) -> anyhow::Result<Vec<ClassInfo>> {
-        let all_classes = CatalogQuery::new(self.ctx).find_classes("")?;
+        let all_classes = LookupQuery::new(self.ctx).find_classes("")?;
         let class_map = load_classes_by_name(&all_classes);
         let Some(target) = class_map
             .get(class_name)
@@ -45,7 +45,7 @@ impl<'a> ClassHierarchyQuery<'a> {
     }
 
     pub(crate) fn find_sub_classes(&self, class_name: &str) -> anyhow::Result<Vec<ClassInfo>> {
-        let all_classes = CatalogQuery::new(self.ctx).find_classes("")?;
+        let all_classes = LookupQuery::new(self.ctx).find_classes("")?;
         let mut children_by_parent: HashMap<String, Vec<ClassInfo>> = HashMap::new();
         for class in all_classes {
             for parent in &class.super_classes {

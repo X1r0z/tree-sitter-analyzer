@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use rusqlite::{params_from_iter, ToSql};
 
 use super::prefilter::RegexPrefilter;
-use super::DbQueryContext;
+use super::QueryContext;
 use crate::models::{
     AnnotationInfo, ClassInfo, FieldInfo, FunctionInfo, ImportInfo, Location, SymbolRefInfo,
 };
@@ -11,7 +11,7 @@ use crate::models::{
 const SQLITE_BATCH_SIZE: usize = 256;
 
 #[derive(Debug)]
-struct ClassBaseRow {
+struct ClassRow {
     class_id: i64,
     file_id: i64,
     file: String,
@@ -20,12 +20,12 @@ struct ClassBaseRow {
     end_line: i64,
 }
 
-pub(crate) struct CatalogQuery<'a> {
-    ctx: DbQueryContext<'a>,
+pub(crate) struct LookupQuery<'a> {
+    ctx: QueryContext<'a>,
 }
 
-impl<'a> CatalogQuery<'a> {
-    pub(crate) fn new(ctx: DbQueryContext<'a>) -> Self {
+impl<'a> LookupQuery<'a> {
+    pub(crate) fn new(ctx: QueryContext<'a>) -> Self {
         Self { ctx }
     }
 
@@ -117,7 +117,7 @@ impl<'a> CatalogQuery<'a> {
 
         let mut stmt = self.ctx.conn.prepare(&sql)?;
         let rows = stmt.query_map(params_from_iter(params), |row| {
-            Ok(ClassBaseRow {
+            Ok(ClassRow {
                 class_id: row.get(0)?,
                 file_id: row.get(1)?,
                 file: row.get(2)?,
@@ -132,8 +132,8 @@ impl<'a> CatalogQuery<'a> {
             .iter()
             .map(|row| (row.file_id, row.name.clone()))
             .collect();
-        let methods_by_class = self.load_methods_by_class(&class_ids)?;
-        let super_classes_by_class = self.load_superclasses_by_class(&class_ids)?;
+        let methods_by_class = self.load_methods_by_class_id(&class_ids)?;
+        let super_classes_by_class = self.load_superclasses_by_class_id(&class_ids)?;
         let fields_by_class = self.load_field_names_by_file_class(&field_keys)?;
 
         Ok(class_rows
@@ -279,7 +279,7 @@ impl<'a> CatalogQuery<'a> {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
-    pub(crate) fn find_symbols(&self, name: &str) -> anyhow::Result<Vec<SymbolRefInfo>> {
+    pub(crate) fn find_symbol_refs(&self, name: &str) -> anyhow::Result<Vec<SymbolRefInfo>> {
         let mut sql = String::from(
             "
             SELECT f.path, s.name, s.node_type, s.start_line, s.end_line, s.start_column, s.end_column
@@ -313,7 +313,7 @@ impl<'a> CatalogQuery<'a> {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
-    pub(super) fn load_methods_by_class(
+    pub(super) fn load_methods_by_class_id(
         &self,
         class_ids: &[i64],
     ) -> anyhow::Result<HashMap<i64, Vec<String>>> {
@@ -340,7 +340,7 @@ impl<'a> CatalogQuery<'a> {
         Ok(map)
     }
 
-    pub(super) fn load_superclasses_by_class(
+    pub(super) fn load_superclasses_by_class_id(
         &self,
         class_ids: &[i64],
     ) -> anyhow::Result<HashMap<i64, Vec<String>>> {

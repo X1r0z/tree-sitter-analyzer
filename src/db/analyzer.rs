@@ -1,7 +1,7 @@
 use rusqlite::Connection;
 
 use super::query::{
-    CallGraphQuery, CallRelationQuery, CatalogQuery, ClassHierarchyQuery, DbQueryContext,
+    CallEdgeQuery, CallGraphQuery, ClassHierarchyQuery, LookupQuery, QueryContext,
 };
 use super::store::IndexStore;
 use crate::models::{
@@ -34,31 +34,31 @@ impl DbProjectAnalyzer {
     }
 
     pub(crate) fn file_count(&self) -> usize {
-        CatalogQuery::new(self.query_context()).file_count()
+        LookupQuery::new(self.query_context()).file_count()
     }
 
     pub(crate) fn find_functions(&self, query: &str) -> anyhow::Result<Vec<FunctionInfo>> {
-        CatalogQuery::new(self.query_context()).find_functions(query)
+        LookupQuery::new(self.query_context()).find_functions(query)
     }
 
     pub(crate) fn find_classes(&self, query: &str) -> anyhow::Result<Vec<ClassInfo>> {
-        CatalogQuery::new(self.query_context()).find_classes(query)
+        LookupQuery::new(self.query_context()).find_classes(query)
     }
 
     pub(crate) fn find_fields(&self, class_name: &str) -> anyhow::Result<Vec<FieldInfo>> {
-        CatalogQuery::new(self.query_context()).find_fields(class_name)
+        LookupQuery::new(self.query_context()).find_fields(class_name)
     }
 
     pub(crate) fn find_imports(&self, query: &str) -> anyhow::Result<Vec<ImportInfo>> {
-        CatalogQuery::new(self.query_context()).find_imports(query)
+        LookupQuery::new(self.query_context()).find_imports(query)
     }
 
     pub(crate) fn find_annotations(&self, query: &str) -> anyhow::Result<Vec<AnnotationInfo>> {
-        CatalogQuery::new(self.query_context()).find_annotations(query)
+        LookupQuery::new(self.query_context()).find_annotations(query)
     }
 
     pub(crate) fn find_symbols(&self, name: &str) -> anyhow::Result<Vec<SymbolRefInfo>> {
-        CatalogQuery::new(self.query_context()).find_symbols(name)
+        LookupQuery::new(self.query_context()).find_symbol_refs(name)
     }
 
     pub(crate) fn find_callers(
@@ -66,7 +66,7 @@ impl DbProjectAnalyzer {
         function_name: &str,
         class_name: Option<&str>,
     ) -> anyhow::Result<Vec<CallerInfo>> {
-        CallRelationQuery::new(self.query_context()).find_callers(function_name, class_name)
+        CallEdgeQuery::new(self.query_context()).find_callers(function_name, class_name)
     }
 
     pub(crate) fn find_callees(
@@ -74,7 +74,7 @@ impl DbProjectAnalyzer {
         function_name: &str,
         class_name: Option<&str>,
     ) -> anyhow::Result<Vec<CalleeInfo>> {
-        CallRelationQuery::new(self.query_context()).find_callees(function_name, class_name)
+        CallEdgeQuery::new(self.query_context()).find_callees(function_name, class_name)
     }
 
     pub(crate) fn find_super_classes(&self, class_name: &str) -> anyhow::Result<Vec<ClassInfo>> {
@@ -100,8 +100,8 @@ impl DbProjectAnalyzer {
         )
     }
 
-    fn query_context(&self) -> DbQueryContext<'_> {
-        DbQueryContext {
+    fn query_context(&self) -> QueryContext<'_> {
+        QueryContext {
             conn: &self.conn,
             language: self.language.as_deref(),
         }

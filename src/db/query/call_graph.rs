@@ -2,9 +2,9 @@ use std::collections::{HashMap, HashSet};
 
 use rusqlite::{params, params_from_iter, ToSql};
 
-use super::call_relations::DbFunctionNode;
-use super::call_resolution::{CallTargetResolver, FieldTypeCache, ParamTypeCache};
-use super::{CallRelationQuery, DbQueryContext};
+use super::call_edges::IndexedFunction;
+use super::call_resolver::{CallTargetResolver, FieldTypeCache, ParamTypeCache};
+use super::{CallEdgeQuery, QueryContext};
 use crate::models::{CallGraphPath, FunctionKey, GraphDirection, GraphPathNode};
 use crate::walk::dfs::{try_collect_paths, PathStep};
 
@@ -16,24 +16,24 @@ struct CallSite {
 
 #[derive(Clone)]
 struct GraphNeighbor {
-    node: DbFunctionNode,
+    node: IndexedFunction,
     call_site: CallSite,
 }
 
 struct GraphTraversalState {
     neighbor_cache: HashMap<(GraphDirection, FunctionKey), Vec<GraphNeighbor>>,
-    node_cache: HashMap<(String, Option<String>), Vec<DbFunctionNode>>,
+    node_cache: HashMap<(String, Option<String>), Vec<IndexedFunction>>,
     field_type_cache: FieldTypeCache,
     param_type_cache: ParamTypeCache,
     is_property_cache: HashMap<(String, Option<String>), bool>,
 }
 
 pub(crate) struct CallGraphQuery<'a> {
-    ctx: DbQueryContext<'a>,
+    ctx: QueryContext<'a>,
 }
 
 impl<'a> CallGraphQuery<'a> {
-    pub(crate) fn new(ctx: DbQueryContext<'a>) -> Self {
+    pub(crate) fn new(ctx: QueryContext<'a>) -> Self {
         Self { ctx }
     }
 
@@ -44,8 +44,8 @@ impl<'a> CallGraphQuery<'a> {
         direction: GraphDirection,
         max_depth: usize,
     ) -> anyhow::Result<Vec<CallGraphPath>> {
-        let relation_query = CallRelationQuery::new(self.ctx);
-        let start_nodes = relation_query.load_exact_function_nodes(function_name, class_name)?;
+        let relation_query = CallEdgeQuery::new(self.ctx);
+        let start_nodes = relation_query.load_exact_functions(function_name, class_name)?;
         if start_nodes.is_empty() {
             anyhow::bail!("Function '{}' not found", function_name);
         }
@@ -68,7 +68,7 @@ impl<'a> CallGraphQuery<'a> {
             &start_nodes,
             direction,
             max_depth,
-            DbFunctionNode::key,
+            IndexedFunction::key,
             |current| {
                 let cache_key = (direction, current.key());
                 let neighbors = if let Some(cached) = neighbor_cache.get(&cache_key) {
@@ -86,7 +86,7 @@ impl<'a> CallGraphQuery<'a> {
                     loaded
                 };
 
-                Ok::<Vec<(DbFunctionNode, CallSite)>, anyhow::Error>(
+                Ok::<Vec<(IndexedFunction, CallSite)>, anyhow::Error>(
                     neighbors
                         .into_iter()
                         .map(|neighbor| (neighbor.node, neighbor.call_site))
@@ -107,7 +107,7 @@ impl<'a> CallGraphQuery<'a> {
 
     fn materialize_graph(
         direction: GraphDirection,
-        steps: &[PathStep<DbFunctionNode, CallSite>],
+        steps: &[PathStep<IndexedFunction, CallSite>],
     ) -> CallGraphPath {
         let path: Vec<GraphPathNode> = steps
             .iter()
@@ -135,9 +135,9 @@ impl<'a> CallGraphQuery<'a> {
 
     fn load_graph_neighbors(
         &self,
-        node: &DbFunctionNode,
+        node: &IndexedFunction,
         direction: GraphDirection,
-        node_cache: &mut HashMap<(String, Option<String>), Vec<DbFunctionNode>>,
+        node_cache: &mut HashMap<(String, Option<String>), Vec<IndexedFunction>>,
         field_type_cache: &mut FieldTypeCache,
         param_type_cache: &mut ParamTypeCache,
         is_property_cache: &mut HashMap<(String, Option<String>), bool>,
@@ -158,12 +158,12 @@ impl<'a> CallGraphQuery<'a> {
 
     fn load_forward_neighbors(
         &self,
-        node: &DbFunctionNode,
-        node_cache: &mut HashMap<(String, Option<String>), Vec<DbFunctionNode>>,
+        node: &IndexedFunction,
+        node_cache: &mut HashMap<(String, Option<String>), Vec<IndexedFunction>>,
         field_type_cache: &mut FieldTypeCache,
         param_type_cache: &mut ParamTypeCache,
     ) -> anyhow::Result<Vec<GraphNeighbor>> {
-        let relation_query = CallRelationQuery::new(self.ctx);
+        let relation_query = CallEdgeQuery::new(self.ctx);
         let resolver = CallTargetResolver::new(self.ctx);
         let start_line = node.function.location.start_line as i64;
         let end_line = node.function.location.end_line as i64;
@@ -220,7 +220,7 @@ impl<'a> CallGraphQuery<'a> {
         let mut results = Vec::new();
         for (callee_name, object_name, line) in rows {
             let candidates =
-                relation_query.load_function_nodes_by_name(&callee_name, node_cache)?;
+                relation_query.load_functions_by_name(&callee_name, node_cache)?;
             for candidate in resolver.resolve_forward_targets(
                 node,
                 object_name.as_deref(),
@@ -245,13 +245,13 @@ impl<'a> CallGraphQuery<'a> {
 
     fn load_backward_neighbors(
         &self,
-        node: &DbFunctionNode,
-        node_cache: &mut HashMap<(String, Option<String>), Vec<DbFunctionNode>>,
+        node: &IndexedFunction,
+        node_cache: &mut HashMap<(String, Option<String>), Vec<IndexedFunction>>,
         field_type_cache: &mut FieldTypeCache,
         param_type_cache: &mut ParamTypeCache,
         is_property_cache: &mut HashMap<(String, Option<String>), bool>,
     ) -> anyhow::Result<Vec<GraphNeighbor>> {
-        let relation_query = CallRelationQuery::new(self.ctx);
+        let relation_query = CallEdgeQuery::new(self.ctx);
         let resolver = CallTargetResolver::new(self.ctx);
         let mut sql = String::from(
             "
@@ -287,7 +287,7 @@ impl<'a> CallGraphQuery<'a> {
             let Some(caller_name) = caller_name.as_deref() else {
                 continue;
             };
-            let caller = relation_query.resolve_enclosing_function_node(
+            let caller = relation_query.resolve_enclosing_function(
                 file_id,
                 &file,
                 caller_name,
@@ -361,7 +361,7 @@ impl<'a> CallGraphQuery<'a> {
 
             for row in property_rows {
                 let (file_id, file, caller_name, caller_class_name, object_name, line) = row?;
-                if let Some(caller) = relation_query.resolve_enclosing_function_node(
+                if let Some(caller) = relation_query.resolve_enclosing_function(
                     file_id,
                     &file,
                     &caller_name,

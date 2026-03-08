@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use indicatif::ProgressBar;
-use rusqlite::{params, CachedStatement, Connection, Transaction};
+use rusqlite::{params, CachedStatement, Transaction};
 
 use super::types::{FileIndexData, IndexSyncPlan, IndexedFileEntry, IndexedFileRecord};
 use super::DbProjectAnalyzer;
@@ -16,7 +16,7 @@ impl DbProjectAnalyzer {
         plan: &IndexSyncPlan,
         progress: &ProgressBar,
     ) -> anyhow::Result<()> {
-        let mut conn = Connection::open(db_path)?;
+        let mut conn = Self::open_connection(db_path)?;
         Self::init_schema(&conn)?;
         let tx = conn.transaction()?;
         let existing = Self::load_metadata_map(&tx)?;
@@ -162,6 +162,22 @@ impl DbProjectAnalyzer {
     }
 
     fn delete_file_by_id(tx: &Transaction<'_>, file_id: i64) -> anyhow::Result<()> {
+        tx.execute(
+            "DELETE FROM functions_fts WHERE rowid IN (SELECT id FROM functions WHERE file_id = ?1)",
+            [file_id],
+        )?;
+        tx.execute(
+            "DELETE FROM classes_fts WHERE rowid IN (SELECT id FROM classes WHERE file_id = ?1)",
+            [file_id],
+        )?;
+        tx.execute(
+            "DELETE FROM imports_fts WHERE rowid IN (SELECT id FROM imports WHERE file_id = ?1)",
+            [file_id],
+        )?;
+        tx.execute(
+            "DELETE FROM annotations_fts WHERE rowid IN (SELECT id FROM annotations WHERE file_id = ?1)",
+            [file_id],
+        )?;
         tx.execute("DELETE FROM files WHERE id = ?1", [file_id])?;
         Ok(())
     }
@@ -171,14 +187,18 @@ struct SnapshotInserter<'tx> {
     tx: &'tx Transaction<'tx>,
     insert_file: CachedStatement<'tx>,
     insert_function: CachedStatement<'tx>,
+    insert_function_fts: CachedStatement<'tx>,
     insert_function_param: CachedStatement<'tx>,
     insert_class: CachedStatement<'tx>,
+    insert_class_fts: CachedStatement<'tx>,
     insert_class_method: CachedStatement<'tx>,
     insert_class_super: CachedStatement<'tx>,
     insert_field: CachedStatement<'tx>,
     insert_call: CachedStatement<'tx>,
     insert_import: CachedStatement<'tx>,
+    insert_import_fts: CachedStatement<'tx>,
     insert_annotation: CachedStatement<'tx>,
+    insert_annotation_fts: CachedStatement<'tx>,
     insert_symbol_ref: CachedStatement<'tx>,
     insert_python_property: CachedStatement<'tx>,
     insert_python_property_caller: CachedStatement<'tx>,
@@ -197,6 +217,9 @@ impl<'tx> SnapshotInserter<'tx> {
                 VALUES (?1, ?2, ?3, ?4, ?5)
                 ",
             )?,
+            insert_function_fts: tx.prepare_cached(
+                "INSERT INTO functions_fts(rowid, name) VALUES (?1, ?2)",
+            )?,
             insert_function_param: tx.prepare_cached(
                 "
                 INSERT INTO function_params(function_id, name, param_type, position)
@@ -208,6 +231,9 @@ impl<'tx> SnapshotInserter<'tx> {
                 INSERT INTO classes(file_id, name, start_line, end_line)
                 VALUES (?1, ?2, ?3, ?4)
                 ",
+            )?,
+            insert_class_fts: tx.prepare_cached(
+                "INSERT INTO classes_fts(rowid, name) VALUES (?1, ?2)",
             )?,
             insert_class_method: tx.prepare_cached(
                 "INSERT INTO class_methods(class_id, method_name) VALUES (?1, ?2)",
@@ -230,11 +256,17 @@ impl<'tx> SnapshotInserter<'tx> {
             insert_import: tx.prepare_cached(
                 "INSERT INTO imports(file_id, module, start_line) VALUES (?1, ?2, ?3)",
             )?,
+            insert_import_fts: tx.prepare_cached(
+                "INSERT INTO imports_fts(rowid, module) VALUES (?1, ?2)",
+            )?,
             insert_annotation: tx.prepare_cached(
                 "
                 INSERT INTO annotations(file_id, name, signature, start_line, end_line, target_name, target_type, target_signature)
                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
                 ",
+            )?,
+            insert_annotation_fts: tx.prepare_cached(
+                "INSERT INTO annotations_fts(rowid, name) VALUES (?1, ?2)",
             )?,
             insert_symbol_ref: tx.prepare_cached(
                 "
@@ -273,6 +305,8 @@ impl<'tx> SnapshotInserter<'tx> {
                 function.location.end_line as i64
             ])?;
             let function_id = self.tx.last_insert_rowid();
+            self.insert_function_fts
+                .execute(params![function_id, function.name])?;
             for (position, param) in function.params.iter().enumerate() {
                 self.insert_function_param.execute(params![
                     function_id,
@@ -291,6 +325,8 @@ impl<'tx> SnapshotInserter<'tx> {
                 class.location.end_line as i64
             ])?;
             let class_id = self.tx.last_insert_rowid();
+            self.insert_class_fts
+                .execute(params![class_id, class.name])?;
             for method in &class.methods {
                 self.insert_class_method
                     .execute(params![class_id, method])?;
@@ -330,6 +366,9 @@ impl<'tx> SnapshotInserter<'tx> {
                 import.module,
                 import.location.start_line as i64
             ])?;
+            let import_id = self.tx.last_insert_rowid();
+            self.insert_import_fts
+                .execute(params![import_id, import.module])?;
         }
 
         for annotation in &snapshot.snapshot.annotations {
@@ -343,6 +382,9 @@ impl<'tx> SnapshotInserter<'tx> {
                 annotation.target_type,
                 annotation.target_signature
             ])?;
+            let annotation_id = self.tx.last_insert_rowid();
+            self.insert_annotation_fts
+                .execute(params![annotation_id, annotation.name])?;
         }
 
         for symbol in &snapshot.snapshot.symbols {

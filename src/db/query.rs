@@ -7,11 +7,12 @@ use crate::nodes::{
     AnnotationInfo, CallGraphPath, ClassInfo, FieldInfo, FunctionInfo, FunctionKey, GraphDirection,
     GraphPathNode, ImportInfo, Location, SymbolRefInfo,
 };
-use crate::utils::{is_simple_query, sort_by_file_line, QueryMatcher};
+use crate::utils::sort_by_file_line;
 
 use super::helpers::{
     extract_instance_attr, repeat_placeholders, split_function_target, type_matches_class,
 };
+use super::prefilter::RegexPrefilter;
 use super::types::{
     classes_by_name, CallLookupRow, CalleeLookupRow, ClassBaseRow, DbFunctionNode, FieldTypeCache,
     FieldTypesByName, ParamTypeCache, ParamTypesByName,
@@ -27,6 +28,8 @@ struct GraphTraversalState {
     param_type_cache: ParamTypeCache,
     is_property_cache: HashMap<(String, Option<String>), bool>,
 }
+
+const SQLITE_BATCH_SIZE: usize = 256;
 
 impl DbProjectAnalyzer {
     pub(crate) fn file_count(&self) -> usize {
@@ -44,23 +47,28 @@ impl DbProjectAnalyzer {
     }
 
     pub(crate) fn find_functions(&self, query: &str) -> anyhow::Result<Vec<FunctionInfo>> {
-        let matcher = QueryMatcher::new(query);
-        let like = if !query.is_empty() && is_simple_query(query) {
-            format!("%{}%", query)
-        } else {
-            "%".to_string()
-        };
+        let prefilter = RegexPrefilter::new(query);
         let mut sql = String::from(
             "
             SELECT f.path, fn.name, fn.class_name, fn.start_line, fn.end_line
             FROM functions fn
             JOIN files f ON f.id = fn.file_id
-            WHERE fn.name LIKE ?1
             ",
         );
-        let mut params: Vec<&dyn ToSql> = vec![&like];
+        let mut params: Vec<&dyn ToSql> = Vec::new();
+        if let Some(fts_match_query) = prefilter.fts_match_query.as_ref() {
+            sql.push_str(" JOIN functions_fts ON functions_fts.rowid = fn.id");
+            sql.push_str(" WHERE functions_fts MATCH ?1 AND fn.name REGEXP ?2");
+            params.push(fts_match_query);
+            params.push(&query);
+        } else if prefilter.match_all {
+            sql.push_str(" WHERE 1 = 1");
+        } else {
+            sql.push_str(" WHERE fn.name REGEXP ?1");
+            params.push(&query);
+        }
         if let Some(language) = self.requested_language.as_ref() {
-            sql.push_str(" AND f.language = ?2");
+            sql.push_str(&format!(" AND f.language = ?{}", params.len() + 1));
             params.push(language);
         }
         sql.push_str(" ORDER BY f.path, fn.start_line");
@@ -79,35 +87,32 @@ impl DbProjectAnalyzer {
                 params: Vec::new(),
             })
         })?;
-
-        rows.filter_map(|row| match row {
-            Ok(function) if matcher.is_match(&function.name) => Some(Ok(function)),
-            Ok(_) => None,
-            Err(error) => Some(Err(error)),
-        })
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(Into::into)
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     pub(crate) fn find_classes(&self, query: &str) -> anyhow::Result<Vec<ClassInfo>> {
-        let matcher = QueryMatcher::new(query);
-        let like = if !query.is_empty() && is_simple_query(query) {
-            format!("%{}%", query)
-        } else {
-            "%".to_string()
-        };
-
+        let prefilter = RegexPrefilter::new(query);
         let mut sql = String::from(
             "
             SELECT c.id, c.file_id, f.path, c.name, c.start_line, c.end_line
             FROM classes c
             JOIN files f ON f.id = c.file_id
-            WHERE c.name LIKE ?1
             ",
         );
-        let mut params: Vec<&dyn ToSql> = vec![&like];
+        let mut params: Vec<&dyn ToSql> = Vec::new();
+        if let Some(fts_match_query) = prefilter.fts_match_query.as_ref() {
+            sql.push_str(" JOIN classes_fts ON classes_fts.rowid = c.id");
+            sql.push_str(" WHERE classes_fts MATCH ?1 AND c.name REGEXP ?2");
+            params.push(fts_match_query);
+            params.push(&query);
+        } else if prefilter.match_all {
+            sql.push_str(" WHERE 1 = 1");
+        } else {
+            sql.push_str(" WHERE c.name REGEXP ?1");
+            params.push(&query);
+        }
         if let Some(language) = self.requested_language.as_ref() {
-            sql.push_str(" AND f.language = ?2");
+            sql.push_str(&format!(" AND f.language = ?{}", params.len() + 1));
             params.push(language);
         }
         sql.push_str(" ORDER BY f.path, c.start_line");
@@ -123,13 +128,7 @@ impl DbProjectAnalyzer {
                 end_line: row.get(5)?,
             })
         })?;
-        let class_rows = rows
-            .filter_map(|row| match row {
-                Ok(class_row) if matcher.is_match(&class_row.name) => Some(Ok(class_row)),
-                Ok(_) => None,
-                Err(error) => Some(Err(error)),
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let class_rows = rows.collect::<Result<Vec<_>, _>>()?;
         let class_ids: Vec<i64> = class_rows.iter().map(|row| row.class_id).collect();
         let field_keys: Vec<(i64, String)> = class_rows
             .iter()
@@ -197,23 +196,28 @@ impl DbProjectAnalyzer {
     }
 
     pub(crate) fn find_imports(&self, query: &str) -> anyhow::Result<Vec<ImportInfo>> {
-        let matcher = QueryMatcher::new(query);
-        let like = if !query.is_empty() && is_simple_query(query) {
-            format!("%{}%", query)
-        } else {
-            "%".to_string()
-        };
+        let prefilter = RegexPrefilter::new(query);
         let mut sql = String::from(
             "
             SELECT f.path, i.module, i.start_line
             FROM imports i
             JOIN files f ON f.id = i.file_id
-            WHERE i.module LIKE ?1
             ",
         );
-        let mut params: Vec<&dyn ToSql> = vec![&like];
+        let mut params: Vec<&dyn ToSql> = Vec::new();
+        if let Some(fts_match_query) = prefilter.fts_match_query.as_ref() {
+            sql.push_str(" JOIN imports_fts ON imports_fts.rowid = i.id");
+            sql.push_str(" WHERE imports_fts MATCH ?1 AND i.module REGEXP ?2");
+            params.push(fts_match_query);
+            params.push(&query);
+        } else if prefilter.match_all {
+            sql.push_str(" WHERE 1 = 1");
+        } else {
+            sql.push_str(" WHERE i.module REGEXP ?1");
+            params.push(&query);
+        }
         if let Some(language) = self.requested_language.as_ref() {
-            sql.push_str(" AND f.language = ?2");
+            sql.push_str(&format!(" AND f.language = ?{}", params.len() + 1));
             params.push(language);
         }
         sql.push_str(" ORDER BY f.path, i.start_line");
@@ -229,34 +233,32 @@ impl DbProjectAnalyzer {
                 },
             })
         })?;
-
-        rows.filter_map(|row| match row {
-            Ok(import) if matcher.is_match(&import.module) => Some(Ok(import)),
-            Ok(_) => None,
-            Err(error) => Some(Err(error)),
-        })
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(Into::into)
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     pub(crate) fn find_annotations(&self, query: &str) -> anyhow::Result<Vec<AnnotationInfo>> {
-        let matcher = QueryMatcher::new(query);
-        let like = if !query.is_empty() && is_simple_query(query) {
-            format!("%{}%", query)
-        } else {
-            "%".to_string()
-        };
+        let prefilter = RegexPrefilter::new(query);
         let mut sql = String::from(
             "
             SELECT f.path, a.name, a.signature, a.start_line, a.end_line, a.target_name, a.target_type, a.target_signature
             FROM annotations a
             JOIN files f ON f.id = a.file_id
-            WHERE a.name LIKE ?1
             ",
         );
-        let mut params: Vec<&dyn ToSql> = vec![&like];
+        let mut params: Vec<&dyn ToSql> = Vec::new();
+        if let Some(fts_match_query) = prefilter.fts_match_query.as_ref() {
+            sql.push_str(" JOIN annotations_fts ON annotations_fts.rowid = a.id");
+            sql.push_str(" WHERE annotations_fts MATCH ?1 AND a.name REGEXP ?2");
+            params.push(fts_match_query);
+            params.push(&query);
+        } else if prefilter.match_all {
+            sql.push_str(" WHERE 1 = 1");
+        } else {
+            sql.push_str(" WHERE a.name REGEXP ?1");
+            params.push(&query);
+        }
         if let Some(language) = self.requested_language.as_ref() {
-            sql.push_str(" AND f.language = ?2");
+            sql.push_str(&format!(" AND f.language = ?{}", params.len() + 1));
             params.push(language);
         }
         sql.push_str(" ORDER BY f.path, a.start_line");
@@ -276,14 +278,7 @@ impl DbProjectAnalyzer {
                 target_signature: row.get(7)?,
             })
         })?;
-
-        rows.filter_map(|row| match row {
-            Ok(annotation) if matcher.is_match(&annotation.name) => Some(Ok(annotation)),
-            Ok(_) => None,
-            Err(error) => Some(Err(error)),
-        })
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(Into::into)
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     pub(crate) fn find_symbols(&self, name: &str) -> anyhow::Result<Vec<SymbolRefInfo>> {
@@ -660,19 +655,22 @@ impl DbProjectAnalyzer {
         if class_ids.is_empty() {
             return Ok(HashMap::new());
         }
-        let placeholders = repeat_placeholders(class_ids.len());
-        let sql = format!(
-            "SELECT class_id, method_name FROM class_methods WHERE class_id IN ({placeholders}) ORDER BY class_id, method_name"
-        );
-        let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(params_from_iter(class_ids.iter()), |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-        })?;
 
         let mut map: HashMap<i64, Vec<String>> = HashMap::new();
-        for row in rows {
-            let (class_id, method_name) = row?;
-            map.entry(class_id).or_default().push(method_name);
+        for chunk in class_ids.chunks(SQLITE_BATCH_SIZE) {
+            let placeholders = repeat_placeholders(chunk.len());
+            let sql = format!(
+                "SELECT class_id, method_name FROM class_methods WHERE class_id IN ({placeholders}) ORDER BY class_id, method_name"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(params_from_iter(chunk.iter()), |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?;
+
+            for row in rows {
+                let (class_id, method_name) = row?;
+                map.entry(class_id).or_default().push(method_name);
+            }
         }
         Ok(map)
     }
@@ -1177,19 +1175,22 @@ impl DbProjectAnalyzer {
         if class_ids.is_empty() {
             return Ok(HashMap::new());
         }
-        let placeholders = repeat_placeholders(class_ids.len());
-        let sql = format!(
-            "SELECT class_id, super_class_name FROM class_super_classes WHERE class_id IN ({placeholders}) ORDER BY class_id, super_class_name"
-        );
-        let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(params_from_iter(class_ids.iter()), |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-        })?;
 
         let mut map: HashMap<i64, Vec<String>> = HashMap::new();
-        for row in rows {
-            let (class_id, super_class_name) = row?;
-            map.entry(class_id).or_default().push(super_class_name);
+        for chunk in class_ids.chunks(SQLITE_BATCH_SIZE) {
+            let placeholders = repeat_placeholders(chunk.len());
+            let sql = format!(
+                "SELECT class_id, super_class_name FROM class_super_classes WHERE class_id IN ({placeholders}) ORDER BY class_id, super_class_name"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(params_from_iter(chunk.iter()), |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?;
+
+            for row in rows {
+                let (class_id, super_class_name) = row?;
+                map.entry(class_id).or_default().push(super_class_name);
+            }
         }
         Ok(map)
     }
@@ -1202,35 +1203,36 @@ impl DbProjectAnalyzer {
             return Ok(HashMap::new());
         }
 
-        let predicates =
-            std::iter::repeat_n("(file_id = ? AND class_name = ?)", file_class_pairs.len())
+        let mut map: HashMap<(i64, String), Vec<String>> = HashMap::new();
+        for chunk in file_class_pairs.chunks(SQLITE_BATCH_SIZE) {
+            let predicates = std::iter::repeat_n("(file_id = ? AND class_name = ?)", chunk.len())
                 .collect::<Vec<_>>()
                 .join(" OR ");
-        let sql = format!(
-            "SELECT file_id, class_name, name FROM fields WHERE {predicates} ORDER BY file_id, class_name, start_line"
-        );
+            let sql = format!(
+                "SELECT file_id, class_name, name FROM fields WHERE {predicates} ORDER BY file_id, class_name, start_line"
+            );
 
-        let mut bind_values: Vec<&dyn ToSql> = Vec::with_capacity(file_class_pairs.len() * 2);
-        for (file_id, class_name) in file_class_pairs {
-            bind_values.push(file_id);
-            bind_values.push(class_name);
-        }
+            let mut bind_values: Vec<&dyn ToSql> = Vec::with_capacity(chunk.len() * 2);
+            for (file_id, class_name) in chunk {
+                bind_values.push(file_id);
+                bind_values.push(class_name);
+            }
 
-        let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(params_from_iter(bind_values), |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })?;
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(params_from_iter(bind_values), |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?;
 
-        let mut map: HashMap<(i64, String), Vec<String>> = HashMap::new();
-        for row in rows {
-            let (file_id, class_name, field_name) = row?;
-            map.entry((file_id, class_name))
-                .or_default()
-                .push(field_name);
+            for row in rows {
+                let (file_id, class_name, field_name) = row?;
+                map.entry((file_id, class_name))
+                    .or_default()
+                    .push(field_name);
+            }
         }
         Ok(map)
     }

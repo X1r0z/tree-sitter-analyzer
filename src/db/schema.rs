@@ -1,6 +1,10 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::Arc;
 
+use regex::Regex;
+use rusqlite::functions::FunctionFlags;
+use rusqlite::Error;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
 use super::types::IndexedFileRecord;
@@ -8,7 +12,7 @@ use super::DbProjectAnalyzer;
 
 impl DbProjectAnalyzer {
     pub(crate) fn from_db_file(path: &Path) -> anyhow::Result<Self> {
-        let conn = Connection::open(path)?;
+        let conn = Self::open_connection(path)?;
         Self::init_schema(&conn)?;
         Ok(Self {
             conn,
@@ -31,6 +35,34 @@ impl DbProjectAnalyzer {
         } else {
             Ok(None)
         }
+    }
+
+    pub(crate) fn open_connection(path: &Path) -> anyhow::Result<Connection> {
+        let conn = Connection::open(path)?;
+        Self::register_regexp_function(&conn)?;
+        Ok(conn)
+    }
+
+    fn register_regexp_function(conn: &Connection) -> anyhow::Result<()> {
+        type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
+
+        conn.create_scalar_function(
+            "regexp",
+            2,
+            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+            |ctx| {
+                let regex: Arc<Regex> = ctx
+                    .get_or_create_aux(0, |value| -> Result<_, BoxError> {
+                        Ok(Regex::new(value.as_str()?)?)
+                    })?;
+                let value = ctx
+                    .get_raw(1)
+                    .as_str()
+                    .map_err(|err| Error::UserFunctionError(err.into()))?;
+                Ok(regex.is_match(value))
+            },
+        )?;
+        Ok(())
     }
 
     pub(crate) fn init_schema(conn: &Connection) -> anyhow::Result<()> {
@@ -226,6 +258,37 @@ impl DbProjectAnalyzer {
             )?;
         }
         conn.execute("DROP INDEX IF EXISTS idx_symbol_refs_name", [])?;
+        Self::ensure_trigram_fts(conn, "functions_fts", "name", "functions", "id", "name")?;
+        Self::ensure_trigram_fts(conn, "classes_fts", "name", "classes", "id", "name")?;
+        Self::ensure_trigram_fts(conn, "imports_fts", "module", "imports", "id", "module")?;
+        Self::ensure_trigram_fts(conn, "annotations_fts", "name", "annotations", "id", "name")?;
+        Ok(())
+    }
+
+    fn ensure_trigram_fts(
+        conn: &Connection,
+        fts_table: &str,
+        fts_column: &str,
+        source_table: &str,
+        source_id_column: &str,
+        source_text_column: &str,
+    ) -> anyhow::Result<()> {
+        if Self::table_exists(conn, fts_table)? {
+            return Ok(());
+        }
+
+        conn.execute(
+            &format!(
+                "CREATE VIRTUAL TABLE {fts_table} USING fts5({fts_column}, tokenize='trigram')"
+            ),
+            [],
+        )?;
+        conn.execute(
+            &format!(
+                "INSERT INTO {fts_table}(rowid, {fts_column}) SELECT {source_id_column}, {source_text_column} FROM {source_table}"
+            ),
+            [],
+        )?;
         Ok(())
     }
 
@@ -235,10 +298,24 @@ impl DbProjectAnalyzer {
         rows.collect::<Result<HashSet<_>, _>>().map_err(Into::into)
     }
 
+    fn table_exists(conn: &Connection, table_name: &str) -> anyhow::Result<bool> {
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?1)",
+            [table_name],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|exists| exists != 0)
+        .map_err(Into::into)
+    }
+
     pub(super) fn clear_all(tx: &Transaction<'_>) -> anyhow::Result<()> {
         tx.execute_batch(
             "
             DELETE FROM metadata;
+            DELETE FROM functions_fts;
+            DELETE FROM classes_fts;
+            DELETE FROM imports_fts;
+            DELETE FROM annotations_fts;
             DELETE FROM class_methods;
             DELETE FROM class_super_classes;
             DELETE FROM python_property_callers;

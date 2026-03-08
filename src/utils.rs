@@ -12,7 +12,7 @@ pub fn find_files(path: &str, language: Option<&str>) -> Vec<String> {
     let mut files = Vec::new();
     let walker = ignore::WalkBuilder::new(path)
         .hidden(false)
-        .git_ignore(false)
+        .require_git(false)
         .build();
 
     for entry in walker.flatten() {

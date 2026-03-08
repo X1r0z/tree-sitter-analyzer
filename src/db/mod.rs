@@ -1,6 +1,7 @@
 use rusqlite::Connection;
 
 mod helpers;
+mod prefilter;
 mod query;
 mod schema;
 mod sync;

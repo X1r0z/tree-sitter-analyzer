@@ -1,25 +1,27 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::Context;
 use indicatif::ProgressBar;
 use rusqlite::{params, CachedStatement, Transaction};
 
+use super::store::IndexStore;
 use super::types::{FileIndexData, IndexSyncPlan, IndexedFileEntry, IndexedFileRecord};
-use super::DbProjectAnalyzer;
 
-impl DbProjectAnalyzer {
-    pub(crate) fn update_database(
+pub(crate) struct IndexSynchronizer;
+
+impl IndexSynchronizer {
+    pub(crate) fn sync(
         db_path: &Path,
         root_path: &str,
         language: Option<&str>,
         plan: &IndexSyncPlan,
         progress: &ProgressBar,
     ) -> anyhow::Result<()> {
-        let mut conn = Self::open_connection(db_path)?;
-        Self::init_schema(&conn)?;
+        let mut conn = IndexStore::open_connection(db_path)?;
+        IndexStore::ensure_schema(&conn)?;
         let tx = conn.transaction()?;
-        let existing = Self::load_metadata_map(&tx)?;
+        let existing = IndexStore::read_metadata(&tx)?;
         progress.inc(1);
         let indexed_language = language.unwrap_or("");
         let compatible = existing.get("indexed_root_path").map(String::as_str) == Some(root_path)
@@ -55,16 +57,16 @@ impl DbProjectAnalyzer {
             + u64::from(!compatible);
         progress.set_length(total_steps);
         if !compatible {
-            Self::clear_all(&tx)?;
+            IndexStore::clear(&tx)?;
             progress.inc(1);
-            Self::set_metadata(&tx, "created_at", &Self::current_timestamp_string()?)?;
+            IndexStore::insert_metadata(&tx, "created_at", &IndexStore::current_timestamp()?)?;
         }
 
-        Self::upsert_metadata(&tx, "indexed_root_path", root_path)?;
+        IndexStore::upsert_metadata(&tx, "indexed_root_path", root_path)?;
         progress.inc(1);
-        Self::upsert_metadata(&tx, "language_filter", indexed_language)?;
+        IndexStore::upsert_metadata(&tx, "language_filter", indexed_language)?;
         progress.inc(1);
-        Self::upsert_metadata(&tx, "updated_at", &Self::current_timestamp_string()?)?;
+        IndexStore::upsert_metadata(&tx, "updated_at", &IndexStore::current_timestamp()?)?;
         progress.inc(1);
 
         if compatible {
@@ -76,9 +78,9 @@ impl DbProjectAnalyzer {
                 progress,
             )?;
         } else {
-            let mut inserter = SnapshotInserter::new(&tx)?;
+            let mut writer = SnapshotWriter::new(&tx)?;
             for snapshot in &plan.changed_snapshots {
-                inserter.insert_snapshot(snapshot)?;
+                writer.insert_snapshot(snapshot)?;
                 progress.inc(1);
             }
         }
@@ -99,14 +101,14 @@ impl DbProjectAnalyzer {
             .map(|record| (record.path.as_str(), record))
             .collect();
 
-        for (path, record) in existing.iter() {
+        for (path, record) in existing {
             if !incoming.contains_key(path.as_str()) {
                 Self::delete_file_by_id(tx, record.id)?;
                 progress.inc(1);
             }
         }
 
-        let mut inserter = SnapshotInserter::new(tx)?;
+        let mut writer = SnapshotWriter::new(tx)?;
         for snapshot in changed_snapshots {
             match existing.get(snapshot.file.path.as_str()) {
                 Some(record)
@@ -116,11 +118,11 @@ impl DbProjectAnalyzer {
                         && record.content_hash == snapshot.file.content_hash => {}
                 Some(record) => {
                     Self::delete_file_by_id(tx, record.id)?;
-                    inserter.insert_snapshot(snapshot)?;
+                    writer.insert_snapshot(snapshot)?;
                     progress.inc(1);
                 }
                 None => {
-                    inserter.insert_snapshot(snapshot)?;
+                    writer.insert_snapshot(snapshot)?;
                     progress.inc(1);
                 }
             }
@@ -176,7 +178,7 @@ impl DbProjectAnalyzer {
     }
 }
 
-struct SnapshotInserter<'tx> {
+struct SnapshotWriter<'tx> {
     tx: &'tx Transaction<'tx>,
     insert_file: CachedStatement<'tx>,
     insert_function: CachedStatement<'tx>,
@@ -197,7 +199,7 @@ struct SnapshotInserter<'tx> {
     insert_python_property_caller: CachedStatement<'tx>,
 }
 
-impl<'tx> SnapshotInserter<'tx> {
+impl<'tx> SnapshotWriter<'tx> {
     fn new(tx: &'tx Transaction<'tx>) -> anyhow::Result<Self> {
         Ok(Self {
             tx,
@@ -415,7 +417,7 @@ impl<'tx> SnapshotInserter<'tx> {
     }
 }
 
-pub(crate) fn db_path_in_current_dir() -> anyhow::Result<PathBuf> {
+pub(crate) fn db_path_in_current_dir() -> anyhow::Result<std::path::PathBuf> {
     Ok(std::env::current_dir()?.join("tsa.db"))
 }
 

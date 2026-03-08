@@ -8,32 +8,70 @@ use rusqlite::Error;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
 use super::types::IndexedFileRecord;
-use super::DbProjectAnalyzer;
 
-impl DbProjectAnalyzer {
-    pub(crate) fn from_db_file(path: &Path) -> anyhow::Result<Self> {
+pub(crate) struct IndexStore {
+    conn: Connection,
+}
+
+impl IndexStore {
+    pub(crate) fn open(path: &Path) -> anyhow::Result<Self> {
         let conn = Self::open_connection(path)?;
-        Self::init_schema(&conn)?;
-        Ok(Self {
-            conn,
-            requested_language: None,
-        })
+        Self::ensure_schema(&conn)?;
+        Ok(Self { conn })
     }
 
-    pub(crate) fn from_current_dir_if_compatible(
+    pub(crate) fn open_if_compatible(
+        path: &Path,
         root_path: &str,
         language: Option<&str>,
     ) -> anyhow::Result<Option<Self>> {
-        let db_path = std::env::current_dir()?.join("tsa.db");
-        if !db_path.exists() {
-            return Ok(None);
-        }
-        let mut db = Self::from_db_file(&db_path)?;
-        if db.is_compatible(root_path, language)? {
-            db.requested_language = language.map(str::to_string);
-            Ok(Some(db))
+        let store = Self::open(path)?;
+        if store.is_compatible_with(root_path, language)? {
+            Ok(Some(store))
         } else {
             Ok(None)
+        }
+    }
+
+    pub(crate) fn into_connection(self) -> Connection {
+        self.conn
+    }
+
+    pub(crate) fn list_indexed_files(&self) -> anyhow::Result<HashMap<String, IndexedFileRecord>> {
+        let mut stmt = self.conn.prepare(
+            "
+            SELECT path, language, mtime_nanos, size_bytes, content_hash
+            FROM files
+            ",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(IndexedFileRecord {
+                path: row.get(0)?,
+                language: row.get(1)?,
+                mtime_nanos: row.get(2)?,
+                size_bytes: row.get(3)?,
+                content_hash: row.get(4)?,
+            })
+        })?;
+        let records = rows.collect::<Result<Vec<_>, _>>()?;
+        Ok(records
+            .into_iter()
+            .map(|record| (record.path.clone(), record))
+            .collect())
+    }
+
+    pub(crate) fn is_compatible_with(
+        &self,
+        root_path: &str,
+        language: Option<&str>,
+    ) -> anyhow::Result<bool> {
+        if self.metadata_value("indexed_root_path")?.as_deref() != Some(root_path) {
+            return Ok(false);
+        }
+        let indexed_language = self.metadata_value("language_filter")?.unwrap_or_default();
+        match language {
+            Some(lang) => Ok(indexed_language.is_empty() || indexed_language == lang),
+            None => Ok(indexed_language.is_empty()),
         }
     }
 
@@ -43,29 +81,7 @@ impl DbProjectAnalyzer {
         Ok(conn)
     }
 
-    fn register_regexp_function(conn: &Connection) -> anyhow::Result<()> {
-        type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
-
-        conn.create_scalar_function(
-            "regexp",
-            2,
-            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
-            |ctx| {
-                let regex: Arc<Regex> = ctx
-                    .get_or_create_aux(0, |value| -> Result<_, BoxError> {
-                        Ok(Regex::new(value.as_str()?)?)
-                    })?;
-                let value = ctx
-                    .get_raw(1)
-                    .as_str()
-                    .map_err(|err| Error::UserFunctionError(err.into()))?;
-                Ok(regex.is_match(value))
-            },
-        )?;
-        Ok(())
-    }
-
-    pub(crate) fn init_schema(conn: &Connection) -> anyhow::Result<()> {
+    pub(crate) fn ensure_schema(conn: &Connection) -> anyhow::Result<()> {
         conn.execute_batch(
             "
             PRAGMA journal_mode = WAL;
@@ -239,11 +255,11 @@ impl DbProjectAnalyzer {
             CREATE INDEX IF NOT EXISTS idx_python_property_callers_file_name_line ON python_property_callers(file_id, property_name, line);
         ",
         )?;
-        Self::migrate_schema(conn)?;
+        Self::apply_migrations(conn)?;
         Ok(())
     }
 
-    fn migrate_schema(conn: &Connection) -> anyhow::Result<()> {
+    pub(crate) fn apply_migrations(conn: &Connection) -> anyhow::Result<()> {
         let columns = Self::table_columns(conn, "files")?;
         if !columns.contains("mtime_nanos") {
             conn.execute(
@@ -295,6 +311,108 @@ impl DbProjectAnalyzer {
         Ok(())
     }
 
+    pub(crate) fn clear(tx: &Transaction<'_>) -> anyhow::Result<()> {
+        tx.execute_batch(
+            "
+            DELETE FROM metadata;
+            DELETE FROM functions_fts;
+            DELETE FROM classes_fts;
+            DELETE FROM imports_fts;
+            DELETE FROM annotations_fts;
+            DELETE FROM class_methods;
+            DELETE FROM class_super_classes;
+            DELETE FROM python_property_callers;
+            DELETE FROM python_properties;
+            DELETE FROM function_params;
+            DELETE FROM functions;
+            DELETE FROM classes;
+            DELETE FROM fields;
+            DELETE FROM calls;
+            DELETE FROM imports;
+            DELETE FROM annotations;
+            DELETE FROM symbol_refs;
+            DELETE FROM files;
+        ",
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn insert_metadata(
+        tx: &Transaction<'_>,
+        key: &str,
+        value: &str,
+    ) -> anyhow::Result<()> {
+        tx.execute(
+            "INSERT INTO metadata(key, value) VALUES (?1, ?2)",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn upsert_metadata(
+        tx: &Transaction<'_>,
+        key: &str,
+        value: &str,
+    ) -> anyhow::Result<()> {
+        tx.execute(
+            "
+            INSERT INTO metadata(key, value) VALUES (?1, ?2)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            ",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn read_metadata(tx: &Transaction<'_>) -> anyhow::Result<HashMap<String, String>> {
+        let mut stmt = tx.prepare("SELECT key, value FROM metadata")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.collect::<Result<HashMap<_, _>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn current_timestamp() -> anyhow::Result<String> {
+        Ok(format!(
+            "{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_secs()
+        ))
+    }
+
+    fn metadata_value(&self, key: &str) -> anyhow::Result<Option<String>> {
+        self.conn
+            .query_row("SELECT value FROM metadata WHERE key = ?1", [key], |row| {
+                row.get(0)
+            })
+            .optional()
+            .map_err(Into::into)
+    }
+
+    fn register_regexp_function(conn: &Connection) -> anyhow::Result<()> {
+        type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
+
+        conn.create_scalar_function(
+            "regexp",
+            2,
+            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+            |ctx| {
+                let regex: Arc<Regex> = ctx
+                    .get_or_create_aux(0, |value| -> Result<_, BoxError> {
+                        Ok(Regex::new(value.as_str()?)?)
+                    })?;
+                let value = ctx
+                    .get_raw(1)
+                    .as_str()
+                    .map_err(|err| Error::UserFunctionError(err.into()))?;
+                Ok(regex.is_match(value))
+            },
+        )?;
+        Ok(())
+    }
+
     fn ensure_trigram_fts(
         conn: &Connection,
         fts_table: &str,
@@ -336,121 +454,5 @@ impl DbProjectAnalyzer {
         )
         .map(|exists| exists != 0)
         .map_err(Into::into)
-    }
-
-    pub(super) fn clear_all(tx: &Transaction<'_>) -> anyhow::Result<()> {
-        tx.execute_batch(
-            "
-            DELETE FROM metadata;
-            DELETE FROM functions_fts;
-            DELETE FROM classes_fts;
-            DELETE FROM imports_fts;
-            DELETE FROM annotations_fts;
-            DELETE FROM class_methods;
-            DELETE FROM class_super_classes;
-            DELETE FROM python_property_callers;
-            DELETE FROM python_properties;
-            DELETE FROM function_params;
-            DELETE FROM functions;
-            DELETE FROM classes;
-            DELETE FROM fields;
-            DELETE FROM calls;
-            DELETE FROM imports;
-            DELETE FROM annotations;
-            DELETE FROM symbol_refs;
-            DELETE FROM files;
-        ",
-        )?;
-        Ok(())
-    }
-
-    pub(super) fn set_metadata(tx: &Transaction<'_>, key: &str, value: &str) -> anyhow::Result<()> {
-        tx.execute(
-            "INSERT INTO metadata(key, value) VALUES (?1, ?2)",
-            params![key, value],
-        )?;
-        Ok(())
-    }
-
-    pub(super) fn upsert_metadata(
-        tx: &Transaction<'_>,
-        key: &str,
-        value: &str,
-    ) -> anyhow::Result<()> {
-        tx.execute(
-            "
-            INSERT INTO metadata(key, value) VALUES (?1, ?2)
-            ON CONFLICT(key) DO UPDATE SET value = excluded.value
-            ",
-            params![key, value],
-        )?;
-        Ok(())
-    }
-
-    pub(super) fn load_metadata_map(
-        tx: &Transaction<'_>,
-    ) -> anyhow::Result<HashMap<String, String>> {
-        let mut stmt = tx.prepare("SELECT key, value FROM metadata")?;
-        let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?;
-        rows.collect::<Result<HashMap<_, _>, _>>()
-            .map_err(Into::into)
-    }
-
-    pub(super) fn current_timestamp_string() -> anyhow::Result<String> {
-        Ok(format!(
-            "{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)?
-                .as_secs()
-        ))
-    }
-
-    fn metadata_value(&self, key: &str) -> anyhow::Result<Option<String>> {
-        self.conn
-            .query_row("SELECT value FROM metadata WHERE key = ?1", [key], |row| {
-                row.get(0)
-            })
-            .optional()
-            .map_err(Into::into)
-    }
-
-    pub(crate) fn is_compatible(
-        &self,
-        root_path: &str,
-        requested_language: Option<&str>,
-    ) -> anyhow::Result<bool> {
-        if self.metadata_value("indexed_root_path")?.as_deref() != Some(root_path) {
-            return Ok(false);
-        }
-        let indexed_language = self.metadata_value("language_filter")?.unwrap_or_default();
-        match requested_language {
-            Some(lang) => Ok(indexed_language.is_empty() || indexed_language == lang),
-            None => Ok(indexed_language.is_empty()),
-        }
-    }
-
-    pub(crate) fn indexed_files(&self) -> anyhow::Result<HashMap<String, IndexedFileRecord>> {
-        let mut stmt = self.conn.prepare(
-            "
-            SELECT path, language, mtime_nanos, size_bytes, content_hash
-            FROM files
-            ",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            Ok(IndexedFileRecord {
-                path: row.get(0)?,
-                language: row.get(1)?,
-                mtime_nanos: row.get(2)?,
-                size_bytes: row.get(3)?,
-                content_hash: row.get(4)?,
-            })
-        })?;
-        let records = rows.collect::<Result<Vec<_>, _>>()?;
-        Ok(records
-            .into_iter()
-            .map(|record| (record.path.clone(), record))
-            .collect())
     }
 }

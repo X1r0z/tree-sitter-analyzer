@@ -18,10 +18,6 @@ Rust CLI tool using **clap** (derive) for arg parsing. Parses source code via **
 - `src/index.rs` — `build_index`: indexes a project into SQLite
 - `src/cache.rs` / `src/languages.rs` / `src/utils.rs` — internal helpers
 
-## Testing
-- No test suite currently exists. `tempfile` is available as a dev-dependency for future tests.
-- Run tests (when added): `cargo test` / single test: `cargo test <test_name>`
-
 ## Code Style
 - Rust 2021 edition. Error handling via `anyhow::Result`. Visibility: prefer `pub(crate)`.
 - Imports: `std` first, then external crates, then `crate::` internal imports. Use `use crate::nodes::*` for node types.

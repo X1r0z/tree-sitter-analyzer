@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use crate::analyzer::CodeAnalyzer;
 use crate::db::{
     db_path_in_current_dir, file_record_from_path, file_record_without_hash_from_path,
-    DbProjectAnalyzer, FileIndexData, IndexSyncPlan,
+    FileIndexData, IndexStore, IndexSyncPlan, IndexSynchronizer,
 };
 use crate::languages::detect_language;
 use crate::project::ProjectAnalyzer;
@@ -24,9 +24,9 @@ pub(crate) fn build_index(path: &str, language: Option<&str>) -> Value {
         Err(error) => return json!({ "error": error.to_string() }),
     };
 
-    let existing = match DbProjectAnalyzer::from_db_file(&db_path) {
-        Ok(db) if db.is_compatible(path, language).unwrap_or(false) => {
-            db.indexed_files().unwrap_or_default()
+    let existing = match IndexStore::open(&db_path) {
+        Ok(store) if store.is_compatible_with(path, language).unwrap_or(false) => {
+            store.list_indexed_files().unwrap_or_default()
         }
         Ok(_) => Default::default(),
         Err(_) => Default::default(),
@@ -66,8 +66,7 @@ pub(crate) fn build_index(path: &str, language: Option<&str>) -> Value {
 
     let db_progress = progress_bar(0, "steps", "green/blue", "Persisting index data");
 
-    let update_result =
-        DbProjectAnalyzer::update_database(&db_path, path, language, &plan, &db_progress);
+    let update_result = IndexSynchronizer::sync(&db_path, path, language, &plan, &db_progress);
     db_progress.finish_and_clear();
 
     if let Err(error) = update_result {

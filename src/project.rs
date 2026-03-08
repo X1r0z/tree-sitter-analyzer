@@ -8,7 +8,8 @@ use crate::cache::TextFilterCache;
 use crate::graph::{CallGraph, RawPropertyCaller};
 use crate::nodes::*;
 use crate::utils::{
-    find_files, is_simple_query, search_files_with_rg, sort_by_file_line, QueryMatcher,
+    find_files, is_simple_query, progress_bar, search_files_with_rg, sort_by_file_line,
+    QueryMatcher,
 };
 
 pub struct ProjectAnalyzer {
@@ -39,6 +40,29 @@ impl ProjectAnalyzer {
         Some(f(&mut analyzer))
     }
 
+    fn analyze_files_with_progress<T, R, F>(&self, files: &[T], f: F) -> Vec<R>
+    where
+        T: Sync,
+        F: Fn(&T) -> Vec<R> + Sync + Send,
+        R: Send,
+    {
+        if files.is_empty() {
+            return Vec::new();
+        }
+
+        let progress = progress_bar(files.len(), "files", "cyan/blue", "Analyzing source files");
+        let results = files
+            .par_iter()
+            .flat_map(|file| {
+                let result = f(file);
+                progress.inc(1);
+                result
+            })
+            .collect();
+        progress.finish_and_clear();
+        results
+    }
+
     pub fn find_functions(&self, query: &str) -> Vec<FunctionInfo> {
         self.collect_functions(query)
     }
@@ -56,18 +80,21 @@ impl ProjectAnalyzer {
                 .insert(FunctionKey::from_function(candidate));
         }
 
-        let resolved: HashMap<FunctionKey, FunctionInfo> = candidate_keys_by_file
-            .par_iter()
-            .flat_map(|(file, expected)| {
-                self.analyze_file(file, |analyzer| analyzer.functions_with_bodies())
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter_map(|function| {
-                        let key = FunctionKey::from_function(&function);
-                        expected.contains(&key).then_some((key, function))
-                    })
-                    .collect::<Vec<_>>()
-            })
+        let resolved: HashMap<FunctionKey, FunctionInfo> = self
+            .analyze_files_with_progress(
+                &candidate_keys_by_file.iter().collect::<Vec<_>>(),
+                |(file, expected)| {
+                    self.analyze_file(file, |analyzer| analyzer.functions_with_bodies())
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter_map(|function| {
+                            let key = FunctionKey::from_function(&function);
+                            expected.contains(&key).then_some((key, function))
+                        })
+                        .collect::<Vec<_>>()
+                },
+            )
+            .into_iter()
             .collect();
 
         candidates
@@ -87,22 +114,19 @@ impl ProjectAnalyzer {
             return Vec::new();
         }
         let matcher = QueryMatcher::new(query);
-        candidate_files
-            .par_iter()
-            .flat_map(|f| {
-                let funcs = self
-                    .analyze_file(f, |analyzer| analyzer.functions())
-                    .unwrap_or_default();
-                if matcher.matches_all() {
-                    funcs
-                } else {
-                    funcs
-                        .into_iter()
-                        .filter(|func| matcher.is_match(&func.name))
-                        .collect()
-                }
-            })
-            .collect()
+        self.analyze_files_with_progress(&candidate_files, |f| {
+            let funcs = self
+                .analyze_file(f, |analyzer| analyzer.functions())
+                .unwrap_or_default();
+            if matcher.matches_all() {
+                funcs
+            } else {
+                funcs
+                    .into_iter()
+                    .filter(|func| matcher.is_match(&func.name))
+                    .collect()
+            }
+        })
     }
 
     pub fn find_classes(&self, query: &str) -> Vec<ClassInfo> {
@@ -111,22 +135,19 @@ impl ProjectAnalyzer {
             return Vec::new();
         }
         let matcher = QueryMatcher::new(query);
-        candidate_files
-            .par_iter()
-            .flat_map(|f| {
-                let classes = self
-                    .analyze_file(f, |analyzer| analyzer.classes())
-                    .unwrap_or_default();
-                if matcher.matches_all() {
-                    classes
-                } else {
-                    classes
-                        .into_iter()
-                        .filter(|class| matcher.is_match(&class.name))
-                        .collect()
-                }
-            })
-            .collect()
+        self.analyze_files_with_progress(&candidate_files, |f| {
+            let classes = self
+                .analyze_file(f, |analyzer| analyzer.classes())
+                .unwrap_or_default();
+            if matcher.matches_all() {
+                classes
+            } else {
+                classes
+                    .into_iter()
+                    .filter(|class| matcher.is_match(&class.name))
+                    .collect()
+            }
+        })
     }
 
     pub fn find_fields(&self, class_name: &str) -> Vec<FieldInfo> {
@@ -135,13 +156,10 @@ impl ProjectAnalyzer {
             return Vec::new();
         }
         let cn = class_name.to_string();
-        candidate_files
-            .par_iter()
-            .flat_map(|f| {
-                self.analyze_file(f, |analyzer| analyzer.fields(&cn))
-                    .unwrap_or_default()
-            })
-            .collect()
+        self.analyze_files_with_progress(&candidate_files, |f| {
+            self.analyze_file(f, |analyzer| analyzer.fields(&cn))
+                .unwrap_or_default()
+        })
     }
 
     pub fn find_imports(&self, query: &str) -> Vec<ImportInfo> {
@@ -150,22 +168,19 @@ impl ProjectAnalyzer {
             return Vec::new();
         }
         let matcher = QueryMatcher::new(query);
-        candidate_files
-            .par_iter()
-            .flat_map(|f| {
-                let imports = self
-                    .analyze_file(f, |analyzer| analyzer.imports())
-                    .unwrap_or_default();
-                if matcher.matches_all() {
-                    imports
-                } else {
-                    imports
-                        .into_iter()
-                        .filter(|import| matcher.is_match(&import.module))
-                        .collect()
-                }
-            })
-            .collect()
+        self.analyze_files_with_progress(&candidate_files, |f| {
+            let imports = self
+                .analyze_file(f, |analyzer| analyzer.imports())
+                .unwrap_or_default();
+            if matcher.matches_all() {
+                imports
+            } else {
+                imports
+                    .into_iter()
+                    .filter(|import| matcher.is_match(&import.module))
+                    .collect()
+            }
+        })
     }
     pub fn find_annotations(&self, query: &str) -> Vec<AnnotationInfo> {
         let candidate_files = self.filter_candidates(query);
@@ -173,22 +188,19 @@ impl ProjectAnalyzer {
             return Vec::new();
         }
         let matcher = QueryMatcher::new(query);
-        candidate_files
-            .par_iter()
-            .flat_map(|f| {
-                let annotations = self
-                    .analyze_file(f, |analyzer| analyzer.annotations())
-                    .unwrap_or_default();
-                if matcher.matches_all() {
-                    annotations
-                } else {
-                    annotations
-                        .into_iter()
-                        .filter(|a| matcher.is_match(&a.name))
-                        .collect()
-                }
-            })
-            .collect()
+        self.analyze_files_with_progress(&candidate_files, |f| {
+            let annotations = self
+                .analyze_file(f, |analyzer| analyzer.annotations())
+                .unwrap_or_default();
+            if matcher.matches_all() {
+                annotations
+            } else {
+                annotations
+                    .into_iter()
+                    .filter(|a| matcher.is_match(&a.name))
+                    .collect()
+            }
+        })
     }
 
     pub fn find_callers(
@@ -202,9 +214,8 @@ impl ProjectAnalyzer {
         }
         let fn_name = function_name.to_string();
         let cn = class_name.map(|s| s.to_string());
-        let mut results: Vec<serde_json::Value> = candidate_files
-            .par_iter()
-            .flat_map(|f| {
+        let mut results: Vec<serde_json::Value> =
+            self.analyze_files_with_progress(&candidate_files, |f| {
                 self.analyze_file(f, |analyzer| {
                     analyzer.find_function_callers(&fn_name, cn.as_deref())
                 })
@@ -219,8 +230,7 @@ impl ProjectAnalyzer {
                     })
                 })
                 .collect::<Vec<_>>()
-            })
-            .collect();
+            });
         sort_by_file_line(&mut results);
         results
     }
@@ -237,23 +247,22 @@ impl ProjectAnalyzer {
 
         let fn_name = function_name.to_string();
         let cn = class_name.map(|s| s.to_string());
-        let mut relevant_files: Vec<String> = candidate_files
-            .par_iter()
-            .filter_map(|f| {
+        let mut relevant_files: Vec<String> =
+            self.analyze_files_with_progress(&candidate_files, |f| {
                 self.analyze_file(f, |analyzer| {
                     analyzer.has_function_named(&fn_name, cn.as_deref())
                 })
                 .and_then(|exists| exists.then(|| f.clone()))
-            })
-            .collect();
+                .into_iter()
+                .collect()
+            });
 
         if relevant_files.is_empty() {
             relevant_files = candidate_files;
         }
 
-        let mut results: Vec<serde_json::Value> = relevant_files
-            .par_iter()
-            .flat_map(|f| {
+        let mut results: Vec<serde_json::Value> =
+            self.analyze_files_with_progress(&relevant_files, |f| {
                 self.analyze_file(f, |analyzer| {
                     analyzer.find_function_callees(&fn_name, cn.as_deref())
                 })
@@ -268,8 +277,7 @@ impl ProjectAnalyzer {
                     })
                 })
                 .collect::<Vec<_>>()
-            })
-            .collect();
+            });
         sort_by_file_line(&mut results);
         results
     }
@@ -285,15 +293,12 @@ impl ProjectAnalyzer {
         }
         let fn_name = name.to_string();
         let cn = class_name.map(|s| s.to_string());
-        candidate_files
-            .par_iter()
-            .flat_map(|f| {
-                self.analyze_file(f, |analyzer| {
-                    analyzer.find_function_definitions(&fn_name, cn.as_deref())
-                })
-                .unwrap_or_default()
+        self.analyze_files_with_progress(&candidate_files, |f| {
+            self.analyze_file(f, |analyzer| {
+                analyzer.find_function_definitions(&fn_name, cn.as_deref())
             })
-            .collect()
+            .unwrap_or_default()
+        })
     }
 
     pub fn find_graphs(
@@ -303,14 +308,12 @@ impl ProjectAnalyzer {
         direction: GraphDirection,
         max_depth: usize,
     ) -> anyhow::Result<Vec<CallGraphPath>> {
-        let snapshots = self
-            .files
-            .par_iter()
-            .map(|file| {
-                let mut analyzer = CodeAnalyzer::new(file)?;
-                anyhow::Ok(analyzer.snapshot_for_index())
-            })
-            .collect::<Vec<_>>();
+        let snapshots = self.analyze_files_with_progress(&self.files, |file| {
+            vec![match CodeAnalyzer::new(file) {
+                Ok(mut analyzer) => anyhow::Ok(analyzer.snapshot_for_index()),
+                Err(error) => Err(error),
+            }]
+        });
 
         let mut functions = Vec::new();
         let mut fields = Vec::new();
@@ -355,13 +358,10 @@ impl ProjectAnalyzer {
             return Vec::new();
         }
         let symbol = name.to_string();
-        let refs: Vec<SymbolRefInfo> = candidate_files
-            .par_iter()
-            .flat_map(|f| {
-                self.analyze_file(f, |analyzer| analyzer.find_symbols(&symbol))
-                    .unwrap_or_default()
-            })
-            .collect();
+        let refs: Vec<SymbolRefInfo> = self.analyze_files_with_progress(&candidate_files, |f| {
+            self.analyze_file(f, |analyzer| analyzer.find_symbols(&symbol))
+                .unwrap_or_default()
+        });
         refs.into_iter()
             .map(|symbol| symbol.to_json_value())
             .collect()
@@ -380,32 +380,35 @@ impl ProjectAnalyzer {
                 .insert(SymbolRefKey::from_symbol(candidate));
         }
 
-        let resolved: HashMap<SymbolRefKey, SymbolRefInfo> = candidate_keys_by_file
-            .par_iter()
-            .flat_map(|(file, expected)| {
-                self.analyze_file(file, |analyzer| {
-                    let expected_symbols: Vec<_> = expected
-                        .iter()
-                        .map(|key| SymbolRefInfo {
-                            name: key.name.clone(),
-                            node_type: key.node_type.clone(),
-                            location: Location {
-                                file: key.file.clone(),
-                                start_line: key.start_line,
-                                end_line: key.end_line,
-                            },
-                            start_column: key.start_column,
-                            end_column: key.end_column,
-                            context: String::new(),
-                        })
-                        .collect();
-                    analyzer.hydrate_symbol_contexts(&expected_symbols)
-                })
-                .unwrap_or_default()
-                .into_iter()
-                .map(|symbol| (SymbolRefKey::from_symbol(&symbol), symbol))
-                .collect::<Vec<_>>()
-            })
+        let resolved: HashMap<SymbolRefKey, SymbolRefInfo> = self
+            .analyze_files_with_progress(
+                &candidate_keys_by_file.iter().collect::<Vec<_>>(),
+                |(file, expected)| {
+                    self.analyze_file(file, |analyzer| {
+                        let expected_symbols: Vec<_> = expected
+                            .iter()
+                            .map(|key| SymbolRefInfo {
+                                name: key.name.clone(),
+                                node_type: key.node_type.clone(),
+                                location: Location {
+                                    file: key.file.clone(),
+                                    start_line: key.start_line,
+                                    end_line: key.end_line,
+                                },
+                                start_column: key.start_column,
+                                end_column: key.end_column,
+                                context: String::new(),
+                            })
+                            .collect();
+                        analyzer.hydrate_symbol_contexts(&expected_symbols)
+                    })
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|symbol| (SymbolRefKey::from_symbol(&symbol), symbol))
+                    .collect::<Vec<_>>()
+                },
+            )
+            .into_iter()
             .collect();
 
         candidates
@@ -440,15 +443,13 @@ impl ProjectAnalyzer {
                 visited.insert(parent_name.clone());
                 let candidate_files = self.filter_by_text(parent_name);
                 let pn = parent_name.clone();
-                let found: Vec<ClassInfo> = candidate_files
-                    .par_iter()
-                    .flat_map(|f| {
+                let found: Vec<ClassInfo> =
+                    self.analyze_files_with_progress(&candidate_files, |f| {
                         self.analyze_file(f, |analyzer| analyzer.class_named(&pn))
                             .flatten()
                             .into_iter()
                             .collect::<Vec<_>>()
-                    })
-                    .collect();
+                    });
                 if let Some(parent) = found.into_iter().next() {
                     result.push(parent.clone());
                     queue.push_back(parent);
@@ -468,16 +469,13 @@ impl ProjectAnalyzer {
         while let Some(current_parent) = queue.pop_front() {
             let candidate_files = self.filter_by_text(&current_parent);
             let cp = current_parent.clone();
-            let found: Vec<ClassInfo> = candidate_files
-                .par_iter()
-                .flat_map(|f| {
-                    self.analyze_file(f, |analyzer| analyzer.classes())
-                        .unwrap_or_default()
-                        .into_iter()
-                        .filter(|cls| cls.super_classes.contains(&cp))
-                        .collect::<Vec<_>>()
-                })
-                .collect();
+            let found: Vec<ClassInfo> = self.analyze_files_with_progress(&candidate_files, |f| {
+                self.analyze_file(f, |analyzer| analyzer.classes())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|cls| cls.super_classes.contains(&cp))
+                    .collect::<Vec<_>>()
+            });
             for cls in found {
                 if visited.insert(cls.name.clone()) {
                     queue.push_back(cls.name.clone());
@@ -490,15 +488,14 @@ impl ProjectAnalyzer {
 
     fn find_class_by_name(&self, class_name: &str) -> Option<ClassInfo> {
         let candidate_files = self.filter_by_text(class_name);
-        for f in &candidate_files {
-            if let Some(cls) = self
-                .analyze_file(f, |analyzer| analyzer.class_named(class_name))
+        self.analyze_files_with_progress(&candidate_files, |f| {
+            self.analyze_file(f, |analyzer| analyzer.class_named(class_name))
                 .flatten()
-            {
-                return Some(cls);
-            }
-        }
-        None
+                .into_iter()
+                .collect()
+        })
+        .into_iter()
+        .next()
     }
 
     fn filter_candidates(&self, query: &str) -> Vec<String> {

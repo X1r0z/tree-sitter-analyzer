@@ -1,5 +1,7 @@
+use std::io::IsTerminal;
 use std::path::Path;
 
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressState, ProgressStyle};
 use regex::Regex;
 
 use crate::languages::{language_extensions, supported_extensions};
@@ -31,6 +33,63 @@ pub fn find_files(path: &str, language: Option<&str>) -> Vec<String> {
     files.sort();
     files.dedup();
     files
+}
+
+pub(crate) fn progress_style(unit: &str, bar_style: &str) -> ProgressStyle {
+    let template = format!(
+        "{{msg}} [{{bar:40.{bar_style}}}] {{percent_floor}}% | {{pos}}/{{len}} {unit} | ETA {{eta_clamped}}"
+    );
+    ProgressStyle::with_template(&template)
+        .unwrap_or_else(|_| ProgressStyle::default_bar())
+        .with_key(
+            "percent_floor",
+            |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                let len = state.len().unwrap_or(0);
+                let pos = state.pos();
+                let percent_hundredths = if len == 0 {
+                    0
+                } else {
+                    pos.saturating_mul(10_000) / len
+                };
+                let integer = percent_hundredths / 100;
+                let fraction = percent_hundredths % 100;
+                let _ = write!(w, "{integer:>3}.{fraction:02}");
+            },
+        )
+        .with_key(
+            "eta_clamped",
+            |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                let len = state.len().unwrap_or(0);
+                let pos = state.pos();
+                let eta = if len > 0 && pos < len {
+                    state.eta().max(std::time::Duration::from_secs(1))
+                } else {
+                    state.eta()
+                };
+                let seconds = eta.as_secs();
+                let hours = seconds / 3600;
+                let minutes = (seconds % 3600) / 60;
+                let secs = seconds % 60;
+                let _ = write!(w, "{hours:02}:{minutes:02}:{secs:02}");
+            },
+        )
+        .progress_chars("##-")
+}
+
+pub(crate) fn progress_bar(
+    total: usize,
+    unit: &str,
+    bar_style: &str,
+    message: &str,
+) -> ProgressBar {
+    let progress = if std::io::stderr().is_terminal() {
+        ProgressBar::with_draw_target(Some(total as u64), ProgressDrawTarget::stderr_with_hz(20))
+    } else {
+        ProgressBar::hidden()
+    };
+    progress.set_style(progress_style(unit, bar_style));
+    progress.set_message(message.to_string());
+    progress
 }
 
 pub fn search_files_with_rg(text: &str, path: &str, language: Option<&str>) -> Option<Vec<String>> {

@@ -20,7 +20,6 @@ impl DbProjectAnalyzer {
         Self::init_schema(&conn)?;
         let tx = conn.transaction()?;
         let existing = Self::load_metadata_map(&tx)?;
-        progress.set_message("Loading metadata");
         progress.inc(1);
         let indexed_language = language.unwrap_or("");
         let compatible = existing.get("indexed_root_path").map(String::as_str) == Some(root_path)
@@ -55,15 +54,12 @@ impl DbProjectAnalyzer {
             + deleted_files as u64
             + u64::from(!compatible);
         progress.set_length(total_steps);
-
         if !compatible {
-            progress.set_message("Clearing incompatible index");
             Self::clear_all(&tx)?;
             progress.inc(1);
             Self::set_metadata(&tx, "created_at", &Self::current_timestamp_string()?)?;
         }
 
-        progress.set_message("Updating metadata");
         Self::upsert_metadata(&tx, "indexed_root_path", root_path)?;
         progress.inc(1);
         Self::upsert_metadata(&tx, "language_filter", indexed_language)?;
@@ -72,7 +68,6 @@ impl DbProjectAnalyzer {
         progress.inc(1);
 
         if compatible {
-            progress.set_message("Syncing changed files");
             Self::sync_snapshots(
                 &tx,
                 &existing_files,
@@ -81,14 +76,12 @@ impl DbProjectAnalyzer {
                 progress,
             )?;
         } else {
-            progress.set_message("Writing file snapshots");
             let mut inserter = SnapshotInserter::new(&tx)?;
             for snapshot in &plan.changed_snapshots {
                 inserter.insert_snapshot(snapshot)?;
                 progress.inc(1);
             }
         }
-        progress.set_message("Committing transaction");
         tx.commit()?;
         progress.inc(1);
         Ok(())
@@ -428,21 +421,29 @@ pub(crate) fn file_record_from_path(
     path: &str,
     language: &str,
 ) -> anyhow::Result<IndexedFileRecord> {
+    let mut record = file_record_without_hash_from_path(path, language)?;
+    record.content_hash =
+        blake3::hash(&std::fs::read(path).with_context(|| format!("Failed to read {}", path))?)
+            .to_hex()
+            .to_string();
+    Ok(record)
+}
+
+pub(crate) fn file_record_without_hash_from_path(
+    path: &str,
+    language: &str,
+) -> anyhow::Result<IndexedFileRecord> {
     let metadata = std::fs::metadata(path).with_context(|| format!("Failed to stat {}", path))?;
     let modified = metadata.modified()?;
     let mtime_nanos = modified
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos() as i64;
-    let content_hash =
-        blake3::hash(&std::fs::read(path).with_context(|| format!("Failed to read {}", path))?)
-            .to_hex()
-            .to_string();
     Ok(IndexedFileRecord {
         path: path.to_string(),
         language: language.to_string(),
         mtime_nanos,
         size_bytes: metadata.len() as i64,
-        content_hash,
+        content_hash: String::new(),
     })
 }

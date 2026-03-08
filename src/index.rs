@@ -1,13 +1,14 @@
-use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use serde_json::{json, Value};
 
 use crate::analyzer::CodeAnalyzer;
 use crate::db::{
-    db_path_in_current_dir, file_record_from_path, DbProjectAnalyzer, FileIndexData, IndexSyncPlan,
+    db_path_in_current_dir, file_record_from_path, file_record_without_hash_from_path,
+    DbProjectAnalyzer, FileIndexData, IndexSyncPlan,
 };
 use crate::languages::detect_language;
 use crate::project::ProjectAnalyzer;
+use crate::utils::progress_bar;
 
 pub(crate) fn build_index(path: &str, language: Option<&str>) -> Value {
     let project = match ProjectAnalyzer::new_with_language(path, language) {
@@ -16,15 +17,7 @@ pub(crate) fn build_index(path: &str, language: Option<&str>) -> Value {
     };
 
     let total_files = project.files.len();
-    let progress = ProgressBar::new(total_files as u64);
-    progress.set_style(
-        ProgressStyle::with_template(
-            "[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} files | {msg}",
-        )
-        .unwrap_or_else(|_| ProgressStyle::default_bar())
-        .progress_chars("##-"),
-    );
-    progress.set_message("Analyzing files");
+    let progress = progress_bar(total_files, "files", "cyan/blue", "Parsing source files");
 
     let db_path = match db_path_in_current_dir() {
         Ok(path) => path,
@@ -71,15 +64,7 @@ pub(crate) fn build_index(path: &str, language: Option<&str>) -> Value {
         changed_snapshots: snapshots,
     };
 
-    let db_progress = ProgressBar::new(0);
-    db_progress.set_style(
-        ProgressStyle::with_template(
-            "[{elapsed_precise}] [{bar:40.green/blue}] {pos}/{len} steps | {msg}",
-        )
-        .unwrap_or_else(|_| ProgressStyle::default_bar())
-        .progress_chars("##-"),
-    );
-    db_progress.set_message("Writing database");
+    let db_progress = progress_bar(0, "steps", "green/blue", "Persisting index data");
 
     let update_result =
         DbProjectAnalyzer::update_database(&db_path, path, language, &plan, &db_progress);
@@ -107,15 +92,15 @@ fn build_file_index(
     let language = detect_language(std::path::Path::new(file))
         .ok_or_else(|| anyhow::anyhow!("Could not detect language for: {}", file))?
         .to_string();
-    let file_record = file_record_from_path(file, &language)?;
-    if existing.is_some_and(|record| {
-        record.language == file_record.language
-            && record.mtime_nanos == file_record.mtime_nanos
-            && record.size_bytes == file_record.size_bytes
-            && record.content_hash == file_record.content_hash
+    let quick_record = file_record_without_hash_from_path(file, &language)?;
+    if let Some(record) = existing.filter(|record| {
+        record.language == quick_record.language
+            && record.mtime_nanos == quick_record.mtime_nanos
+            && record.size_bytes == quick_record.size_bytes
     }) {
-        return Ok((file_record, None));
+        return Ok((record.clone(), None));
     }
+    let file_record = file_record_from_path(file, &language)?;
 
     let mut analyzer = CodeAnalyzer::new(file)?;
     let snapshot = analyzer.snapshot_for_index();

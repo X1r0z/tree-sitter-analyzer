@@ -45,7 +45,7 @@ impl<'a> CallGraphQuery<'a> {
         max_depth: usize,
     ) -> anyhow::Result<Vec<CallGraphPath>> {
         let relation_query = CallRelationQuery::new(self.ctx);
-        let start_nodes = relation_query.find_exact_function_nodes(function_name, class_name)?;
+        let start_nodes = relation_query.load_exact_function_nodes(function_name, class_name)?;
         if start_nodes.is_empty() {
             anyhow::bail!("Function '{}' not found", function_name);
         }
@@ -221,7 +221,7 @@ impl<'a> CallGraphQuery<'a> {
         for (callee_name, object_name, line) in rows {
             let candidates =
                 relation_query.load_function_nodes_by_name(&callee_name, node_cache)?;
-            for candidate in resolver.resolve_down_targets(
+            for candidate in resolver.resolve_forward_targets(
                 node,
                 object_name.as_deref(),
                 &candidates,
@@ -287,7 +287,7 @@ impl<'a> CallGraphQuery<'a> {
             let Some(caller_name) = caller_name.as_deref() else {
                 continue;
             };
-            let caller = relation_query.resolve_enclosing_db_function(
+            let caller = relation_query.resolve_enclosing_function_node(
                 file_id,
                 &file,
                 caller_name,
@@ -297,7 +297,7 @@ impl<'a> CallGraphQuery<'a> {
             )?;
             if let Some(caller) = caller {
                 if let Some(class_name) = node.function.class_name.as_deref() {
-                    if !resolver.matches_call_target_for_caller(
+                    if !resolver.matches_call_target(
                         &caller,
                         object_name.as_deref(),
                         class_name,
@@ -361,7 +361,7 @@ impl<'a> CallGraphQuery<'a> {
 
             for row in property_rows {
                 let (file_id, file, caller_name, caller_class_name, object_name, line) = row?;
-                if let Some(caller) = relation_query.resolve_enclosing_db_function(
+                if let Some(caller) = relation_query.resolve_enclosing_function_node(
                     file_id,
                     &file,
                     &caller_name,
@@ -369,7 +369,7 @@ impl<'a> CallGraphQuery<'a> {
                     line,
                     node_cache,
                 )? {
-                    if !resolver.matches_property_target_for_caller(
+                    if !resolver.matches_property_target(
                         Some(&caller),
                         object_name.as_deref(),
                         node.function.class_name.as_deref().unwrap_or_default(),

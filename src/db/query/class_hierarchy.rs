@@ -15,7 +15,7 @@ impl<'a> ClassHierarchyQuery<'a> {
 
     pub(crate) fn find_super_classes(&self, class_name: &str) -> anyhow::Result<Vec<ClassInfo>> {
         let all_classes = CatalogQuery::new(self.ctx).find_classes("")?;
-        let class_map = classes_by_name(&all_classes);
+        let class_map = load_classes_by_name(&all_classes);
         let Some(target) = class_map
             .get(class_name)
             .and_then(|classes| classes.first())
@@ -66,7 +66,7 @@ impl<'a> ClassHierarchyQuery<'a> {
     }
 }
 
-fn classes_by_name(classes: &[ClassInfo]) -> HashMap<String, Vec<ClassInfo>> {
+fn load_classes_by_name(classes: &[ClassInfo]) -> HashMap<String, Vec<ClassInfo>> {
     let mut map = HashMap::new();
     for class in classes {
         map.entry(class.name.clone())

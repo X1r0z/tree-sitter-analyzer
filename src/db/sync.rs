@@ -32,7 +32,7 @@ impl IndexSynchronizer {
                 == indexed_language;
 
         let existing_files = if compatible {
-            Self::load_indexed_files(&tx)?
+            Self::load_indexed_files_by_path(&tx)?
         } else {
             HashMap::new()
         };
@@ -130,7 +130,7 @@ impl IndexSynchronizer {
         Ok(())
     }
 
-    fn load_indexed_files(
+    fn load_indexed_files_by_path(
         tx: &Transaction<'_>,
     ) -> anyhow::Result<HashMap<String, IndexedFileEntry>> {
         let mut stmt = tx.prepare(
@@ -425,7 +425,7 @@ pub(crate) fn file_record_from_path(
     path: &str,
     language: &str,
 ) -> anyhow::Result<IndexedFileRecord> {
-    let mut record = file_record_without_hash_from_path(path, language)?;
+    let mut record = file_record_from_path_without_hash(path, language)?;
     record.content_hash =
         blake3::hash(&std::fs::read(path).with_context(|| format!("Failed to read {}", path))?)
             .to_hex()
@@ -433,7 +433,7 @@ pub(crate) fn file_record_from_path(
     Ok(record)
 }
 
-pub(crate) fn file_record_without_hash_from_path(
+pub(crate) fn file_record_from_path_without_hash(
     path: &str,
     language: &str,
 ) -> anyhow::Result<IndexedFileRecord> {

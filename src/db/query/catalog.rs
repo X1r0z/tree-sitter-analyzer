@@ -132,9 +132,9 @@ impl<'a> CatalogQuery<'a> {
             .iter()
             .map(|row| (row.file_id, row.name.clone()))
             .collect();
-        let methods_by_class = self.load_class_methods_map(&class_ids)?;
-        let super_classes_by_class = self.load_class_super_classes_map(&class_ids)?;
-        let fields_by_class = self.load_field_names_map(&field_keys)?;
+        let methods_by_class = self.load_methods_by_class(&class_ids)?;
+        let super_classes_by_class = self.load_superclasses_by_class(&class_ids)?;
+        let fields_by_class = self.load_field_names_by_file_class(&field_keys)?;
 
         Ok(class_rows
             .into_iter()
@@ -313,7 +313,7 @@ impl<'a> CatalogQuery<'a> {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
-    pub(super) fn load_class_methods_map(
+    pub(super) fn load_methods_by_class(
         &self,
         class_ids: &[i64],
     ) -> anyhow::Result<HashMap<i64, Vec<String>>> {
@@ -340,7 +340,7 @@ impl<'a> CatalogQuery<'a> {
         Ok(map)
     }
 
-    pub(super) fn load_class_super_classes_map(
+    pub(super) fn load_superclasses_by_class(
         &self,
         class_ids: &[i64],
     ) -> anyhow::Result<HashMap<i64, Vec<String>>> {
@@ -367,7 +367,7 @@ impl<'a> CatalogQuery<'a> {
         Ok(map)
     }
 
-    pub(super) fn load_field_names_map(
+    pub(super) fn load_field_names_by_file_class(
         &self,
         file_class_pairs: &[(i64, String)],
     ) -> anyhow::Result<HashMap<(i64, String), Vec<String>>> {

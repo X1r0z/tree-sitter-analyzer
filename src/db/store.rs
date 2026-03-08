@@ -37,7 +37,9 @@ impl IndexStore {
         self.conn
     }
 
-    pub(crate) fn list_indexed_files(&self) -> anyhow::Result<HashMap<String, IndexedFileRecord>> {
+    pub(crate) fn indexed_files_by_path(
+        &self,
+    ) -> anyhow::Result<HashMap<String, IndexedFileRecord>> {
         let mut stmt = self.conn.prepare(
             "
             SELECT path, language, mtime_nanos, size_bytes, content_hash

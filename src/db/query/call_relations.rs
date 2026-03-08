@@ -99,7 +99,7 @@ impl<'a> CallRelationQuery<'a> {
                 let Some(caller_name) = row.caller.as_deref() else {
                     continue;
                 };
-                let Some(caller) = self.resolve_enclosing_db_function(
+                let Some(caller) = self.resolve_enclosing_function_node(
                     row.file_id,
                     &row.file,
                     caller_name,
@@ -110,7 +110,7 @@ impl<'a> CallRelationQuery<'a> {
                 else {
                     continue;
                 };
-                if !resolver.matches_call_target_for_caller(
+                if !resolver.matches_call_target(
                     &caller,
                     row.object_name.as_deref(),
                     class_name,
@@ -161,7 +161,7 @@ impl<'a> CallRelationQuery<'a> {
             for row in property_rows {
                 let (file_id, file, caller_name, caller_class_name, object_name, line) = row?;
                 if let Some(class_name) = class_name {
-                    let caller = self.resolve_enclosing_db_function(
+                    let caller = self.resolve_enclosing_function_node(
                         file_id,
                         &file,
                         &caller_name,
@@ -169,7 +169,7 @@ impl<'a> CallRelationQuery<'a> {
                         line,
                         &mut node_cache,
                     )?;
-                    if !resolver.matches_property_target_for_caller(
+                    if !resolver.matches_property_target(
                         caller.as_ref(),
                         object_name.as_deref(),
                         class_name,
@@ -302,7 +302,7 @@ impl<'a> CallRelationQuery<'a> {
         Ok(results)
     }
 
-    pub(super) fn find_exact_function_nodes(
+    pub(super) fn load_exact_function_nodes(
         &self,
         function_name: &str,
         class_name: Option<&str>,
@@ -332,21 +332,21 @@ impl<'a> CallRelationQuery<'a> {
         let rows: Vec<DbFunctionNode> = match (class_name, language) {
             (Some(class_name), Some(language)) => stmt
                 .query_map(params![function_name, class_name, language], |row| {
-                    Self::row_to_db_function_node(row)
+                    Self::function_node_from_row(row)
                 })?
                 .collect::<Result<Vec<_>, _>>()?,
             (Some(class_name), None) => stmt
                 .query_map(params![function_name, class_name], |row| {
-                    Self::row_to_db_function_node(row)
+                    Self::function_node_from_row(row)
                 })?
                 .collect::<Result<Vec<_>, _>>()?,
             (None, Some(language)) => stmt
                 .query_map(params![function_name, language], |row| {
-                    Self::row_to_db_function_node(row)
+                    Self::function_node_from_row(row)
                 })?
                 .collect::<Result<Vec<_>, _>>()?,
             (None, None) => stmt
-                .query_map([function_name], Self::row_to_db_function_node)?
+                .query_map([function_name], Self::function_node_from_row)?
                 .collect::<Result<Vec<_>, _>>()?,
         };
         Ok(rows)
@@ -362,12 +362,12 @@ impl<'a> CallRelationQuery<'a> {
             return Ok(cached.clone());
         }
 
-        let loaded = self.find_exact_function_nodes(function_name, None)?;
+        let loaded = self.load_exact_function_nodes(function_name, None)?;
         cache.insert(key, loaded.clone());
         Ok(loaded)
     }
 
-    pub(super) fn resolve_enclosing_db_function(
+    pub(super) fn resolve_enclosing_function_node(
         &self,
         file_id: i64,
         file: &str,
@@ -380,7 +380,7 @@ impl<'a> CallRelationQuery<'a> {
         let candidates = if let Some(cached) = cache.get(&cache_key) {
             cached.clone()
         } else {
-            let loaded = self.find_exact_function_nodes(function_name, class_name)?;
+            let loaded = self.load_exact_function_nodes(function_name, class_name)?;
             cache.insert(cache_key.clone(), loaded.clone());
             loaded
         };
@@ -439,7 +439,7 @@ impl<'a> CallRelationQuery<'a> {
         Ok(rows.into_iter().collect())
     }
 
-    fn row_to_db_function_node(row: &rusqlite::Row<'_>) -> rusqlite::Result<DbFunctionNode> {
+    fn function_node_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DbFunctionNode> {
         Ok(DbFunctionNode {
             function_id: row.get(0)?,
             file_id: row.get(1)?,

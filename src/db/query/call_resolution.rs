@@ -60,7 +60,7 @@ impl<'a> CallTargetResolver<'a> {
         Ok(exists.is_some())
     }
 
-    pub(super) fn matches_property_target_for_caller(
+    pub(super) fn matches_property_target(
         &self,
         caller: Option<&DbFunctionNode>,
         object_name: Option<&str>,
@@ -82,7 +82,7 @@ impl<'a> CallTargetResolver<'a> {
         let Some(caller) = caller else {
             return Ok(false);
         };
-        self.matches_call_target_for_caller(
+        self.matches_call_target(
             caller,
             object_name,
             class_name,
@@ -91,7 +91,7 @@ impl<'a> CallTargetResolver<'a> {
         )
     }
 
-    pub(super) fn matches_call_target_for_caller(
+    pub(super) fn matches_call_target(
         &self,
         caller: &DbFunctionNode,
         object_name: Option<&str>,
@@ -118,8 +118,11 @@ impl<'a> CallTargetResolver<'a> {
         };
 
         if let Some(caller_class_name) = caller.function.class_name.as_deref() {
-            let field_types =
-                self.field_types_for_class(caller.file_id, caller_class_name, field_type_cache)?;
+            let field_types = self.load_field_types_by_file_class(
+                caller.file_id,
+                caller_class_name,
+                field_type_cache,
+            )?;
             for field_type in field_types.get(attr_name).into_iter().flatten() {
                 if type_matches_class(field_type.as_deref(), class_name) {
                     return Ok(true);
@@ -127,7 +130,8 @@ impl<'a> CallTargetResolver<'a> {
             }
         }
 
-        let param_types = self.param_types_for_function(caller.function_id, param_type_cache)?;
+        let param_types =
+            self.load_param_types_by_function(caller.function_id, param_type_cache)?;
         for param_type in param_types.get(attr_name).into_iter().flatten() {
             if type_matches_class(param_type.as_deref(), class_name) {
                 return Ok(true);
@@ -137,7 +141,7 @@ impl<'a> CallTargetResolver<'a> {
         Ok(false)
     }
 
-    pub(super) fn resolve_down_targets(
+    pub(super) fn resolve_forward_targets(
         &self,
         caller: &DbFunctionNode,
         object_name: Option<&str>,
@@ -173,8 +177,11 @@ impl<'a> CallTargetResolver<'a> {
                     caller.function.class_name.as_deref(),
                     extract_instance_attr(object_name),
                 ) {
-                    let field_types =
-                        self.field_types_for_class(caller.file_id, class_name, field_type_cache)?;
+                    let field_types = self.load_field_types_by_file_class(
+                        caller.file_id,
+                        class_name,
+                        field_type_cache,
+                    )?;
                     for candidate in candidates {
                         for field_type in field_types.get(attr_name).into_iter().flatten() {
                             if type_matches_class(
@@ -190,7 +197,7 @@ impl<'a> CallTargetResolver<'a> {
 
                 if let Some(param_name) = extract_instance_attr(object_name) {
                     let param_types =
-                        self.param_types_for_function(caller.function_id, param_type_cache)?;
+                        self.load_param_types_by_function(caller.function_id, param_type_cache)?;
                     for candidate in candidates {
                         for param_type in param_types.get(param_name).into_iter().flatten() {
                             if type_matches_class(
@@ -243,7 +250,7 @@ impl<'a> CallTargetResolver<'a> {
         Ok(results)
     }
 
-    fn field_types_for_class(
+    fn load_field_types_by_file_class(
         &self,
         file_id: i64,
         class_name: &str,
@@ -273,7 +280,7 @@ impl<'a> CallTargetResolver<'a> {
         Ok(map)
     }
 
-    fn param_types_for_function(
+    fn load_param_types_by_function(
         &self,
         function_id: i64,
         cache: &mut ParamTypeCache,

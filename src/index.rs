@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 
 use crate::analyzer::CodeAnalyzer;
 use crate::db::{
-    db_path_in_current_dir, file_record_from_path, file_record_without_hash_from_path,
+    db_path_in_current_dir, file_record_from_path, file_record_from_path_without_hash,
     FileIndexData, IndexStore, IndexSyncPlan, IndexSynchronizer,
 };
 use crate::languages::detect_language;
@@ -26,7 +26,7 @@ pub(crate) fn build_index(path: &str, language: Option<&str>) -> Value {
 
     let existing = match IndexStore::open(&db_path) {
         Ok(store) if store.is_compatible_with(path, language).unwrap_or(false) => {
-            store.list_indexed_files().unwrap_or_default()
+            store.indexed_files_by_path().unwrap_or_default()
         }
         Ok(_) => Default::default(),
         Err(_) => Default::default(),
@@ -91,7 +91,7 @@ fn build_file_index(
     let language = detect_language(std::path::Path::new(file))
         .ok_or_else(|| anyhow::anyhow!("Could not detect language for: {}", file))?
         .to_string();
-    let quick_record = file_record_without_hash_from_path(file, &language)?;
+    let quick_record = file_record_from_path_without_hash(file, &language)?;
     if let Some(record) = existing.filter(|record| {
         record.language == quick_record.language
             && record.mtime_nanos == quick_record.mtime_nanos

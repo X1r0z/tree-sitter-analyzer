@@ -333,6 +333,80 @@ Array key: `callees`
 }
 ```
 
+## `graph`
+
+Array key: `graphs`
+
+Envelope includes extra metadata fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `function` | string | The function name traced |
+| `class_name` | string\|null | Class scope (if method) |
+| `direction` | string | `"forward"` or `"backward"` |
+| `max_depth` | int | Requested maximum depth |
+
+Each `graphs` item:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `depth` | int | Actual depth of this call chain (number of edges) |
+| `stacktrace` | string[] | Human-readable call chain frames, ordered callee → caller (bottom-up) |
+| `path` | object[] | Ordered list of function nodes in this chain |
+
+Each `path` item:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `file` | string | File path relative to `path` |
+| `start_line` | int | Start line |
+| `end_line` | int | End line |
+| `name` | string | Function name |
+| `class_name` | string | Parent class (if method, omitted if none) |
+
+```json
+{
+  "path": "/path/to/project",
+  "searched_files": 42,
+  "count": 2,
+  "function": "process_data",
+  "class_name": null,
+  "direction": "forward",
+  "max_depth": 3,
+  "graphs": [
+    {
+      "depth": 2,
+      "stacktrace": [
+        "save_result(db.py:45)",
+        "transform(transform.py:12)",
+        "process_data(app.py:30)"
+      ],
+      "path": [
+        {
+          "file": "src/app.py",
+          "start_line": 28,
+          "end_line": 40,
+          "name": "process_data"
+        },
+        {
+          "file": "src/transform.py",
+          "start_line": 10,
+          "end_line": 20,
+          "name": "transform"
+        },
+        {
+          "file": "src/db.py",
+          "start_line": 42,
+          "end_line": 50,
+          "name": "save_result",
+          "class_name": "Database"
+        }
+      ]
+    }
+  ]
+}
+```
+
 ## `definition`
 
 Array key: `functions`

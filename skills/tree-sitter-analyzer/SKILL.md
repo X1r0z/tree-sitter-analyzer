@@ -3,7 +3,8 @@ name: "tree-sitter-analyzer"
 description: >
   Structural code analysis via tree-sitter AST (functions, classes, imports, annotations, call graph, inheritance, symbol references).
   Use for "who calls X?", "what does X call?", "where is X defined?", "list functions/classes", "class fields/methods",
-  "subclasses/superclasses", "find symbol references", and any structural code understanding across files or directories.
+  "subclasses/superclasses", "find symbol references", "trace call graph", "trace call chain", and any structural code understanding across files or directories.
+  Supports multi-level call graph tracing with `tsa graph` for deep forward/backward call chain analysis.
   Supports optional project indexing with `tsa index` for repeated queries on the same repository.
   Prefer over Grep for code understanding — Grep is for exact literal text matches only.
   Supports Python, JavaScript/TypeScript, Java, Go.
@@ -25,11 +26,12 @@ tree-sitter-analyzer (tsa) parses the actual AST (Abstract Syntax Tree) of sourc
 Use this skill whenever you need answers about code structure or relationships:
 
 - **Call graph analysis** — "Who calls this function?", "What does this function call?", "Trace the call graph from entry point to sink"
+- **Deep call graph tracing** — "Trace all call chains from X down to depth N" (`graph --forward`), "Show me every path that leads to calling X" (`graph --backward`). Use `graph` when you need multi-level recursive traversal rather than just direct callers/callees
 - **Definition lookup** — "Where is this function/class defined?", "Show me the source code of X"
 - **Class structure** — "What fields/methods does this class have?", "What are the subclasses/superclasses?"
 - **Symbol tracking** — "Find all references to this identifier across the project"
 - **Inventory** — "List all functions/classes/imports/annotations in this directory"
-- **Impact analysis** — "If I change this function, what else is affected?"
+- **Impact analysis** — "If I change this function, what else is affected?" — use `graph --backward` to find all upstream callers at arbitrary depth, or `graph --forward` to see everything downstream
 - **Repeated project queries** — When you'll ask several structural questions about the same repo, build an index first with `tsa index`
 
 ### Code Auditing & Security Review
@@ -37,9 +39,9 @@ Use this skill whenever you need answers about code structure or relationships:
 tree-sitter-analyzer (tsa) is particularly powerful for security audits because it can trace data flow structurally rather than relying on string matching:
 
 - **Dangerous function inventory** — Find all calls to security-sensitive functions (e.g., `eval`, `exec`, `os.system`, `subprocess.Popen`, `Runtime.exec`, `sql.Query`) by listing callees or searching symbols, then trace their callers to understand input sources
-- **Taint source tracing** — Identify functions that handle user input (e.g., `request.GET`, `req.body`, `Scanner.nextLine`), then use `callers` to trace how tainted data propagates through the codebase
-- **Sink reachability** — Start from a dangerous sink function, use `callers` recursively to build the call graph back to entry points and determine if user-controlled data can reach it
-- **Attack surface mapping** — Use `functions` + `classes` to inventory all public API endpoints, handlers, and entry points; then use `callees` to map what internal functions each endpoint reaches
+- **Taint source tracing** — Identify functions that handle user input (e.g., `request.GET`, `req.body`, `Scanner.nextLine`), then use `graph --forward` to trace how tainted data propagates through the codebase across multiple call levels
+- **Sink reachability** — Start from a dangerous sink function, use `graph --backward` to build the full call graph back to entry points and determine if user-controlled data can reach it
+- **Attack surface mapping** — Use `functions` + `classes` to inventory all public API endpoints, handlers, and entry points; then use `graph --forward` to map the complete downstream call tree each endpoint reaches
 - **Privilege analysis** — Use `sub-classes` to find all implementations of permission/auth base classes; use `fields` to inspect their configuration
 - **Dependency mapping** — Use `imports` to audit which modules import dangerous libraries; use `annotations` to inspect framework metadata on handlers and models; use `symbols` to find every reference to security-critical identifiers
 
@@ -67,6 +69,8 @@ Only use Grep instead of tree-sitter-analyzer (tsa) when:
 | What fields does class X have? | `fields <path> -c X` |
 | What does function X call? | `callees <path> -f X` |
 | Who calls function X? | `callers <path> -f X` |
+| Trace call graph forward from X | `graph <path> -f X -d DEPTH --forward` |
+| Trace call graph backward to X | `graph <path> -f X -d DEPTH --backward` |
 | Get function source code | `definition <path> -f X` |
 | List imports / find a module | `imports <path> [-q pattern]` |
 | List annotations / find a decorator | `annotations <path> [-q pattern]` |
@@ -93,7 +97,7 @@ tsa index .
 tsa index . -l java
 ```
 
-`tsa index` writes `tsa.db` to the current working directory. When a compatible cache is present, `functions`, `classes`, `fields`, `imports`, `annotations`, `callers`, `callees`, `super-classes`, and `sub-classes` use it automatically. `definition` and `symbols` still analyze source files directly.
+`tsa index` writes `tsa.db` to the current working directory. When a compatible cache is present, all the commands will use it automatically.
 
 **After indexing, always query from the project root directory** (e.g., `tsa callers . -f foo` instead of `tsa callers ./src/subdir -f foo`). Indexed lookups are fast enough that there is no need to narrow the query path — using the root ensures you never miss results from other parts of the project.
 
@@ -247,6 +251,36 @@ tsa callees <path> [-l LANGUAGE] -f FUNCTION [-c CLASS_NAME]
 tsa callees ./src/ -f initialize -c Application
 ```
 
+### `graph` — Trace function call graphs
+
+```bash
+tsa graph <path> [-l LANGUAGE] -f FUNCTION [-c CLASS_NAME] -d DEPTH (--forward | --backward)
+```
+
+| Option | Description |
+|--------|-------------|
+| `-l, --language` | Only analyze files for a single language |
+| `-f, --function` | Function name to start tracing from (required) |
+| `-c, --class-name` | Scope to a method in this class |
+| `-d, --depth` | Maximum call depth to trace (required, must be >= 1) |
+| `--forward` | Trace callees forward (what does X eventually call?) |
+| `--backward` | Trace callers backward (what eventually calls X?) |
+
+One of `--forward` or `--backward` is required (mutually exclusive).
+
+Unlike `callers`/`callees` which show only direct (1-level) relationships, `graph` performs a recursive depth-first traversal of the call graph up to the specified depth, returning all distinct call chains as paths. Each path includes a human-readable `stacktrace` for quick scanning.
+
+```bash
+# Trace 3 levels of callees from process_data
+tsa graph ./src/ -f process_data -d 3 --forward
+
+# Trace 2 levels of callers back to handle_request
+tsa graph ./src/ -f handle_request -d 2 --backward
+
+# Trace a specific method's call graph
+tsa graph ./src/ -f save -c DatabaseHandler -d 3 --forward
+```
+
 ### `symbols` — Find all references to an identifier
 
 ```bash
@@ -334,6 +368,19 @@ tsa annotations /path/to/project | jq -r '.annotations[] | "\(.name)\t\(.target_
 ```bash
 tsa callers /path/to/project -f process_data
 tsa callees /path/to/project -f process_data
+```
+
+### Deep call graph tracing
+
+```bash
+# Trace all call chains forward from an entry point (depth 3)
+tsa graph /path/to/project -f main -d 3 --forward
+
+# Trace all callers backward to a dangerous sink (depth 4)
+tsa graph /path/to/project -f execute_query -d 4 --backward
+
+# Extract just the stacktraces for quick scanning
+tsa graph /path/to/project -f handle_request -d 3 --forward | jq -r '.graphs[].stacktrace | join(" -> ")'
 ```
 
 ### Trace a symbol through a project

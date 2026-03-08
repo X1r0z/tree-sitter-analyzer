@@ -9,7 +9,9 @@ mod models;
 mod output;
 mod parser;
 mod project;
+mod symbols;
 mod utils;
+mod walk;
 
 use std::path::Path;
 use std::process;

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 
 use rusqlite::{params, params_from_iter, OptionalExtension, ToSql};
 
@@ -16,6 +16,8 @@ use crate::utils::{
     extract_instance_attr, sort_callees_by_file_line, sort_callers_by_file_line,
     split_function_target, type_matches_class,
 };
+use crate::walk::bfs::collect_reachable;
+use crate::walk::dfs::{try_collect_paths, PathStep};
 
 #[derive(Clone)]
 struct CallSite {
@@ -29,15 +31,7 @@ struct GraphNeighbor {
     call_site: CallSite,
 }
 
-#[derive(Clone)]
-struct GraphTraceStep {
-    node: DbFunctionNode,
-    call_site: Option<CallSite>,
-}
-
 struct GraphTraversalState {
-    results: Vec<CallGraphPath>,
-    seen_paths: HashSet<Vec<FunctionKey>>,
     neighbor_cache: HashMap<(GraphDirection, FunctionKey), Vec<GraphNeighbor>>,
     node_cache: HashMap<(String, Option<String>), Vec<DbFunctionNode>>,
     field_type_cache: FieldTypeCache,
@@ -574,28 +568,24 @@ impl DbProjectAnalyzer {
             return Ok(Vec::new());
         };
 
-        let mut result = Vec::new();
-        let mut visited = HashSet::new();
-        let mut queue = VecDeque::new();
-        visited.insert(class_name.to_string());
-        queue.push_back(target);
-
-        while let Some(current) = queue.pop_front() {
-            for parent_name in &current.super_classes {
-                if !visited.insert(parent_name.clone()) {
-                    continue;
-                }
-                if let Some(parent) = class_map
-                    .get(parent_name)
-                    .and_then(|classes| classes.first())
-                    .cloned()
-                {
-                    result.push(parent.clone());
-                    queue.push_back(parent);
-                }
-            }
-        }
-        Ok(result)
+        Ok(collect_reachable(
+            [target],
+            [class_name.to_string()],
+            |current| {
+                current
+                    .super_classes
+                    .iter()
+                    .filter_map(|parent_name| {
+                        class_map
+                            .get(parent_name)
+                            .and_then(|classes| classes.first())
+                            .cloned()
+                    })
+                    .collect()
+            },
+            |parent| parent.clone(),
+            |parent| parent.name.clone(),
+        ))
     }
 
     pub(crate) fn find_sub_classes(&self, class_name: &str) -> anyhow::Result<Vec<ClassInfo>> {
@@ -610,21 +600,13 @@ impl DbProjectAnalyzer {
             }
         }
 
-        let mut result = Vec::new();
-        let mut visited = HashSet::new();
-        let mut queue = VecDeque::new();
-        visited.insert(class_name.to_string());
-        queue.push_back(class_name.to_string());
-
-        while let Some(current) = queue.pop_front() {
-            for child in children_by_parent.get(&current).into_iter().flatten() {
-                if visited.insert(child.name.clone()) {
-                    queue.push_back(child.name.clone());
-                    result.push(child.clone());
-                }
-            }
-        }
-        Ok(result)
+        Ok(collect_reachable(
+            [class_name.to_string()],
+            [class_name.to_string()],
+            |current| children_by_parent.get(current).cloned().unwrap_or_default(),
+            |child| child.name.clone(),
+            |child| child.name.clone(),
+        ))
     }
 
     pub(crate) fn find_graphs(
@@ -640,8 +622,6 @@ impl DbProjectAnalyzer {
         }
 
         let mut state = GraphTraversalState {
-            results: Vec::new(),
-            seen_paths: HashSet::new(),
             neighbor_cache: HashMap::new(),
             node_cache: HashMap::new(),
             field_type_cache: HashMap::new(),
@@ -649,22 +629,51 @@ impl DbProjectAnalyzer {
             is_property_cache: HashMap::new(),
         };
 
-        for start in &start_nodes {
-            let mut path = vec![GraphTraceStep {
-                node: start.clone(),
-                call_site: None,
-            }];
-            let mut visited = HashSet::from([start.key()]);
-            self.walk_graph_paths(direction, max_depth, &mut path, &mut visited, &mut state)?;
-        }
+        let neighbor_cache = &mut state.neighbor_cache;
+        let node_cache = &mut state.node_cache;
+        let field_type_cache = &mut state.field_type_cache;
+        let param_type_cache = &mut state.param_type_cache;
+        let is_property_cache = &mut state.is_property_cache;
 
-        state.results.sort_by(|left, right| {
+        let mut results = try_collect_paths(
+            &start_nodes,
+            direction,
+            max_depth,
+            DbFunctionNode::key,
+            |current| {
+                let cache_key = (direction, current.key());
+                let neighbors = if let Some(cached) = neighbor_cache.get(&cache_key) {
+                    cached.clone()
+                } else {
+                    let loaded = self.load_graph_neighbors(
+                        current,
+                        direction,
+                        node_cache,
+                        field_type_cache,
+                        param_type_cache,
+                        is_property_cache,
+                    )?;
+                    neighbor_cache.insert(cache_key, loaded.clone());
+                    loaded
+                };
+
+                Ok::<Vec<(DbFunctionNode, CallSite)>, anyhow::Error>(
+                    neighbors
+                        .into_iter()
+                        .map(|neighbor| (neighbor.node, neighbor.call_site))
+                        .collect(),
+                )
+            },
+            Self::materialize_graph,
+        )?;
+
+        results.sort_by(|left, right| {
             left.stacktrace
                 .cmp(&right.stacktrace)
                 .then(left.depth.cmp(&right.depth))
                 .then(left.path.len().cmp(&right.path.len()))
         });
-        Ok(state.results)
+        Ok(results)
     }
 
     fn load_class_methods_map(
@@ -694,62 +703,10 @@ impl DbProjectAnalyzer {
         Ok(map)
     }
 
-    fn walk_graph_paths(
-        &self,
+    fn materialize_graph(
         direction: GraphDirection,
-        remaining_depth: usize,
-        path: &mut Vec<GraphTraceStep>,
-        visited: &mut HashSet<FunctionKey>,
-        state: &mut GraphTraversalState,
-    ) -> anyhow::Result<()> {
-        let current = path
-            .last()
-            .map(|step| step.node.clone())
-            .unwrap_or_else(|| unreachable!());
-        let cache_key = (direction, current.key());
-        let neighbors = if let Some(cached) = state.neighbor_cache.get(&cache_key) {
-            cached.clone()
-        } else {
-            let loaded = self.load_graph_neighbors(
-                &current,
-                direction,
-                &mut state.node_cache,
-                &mut state.field_type_cache,
-                &mut state.param_type_cache,
-                &mut state.is_property_cache,
-            )?;
-            state.neighbor_cache.insert(cache_key, loaded.clone());
-            loaded
-        };
-
-        let next_nodes: Vec<_> = neighbors
-            .into_iter()
-            .filter(|neighbor| !visited.contains(&neighbor.node.key()))
-            .collect();
-
-        if remaining_depth == 0 || next_nodes.is_empty() {
-            let keys: Vec<_> = path.iter().map(|step| step.node.key()).collect();
-            if state.seen_paths.insert(keys) {
-                state.results.push(Self::materialize_graph(direction, path));
-            }
-            return Ok(());
-        }
-
-        for next in next_nodes {
-            let next_key = next.node.key();
-            visited.insert(next_key.clone());
-            path.push(GraphTraceStep {
-                node: next.node,
-                call_site: Some(next.call_site),
-            });
-            self.walk_graph_paths(direction, remaining_depth - 1, path, visited, state)?;
-            path.pop();
-            visited.remove(&next_key);
-        }
-        Ok(())
-    }
-
-    fn materialize_graph(direction: GraphDirection, steps: &[GraphTraceStep]) -> CallGraphPath {
+        steps: &[PathStep<DbFunctionNode, CallSite>],
+    ) -> CallGraphPath {
         let path: Vec<GraphPathNode> = steps
             .iter()
             .map(|step| GraphPathNode::from(&step.node.function))
@@ -759,7 +716,7 @@ impl DbProjectAnalyzer {
                 .zip(steps.iter())
                 .map(|(node, step)| {
                     let (file, line) = step
-                        .call_site
+                        .edge
                         .as_ref()
                         .map(|call_site| (call_site.file.as_str(), call_site.line))
                         .unwrap_or((node.file.as_str(), node.start_line));

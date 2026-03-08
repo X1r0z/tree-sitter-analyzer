@@ -1,4 +1,5 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
+use std::hash::Hash;
 use std::path::Path;
 
 use rayon::prelude::*;
@@ -11,6 +12,7 @@ use crate::utils::{
     find_files, is_simple_query, progress_bar, search_files_with_rg, sort_callees_by_file_line,
     sort_callers_by_file_line, QueryMatcher,
 };
+use crate::walk::bfs::collect_reachable;
 
 pub struct ProjectAnalyzer {
     files: Vec<String>,
@@ -75,45 +77,68 @@ impl ProjectAnalyzer {
         &self.files
     }
 
-    pub fn hydrate_function_bodies(&self, candidates: Vec<FunctionInfo>) -> Vec<FunctionInfo> {
+    fn hydrate_candidates<K, Candidate, KeyOf, FileOf, Resolve>(
+        &self,
+        candidates: Vec<Candidate>,
+        key_of: KeyOf,
+        file_of: FileOf,
+        resolve: Resolve,
+    ) -> Vec<Candidate>
+    where
+        K: Clone + Eq + Hash + Send + Sync,
+        Candidate: Clone + Send + Sync,
+        KeyOf: Fn(&Candidate) -> K + Sync,
+        FileOf: Fn(&Candidate) -> &str,
+        Resolve: Fn(&mut CodeAnalyzer, &HashSet<K>) -> Vec<Candidate> + Sync + Send,
+    {
         if candidates.is_empty() {
             return Vec::new();
         }
 
-        let mut candidate_keys_by_file: HashMap<String, HashSet<FunctionKey>> = HashMap::new();
+        let mut expected_keys_by_file: HashMap<String, HashSet<K>> = HashMap::new();
         for candidate in &candidates {
-            candidate_keys_by_file
-                .entry(candidate.location.file.clone())
+            expected_keys_by_file
+                .entry(file_of(candidate).to_string())
                 .or_default()
-                .insert(FunctionKey::from(candidate));
+                .insert(key_of(candidate));
         }
 
-        let resolved: HashMap<FunctionKey, FunctionInfo> = self
-            .analyze_files_with_progress(
-                &candidate_keys_by_file.iter().collect::<Vec<_>>(),
-                |(file, expected)| {
-                    self.analyze_file(file, |analyzer| analyzer.functions_with_bodies())
-                        .unwrap_or_default()
-                        .into_iter()
-                        .filter_map(|function| {
-                            let key = FunctionKey::from(&function);
-                            expected.contains(&key).then_some((key, function))
-                        })
-                        .collect::<Vec<_>>()
-                },
-            )
+        let expected_keys_by_file: Vec<_> = expected_keys_by_file.into_iter().collect();
+        let resolved: HashMap<K, Candidate> = self
+            .analyze_files_with_progress(&expected_keys_by_file, |(file, expected)| {
+                self.analyze_file(file, |analyzer| resolve(analyzer, expected))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|candidate| (key_of(&candidate), candidate))
+                    .collect::<Vec<_>>()
+            })
             .into_iter()
             .collect();
 
         candidates
             .into_iter()
-            .filter_map(|candidate| {
+            .map(|candidate| {
                 resolved
-                    .get(&FunctionKey::from(&candidate))
+                    .get(&key_of(&candidate))
                     .cloned()
-                    .or(Some(candidate))
+                    .unwrap_or(candidate)
             })
             .collect()
+    }
+
+    pub fn hydrate_function_bodies(&self, candidates: Vec<FunctionInfo>) -> Vec<FunctionInfo> {
+        self.hydrate_candidates(
+            candidates,
+            |candidate: &FunctionInfo| FunctionKey::from(candidate),
+            |candidate| candidate.location.file.as_str(),
+            |analyzer, expected| {
+                analyzer
+                    .functions_with_bodies()
+                    .into_iter()
+                    .filter(|function| expected.contains(&FunctionKey::from(function)))
+                    .collect()
+            },
+        )
     }
 
     fn collect_functions(&self, query: &str) -> Vec<FunctionInfo> {
@@ -360,58 +385,29 @@ impl ProjectAnalyzer {
     }
 
     pub fn hydrate_symbol_contexts(&self, candidates: Vec<SymbolRefInfo>) -> Vec<SymbolRefInfo> {
-        if candidates.is_empty() {
-            return Vec::new();
-        }
-
-        let mut candidate_keys_by_file: HashMap<String, HashSet<SymbolRefKey>> = HashMap::new();
-        for candidate in &candidates {
-            candidate_keys_by_file
-                .entry(candidate.location.file.clone())
-                .or_default()
-                .insert(SymbolRefKey::from(candidate));
-        }
-
-        let resolved: HashMap<SymbolRefKey, SymbolRefInfo> = self
-            .analyze_files_with_progress(
-                &candidate_keys_by_file.iter().collect::<Vec<_>>(),
-                |(file, expected)| {
-                    self.analyze_file(file, |analyzer| {
-                        let expected_symbols: Vec<_> = expected
-                            .iter()
-                            .map(|key| SymbolRefInfo {
-                                name: key.name.clone(),
-                                node_type: key.node_type.clone(),
-                                location: Location {
-                                    file: key.file.clone(),
-                                    start_line: key.start_line,
-                                    end_line: key.end_line,
-                                },
-                                start_column: key.start_column,
-                                end_column: key.end_column,
-                                context: String::new(),
-                            })
-                            .collect();
-                        analyzer.hydrate_symbol_contexts(&expected_symbols)
+        self.hydrate_candidates(
+            candidates,
+            |candidate: &SymbolRefInfo| SymbolRefKey::from(candidate),
+            |candidate| candidate.location.file.as_str(),
+            |analyzer, expected| {
+                let expected_symbols: Vec<_> = expected
+                    .iter()
+                    .map(|key| SymbolRefInfo {
+                        name: key.name.clone(),
+                        node_type: key.node_type.clone(),
+                        location: Location {
+                            file: key.file.clone(),
+                            start_line: key.start_line,
+                            end_line: key.end_line,
+                        },
+                        start_column: key.start_column,
+                        end_column: key.end_column,
+                        context: String::new(),
                     })
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|symbol| (SymbolRefKey::from(&symbol), symbol))
-                    .collect::<Vec<_>>()
-                },
-            )
-            .into_iter()
-            .collect();
-
-        candidates
-            .into_iter()
-            .filter_map(|candidate| {
-                resolved
-                    .get(&SymbolRefKey::from(&candidate))
-                    .cloned()
-                    .or(Some(candidate))
-            })
-            .collect()
+                    .collect();
+                analyzer.hydrate_symbol_contexts(&expected_symbols)
+            },
+        )
     }
 
     pub fn find_super_classes(&self, class_name: &str) -> Vec<ClassInfo> {
@@ -421,61 +417,50 @@ impl ProjectAnalyzer {
             None => return Vec::new(),
         };
 
-        let mut result = Vec::new();
-        let mut visited: HashSet<String> = HashSet::new();
-        visited.insert(class_name.to_string());
-        let mut queue: VecDeque<ClassInfo> = VecDeque::new();
-        queue.push_back(target);
-
-        while let Some(current) = queue.pop_front() {
-            for parent_name in &current.super_classes {
-                if visited.contains(parent_name) {
-                    continue;
-                }
-                visited.insert(parent_name.clone());
-                let candidate_files = self.filter_by_text(parent_name);
-                let pn = parent_name.clone();
-                let found: Vec<ClassInfo> =
-                    self.analyze_files_with_progress(&candidate_files, |f| {
-                        self.analyze_file(f, |analyzer| analyzer.class_named(&pn))
-                            .flatten()
-                            .into_iter()
-                            .collect::<Vec<_>>()
-                    });
-                if let Some(parent) = found.into_iter().next() {
-                    result.push(parent.clone());
-                    queue.push_back(parent);
-                }
-            }
-        }
-        result
+        collect_reachable(
+            [target],
+            [class_name.to_string()],
+            |current| {
+                current
+                    .super_classes
+                    .iter()
+                    .filter_map(|parent_name| {
+                        let candidate_files = self.filter_by_text(parent_name);
+                        let parent_name = parent_name.clone();
+                        self.analyze_files_with_progress(&candidate_files, |file| {
+                            self.analyze_file(file, |analyzer| analyzer.class_named(&parent_name))
+                                .flatten()
+                                .into_iter()
+                                .collect::<Vec<_>>()
+                        })
+                        .into_iter()
+                        .next()
+                    })
+                    .collect()
+            },
+            |parent| parent.clone(),
+            |parent| parent.name.clone(),
+        )
     }
 
     pub fn find_sub_classes(&self, class_name: &str) -> Vec<ClassInfo> {
-        let mut result = Vec::new();
-        let mut visited: HashSet<String> = HashSet::new();
-        visited.insert(class_name.to_string());
-        let mut queue: VecDeque<String> = VecDeque::new();
-        queue.push_back(class_name.to_string());
-
-        while let Some(current_parent) = queue.pop_front() {
-            let candidate_files = self.filter_by_text(&current_parent);
-            let cp = current_parent.clone();
-            let found: Vec<ClassInfo> = self.analyze_files_with_progress(&candidate_files, |f| {
-                self.analyze_file(f, |analyzer| analyzer.classes())
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(|cls| cls.super_classes.contains(&cp))
-                    .collect::<Vec<_>>()
-            });
-            for cls in found {
-                if visited.insert(cls.name.clone()) {
-                    queue.push_back(cls.name.clone());
-                    result.push(cls);
-                }
-            }
-        }
-        result
+        collect_reachable(
+            [class_name.to_string()],
+            [class_name.to_string()],
+            |current_parent| {
+                let candidate_files = self.filter_by_text(current_parent);
+                let current_parent = current_parent.clone();
+                self.analyze_files_with_progress(&candidate_files, |file| {
+                    self.analyze_file(file, |analyzer| analyzer.classes())
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|class| class.super_classes.contains(&current_parent))
+                        .collect::<Vec<_>>()
+                })
+            },
+            |child| child.name.clone(),
+            |child| child.name.clone(),
+        )
     }
 
     fn find_class_by_name(&self, class_name: &str) -> Option<ClassInfo> {

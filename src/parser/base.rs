@@ -34,7 +34,6 @@ pub(crate) type PythonPropertyKey = (String, Option<String>);
 pub(crate) type PythonPropertyDefinitions = HashSet<PythonPropertyKey>;
 pub(crate) type PythonPropertyCallers = HashMap<String, Vec<(String, usize)>>;
 
-#[allow(dead_code)]
 impl BaseParser {
     pub(crate) fn new(file_path: &str) -> anyhow::Result<Self> {
         let path = Path::new(file_path);
@@ -413,14 +412,6 @@ impl BaseParser {
 
     pub(crate) fn find_enclosing_class_name(&self, node: Node) -> Option<String> {
         self.find_enclosing_context(node).1
-    }
-
-    pub(crate) fn find_enclosing_context_names(
-        &self,
-        node: Node,
-    ) -> (Option<String>, Option<String>) {
-        let (function_name, class_name, _) = self.find_enclosing_context(node);
-        (function_name, class_name)
     }
 
     pub(crate) fn find_enclosing_context<'a>(

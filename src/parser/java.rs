@@ -3,7 +3,6 @@ use tree_sitter::Node;
 use super::BaseParser;
 use crate::models::{AnnotationInfo, FieldInfo, FunctionParamInfo};
 
-#[allow(dead_code)]
 impl BaseParser {
     pub(super) fn extract_java_function_params(
         &self,

@@ -72,7 +72,7 @@ pub(crate) fn find(parser: &BaseParser, name: &str, with_context: bool) -> Vec<S
         || !parser
             .source
             .windows(name_bytes.len())
-            .any(|w| w == name_bytes)
+            .any(|window| window == name_bytes)
     {
         return Vec::new();
     }

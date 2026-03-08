@@ -64,7 +64,6 @@ impl JsAliasResolverState {
     }
 }
 
-#[allow(dead_code)]
 impl BaseParser {
     pub(super) fn extract_js_like_function_params(
         &self,
@@ -274,43 +273,6 @@ impl BaseParser {
         }
 
         events
-    }
-
-    pub(crate) fn resolve_js_call_targets_from_alias_events(
-        &self,
-        events: &[JsAliasEvent],
-        call_start: usize,
-        identifier_name: &str,
-    ) -> Vec<String> {
-        let mut aliases: HashMap<&str, &[String]> = HashMap::new();
-        for event in events {
-            if event.start_byte >= call_start {
-                break;
-            }
-            aliases.insert(event.name.as_str(), event.targets.as_slice());
-        }
-
-        let mut visited: HashSet<&str> = HashSet::new();
-        let mut resolved = Vec::new();
-        let mut resolved_seen: HashSet<&str> = HashSet::new();
-        let mut queue: VecDeque<&str> = VecDeque::new();
-        queue.push_back(identifier_name);
-
-        while let Some(current) = queue.pop_front() {
-            if !visited.insert(current) {
-                continue;
-            }
-            if let Some(targets) = aliases.get(current) {
-                for target in *targets {
-                    queue.push_back(target.as_str());
-                }
-            } else if resolved_seen.insert(current) {
-                resolved.push(current);
-            }
-        }
-
-        resolved.sort_unstable();
-        resolved.into_iter().map(str::to_string).collect()
     }
 
     pub(super) fn extract_js_like_field_infos(

@@ -5,7 +5,6 @@ use tree_sitter::Node;
 use super::{BaseParser, PythonPropertyCallers, PythonPropertyDefinitions};
 use crate::models::{AnnotationInfo, FieldInfo, FunctionParamInfo};
 
-#[allow(dead_code)]
 impl BaseParser {
     pub(super) fn extract_python_function_params(
         &self,
@@ -228,22 +227,6 @@ impl BaseParser {
         }
 
         (properties, callers_by_property)
-    }
-
-    pub(crate) fn is_python_property(&self, function_name: &str, class_name: Option<&str>) -> bool {
-        let (properties, _) = self.build_python_property_indexes();
-        properties.contains(&(function_name.to_string(), class_name.map(str::to_string)))
-    }
-
-    pub(crate) fn find_callers_of_python_property(
-        &self,
-        property_name: &str,
-    ) -> Vec<(String, usize)> {
-        let (_, callers_by_property) = self.build_python_property_indexes();
-        callers_by_property
-            .get(property_name)
-            .cloned()
-            .unwrap_or_default()
     }
 
     pub(super) fn extract_python_field_infos(

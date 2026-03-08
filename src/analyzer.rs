@@ -1,5 +1,3 @@
-mod symbols;
-
 use std::collections::{HashMap, HashSet};
 
 use tree_sitter::Node;
@@ -8,6 +6,7 @@ use crate::cache::AnalyzerCache;
 use crate::languages::QueryKind;
 use crate::models::*;
 use crate::parser::BaseParser;
+use crate::symbols;
 use crate::utils::{extract_instance_attr, split_function_target, type_matches_class};
 
 pub struct CodeAnalyzer {

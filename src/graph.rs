@@ -5,6 +5,7 @@ use crate::models::{
     PythonPropertyInfo,
 };
 use crate::utils::{extract_instance_attr, type_matches_class};
+use crate::walk::dfs::{collect_paths, PathStep};
 
 #[derive(Debug, Clone)]
 pub(crate) struct RawPropertyCaller {
@@ -24,12 +25,6 @@ struct CallSite {
 struct GraphNeighbor {
     key: FunctionKey,
     call_site: CallSite,
-}
-
-#[derive(Debug, Clone)]
-struct GraphTraceStep {
-    key: FunctionKey,
-    call_site: Option<CallSite>,
 }
 
 #[derive(Debug, Clone)]
@@ -203,87 +198,37 @@ impl CallGraph {
         direction: GraphDirection,
         max_depth: usize,
     ) -> Vec<CallGraphPath> {
-        let mut paths = Vec::new();
-        let mut seen = HashSet::new();
-        for start in start_nodes {
-            let mut current_path = vec![GraphTraceStep {
-                key: start.clone(),
-                call_site: None,
-            }];
-            let mut visited = HashSet::from([start.clone()]);
-            self.walk(
-                direction,
-                max_depth,
-                &mut current_path,
-                &mut visited,
-                &mut paths,
-                &mut seen,
-            );
-        }
+        let mut paths = collect_paths(
+            start_nodes,
+            direction,
+            max_depth,
+            |key: &FunctionKey| key.clone(),
+            |current| {
+                let neighbors = match direction {
+                    GraphDirection::Backward => self.backward_edges.get(current),
+                    GraphDirection::Forward => self.forward_edges.get(current),
+                };
+                neighbors
+                    .into_iter()
+                    .flatten()
+                    .cloned()
+                    .map(|neighbor| (neighbor.key, neighbor.call_site))
+                    .collect()
+            },
+            |direction, steps| self.materialize_graph(direction, steps),
+        );
         paths.sort_by(compare_graphs);
         paths
-    }
-
-    fn walk(
-        &self,
-        direction: GraphDirection,
-        remaining_depth: usize,
-        current_path: &mut Vec<GraphTraceStep>,
-        visited: &mut HashSet<FunctionKey>,
-        results: &mut Vec<CallGraphPath>,
-        seen_paths: &mut HashSet<Vec<FunctionKey>>,
-    ) {
-        let current = current_path
-            .last()
-            .cloned()
-            .unwrap_or_else(|| unreachable!());
-        let neighbors = match direction {
-            GraphDirection::Backward => self.backward_edges.get(&current.key),
-            GraphDirection::Forward => self.forward_edges.get(&current.key),
-        };
-
-        let next_nodes: Vec<_> = neighbors
-            .into_iter()
-            .flatten()
-            .filter(|neighbor| !visited.contains(&neighbor.key))
-            .cloned()
-            .collect();
-
-        if remaining_depth == 0 || next_nodes.is_empty() {
-            let keys: Vec<_> = current_path.iter().map(|step| step.key.clone()).collect();
-            if seen_paths.insert(keys) {
-                results.push(self.materialize_graph(direction, current_path));
-            }
-            return;
-        }
-
-        for next in next_nodes {
-            visited.insert(next.key.clone());
-            current_path.push(GraphTraceStep {
-                key: next.key.clone(),
-                call_site: Some(next.call_site.clone()),
-            });
-            self.walk(
-                direction,
-                remaining_depth - 1,
-                current_path,
-                visited,
-                results,
-                seen_paths,
-            );
-            current_path.pop();
-            visited.remove(&next.key);
-        }
     }
 
     fn materialize_graph(
         &self,
         direction: GraphDirection,
-        steps: &[GraphTraceStep],
+        steps: &[PathStep<FunctionKey, CallSite>],
     ) -> CallGraphPath {
         let path: Vec<GraphPathNode> = steps
             .iter()
-            .filter_map(|step| self.functions_by_key.get(&step.key))
+            .filter_map(|step| self.functions_by_key.get(&step.node))
             .map(GraphPathNode::from)
             .collect();
         let stacktrace = direction.order_stacktrace(
@@ -291,7 +236,7 @@ impl CallGraph {
                 .zip(steps.iter())
                 .map(|(node, step)| {
                     let (file, line) = step
-                        .call_site
+                        .edge
                         .as_ref()
                         .map(|call_site| (call_site.file.as_str(), call_site.line))
                         .unwrap_or((node.file.as_str(), node.start_line));

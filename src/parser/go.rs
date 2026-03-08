@@ -3,7 +3,6 @@ use tree_sitter::Node;
 use super::BaseParser;
 use crate::models::{FieldInfo, FunctionParamInfo};
 
-#[allow(dead_code)]
 impl BaseParser {
     pub(super) fn extract_go_function_params(&self, function_node: Node) -> Vec<FunctionParamInfo> {
         let Some(parameters) = function_node.child_by_field_name("parameters") else {

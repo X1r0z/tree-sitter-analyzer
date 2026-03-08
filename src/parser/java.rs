@@ -1,7 +1,7 @@
 use tree_sitter::Node;
 
 use super::BaseParser;
-use crate::nodes::{AnnotationInfo, FieldInfo, FunctionParamInfo};
+use crate::models::{AnnotationInfo, FieldInfo, FunctionParamInfo};
 
 #[allow(dead_code)]
 impl BaseParser {

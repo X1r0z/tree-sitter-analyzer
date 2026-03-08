@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::nodes::{AnalyzerSnapshot, ClassInfo, FunctionInfo, FunctionKey};
+use crate::models::{AnalyzerSnapshot, ClassInfo, FunctionInfo, FunctionKey};
 
 #[derive(Debug, Clone)]
 pub(crate) struct IndexedFileRecord {

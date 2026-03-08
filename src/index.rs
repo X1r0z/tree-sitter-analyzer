@@ -16,7 +16,7 @@ pub(crate) fn build_index(path: &str, language: Option<&str>) -> Value {
         Err(error) => return json!({ "error": error.to_string() }),
     };
 
-    let total_files = project.files.len();
+    let total_files = project.file_count();
     let progress = progress_bar(total_files, "files", "cyan/blue", "Parsing source files");
 
     let db_path = match db_path_in_current_dir() {
@@ -34,7 +34,7 @@ pub(crate) fn build_index(path: &str, language: Option<&str>) -> Value {
 
     let indexed: Vec<Result<(crate::db::IndexedFileRecord, Option<FileIndexData>), String>> =
         project
-            .files
+            .files()
             .par_iter()
             .map(|file| {
                 let result = build_file_index(file, existing.get(file));

@@ -268,6 +268,43 @@ impl SymbolRefInfo {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CallerInfo {
+    pub caller: String,
+    pub line: usize,
+    pub file: String,
+}
+
+impl CallerInfo {
+    pub fn to_json_value(&self) -> Value {
+        json!({
+            "caller": self.caller,
+            "line": self.line,
+            "file": self.file,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CalleeInfo {
+    pub callee: String,
+    pub line: usize,
+    pub file: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub class_name: Option<String>,
+}
+
+impl CalleeInfo {
+    pub fn to_json_value(&self) -> Value {
+        json!({
+            "callee": self.callee,
+            "line": self.line,
+            "file": self.file,
+            "class_name": self.class_name,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
 pub(crate) struct SymbolRefKey {
     pub(crate) file: String,

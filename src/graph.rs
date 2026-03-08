@@ -1,9 +1,10 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::nodes::{
+use crate::models::{
     CallGraphPath, CallInfo, FieldInfo, FunctionInfo, FunctionKey, GraphDirection, GraphPathNode,
     PythonPropertyInfo,
 };
+use crate::utils::{extract_instance_attr, type_matches_class};
 
 #[derive(Debug, Clone)]
 pub(crate) struct RawPropertyCaller {
@@ -383,10 +384,9 @@ fn resolve_call_targets(
                     {
                         for candidate in candidates {
                             for field in fields.iter().filter(|field| field.name == attr_name) {
-                                if type_matches_class(
-                                    field.field_type.as_deref(),
-                                    candidate.class_name.as_deref(),
-                                ) {
+                                if candidate.class_name.as_deref().is_some_and(|class_name| {
+                                    type_matches_class(field.field_type.as_deref(), class_name)
+                                }) {
                                     matched.insert(FunctionKey::from_function(candidate));
                                 }
                             }
@@ -401,10 +401,9 @@ fn resolve_call_targets(
                         .iter()
                         .filter(|param| param.name == param_name)
                     {
-                        if type_matches_class(
-                            param.param_type.as_deref(),
-                            candidate.class_name.as_deref(),
-                        ) {
+                        if candidate.class_name.as_deref().is_some_and(|class_name| {
+                            type_matches_class(param.param_type.as_deref(), class_name)
+                        }) {
                             matched.insert(FunctionKey::from_function(candidate));
                         }
                     }
@@ -449,27 +448,6 @@ fn filter_by_class_name(candidates: &[FunctionInfo], class_name: &str) -> Vec<Fu
         .filter(|candidate| candidate.class_name.as_deref() == Some(class_name))
         .map(FunctionKey::from_function)
         .collect()
-}
-
-fn extract_instance_attr(object_name: &str) -> Option<&str> {
-    for prefix in ["self.", "this.", "cls."] {
-        if let Some(rest) = object_name.strip_prefix(prefix) {
-            if !rest.is_empty() {
-                return rest.split('.').next();
-            }
-        }
-    }
-    let candidate = object_name.split('.').next().unwrap_or(object_name);
-    (!candidate.is_empty()).then_some(candidate)
-}
-
-fn type_matches_class(field_type: Option<&str>, class_name: Option<&str>) -> bool {
-    let (Some(field_type), Some(class_name)) = (field_type, class_name) else {
-        return false;
-    };
-    field_type
-        .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
-        .any(|token| !token.is_empty() && token == class_name)
 }
 
 fn compare_keys(left: &FunctionKey, right: &FunctionKey) -> std::cmp::Ordering {

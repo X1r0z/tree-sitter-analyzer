@@ -1,11 +1,11 @@
 use std::io::IsTerminal;
 use std::path::Path;
 
+use crate::languages::{language_extensions, supported_extensions};
+use crate::models::{CalleeInfo, CallerInfo};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressState, ProgressStyle};
 use regex::Regex;
 use serde_json::Value;
-
-use crate::languages::{language_extensions, supported_extensions};
 
 pub fn find_files(path: &str, language: Option<&str>) -> Vec<String> {
     let extensions = language
@@ -125,7 +125,26 @@ pub fn search_files_with_rg(text: &str, path: &str, language: Option<&str>) -> O
     Some(files)
 }
 
-pub fn sort_by_file_line(results: &mut [serde_json::Value]) {
+pub fn sort_callers_by_file_line(results: &mut [CallerInfo]) {
+    results.sort_by(|left, right| {
+        left.file
+            .cmp(&right.file)
+            .then(left.line.cmp(&right.line))
+            .then(left.caller.cmp(&right.caller))
+    });
+}
+
+pub fn sort_callees_by_file_line(results: &mut [CalleeInfo]) {
+    results.sort_by(|left, right| {
+        left.file
+            .cmp(&right.file)
+            .then(left.line.cmp(&right.line))
+            .then(left.callee.cmp(&right.callee))
+            .then(left.class_name.cmp(&right.class_name))
+    });
+}
+
+pub fn sort_by_file_line(results: &mut [Value]) {
     results.sort_by(|a, b| {
         let fa = a["file"].as_str().unwrap_or("");
         let fb = b["file"].as_str().unwrap_or("");
@@ -133,6 +152,36 @@ pub fn sort_by_file_line(results: &mut [serde_json::Value]) {
         let lb = b["line"].as_u64().unwrap_or(0);
         fa.cmp(fb).then(la.cmp(&lb))
     });
+}
+
+pub(crate) fn split_function_target(function_name: &str) -> (&str, Option<&str>) {
+    if function_name.contains('.') {
+        let parts: Vec<&str> = function_name.rsplitn(2, '.').collect();
+        (parts[0], Some(parts[1]))
+    } else {
+        (function_name, None)
+    }
+}
+
+pub(crate) fn extract_instance_attr(object_name: &str) -> Option<&str> {
+    for prefix in ["self.", "this.", "cls."] {
+        if let Some(rest) = object_name.strip_prefix(prefix) {
+            if !rest.is_empty() {
+                return rest.split('.').next();
+            }
+        }
+    }
+    let candidate = object_name.split('.').next().unwrap_or(object_name);
+    (!candidate.is_empty()).then_some(candidate)
+}
+
+pub(crate) fn type_matches_class(field_type: Option<&str>, class_name: &str) -> bool {
+    let Some(field_type) = field_type else {
+        return false;
+    };
+    field_type
+        .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+        .any(|token| !token.is_empty() && token == class_name)
 }
 
 pub(crate) fn relative_path(path: &str, root: &str) -> String {

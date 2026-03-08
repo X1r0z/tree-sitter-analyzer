@@ -3,21 +3,19 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use rusqlite::{params, params_from_iter, OptionalExtension, ToSql};
 use serde_json::json;
 
-use crate::nodes::{
-    AnnotationInfo, CallGraphPath, ClassInfo, FieldInfo, FunctionInfo, FunctionKey, GraphDirection,
-    GraphPathNode, ImportInfo, Location, SymbolRefInfo,
-};
-use crate::utils::sort_by_file_line;
-
-use super::helpers::{
-    extract_instance_attr, repeat_placeholders, split_function_target, type_matches_class,
-};
 use super::prefilter::RegexPrefilter;
 use super::types::{
     classes_by_name, CallLookupRow, CalleeLookupRow, ClassBaseRow, DbFunctionNode, FieldTypeCache,
     FieldTypesByName, ParamTypeCache, ParamTypesByName,
 };
 use super::DbProjectAnalyzer;
+use crate::models::{
+    AnnotationInfo, CallGraphPath, ClassInfo, FieldInfo, FunctionInfo, FunctionKey, GraphDirection,
+    GraphPathNode, ImportInfo, Location, SymbolRefInfo,
+};
+use crate::utils::{
+    extract_instance_attr, sort_by_file_line, split_function_target, type_matches_class,
+};
 
 #[derive(Clone)]
 struct CallSite {
@@ -48,6 +46,12 @@ struct GraphTraversalState {
 }
 
 const SQLITE_BATCH_SIZE: usize = 256;
+
+fn repeat_placeholders(count: usize) -> String {
+    std::iter::repeat_n("?", count)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
 impl DbProjectAnalyzer {
     pub(crate) fn file_count(&self) -> usize {
@@ -1056,7 +1060,7 @@ impl DbProjectAnalyzer {
                     let field_types =
                         self.field_types_for_class(caller.file_id, class_name, field_type_cache)?;
                     for candidate in candidates {
-                        for field_type in field_types.get(&attr_name).into_iter().flatten() {
+                        for field_type in field_types.get(attr_name).into_iter().flatten() {
                             if type_matches_class(
                                 field_type.as_deref(),
                                 candidate.function.class_name.as_deref().unwrap_or_default(),
@@ -1072,7 +1076,7 @@ impl DbProjectAnalyzer {
                     let param_types =
                         self.param_types_for_function(caller.function_id, param_type_cache)?;
                     for candidate in candidates {
-                        for param_type in param_types.get(&param_name).into_iter().flatten() {
+                        for param_type in param_types.get(param_name).into_iter().flatten() {
                             if type_matches_class(
                                 param_type.as_deref(),
                                 candidate.function.class_name.as_deref().unwrap_or_default(),
@@ -1416,7 +1420,7 @@ impl DbProjectAnalyzer {
         if let Some(caller_class_name) = caller.function.class_name.as_deref() {
             let field_types =
                 self.field_types_for_class(caller.file_id, caller_class_name, field_type_cache)?;
-            for field_type in field_types.get(&attr_name).into_iter().flatten() {
+            for field_type in field_types.get(attr_name).into_iter().flatten() {
                 if type_matches_class(field_type.as_deref(), class_name) {
                     return Ok(true);
                 }
@@ -1424,7 +1428,7 @@ impl DbProjectAnalyzer {
         }
 
         let param_types = self.param_types_for_function(caller.function_id, param_type_cache)?;
-        for param_type in param_types.get(&attr_name).into_iter().flatten() {
+        for param_type in param_types.get(attr_name).into_iter().flatten() {
             if type_matches_class(param_type.as_deref(), class_name) {
                 return Ok(true);
             }

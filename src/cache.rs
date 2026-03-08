@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use crate::nodes::{CallInfo, ClassInfo, FieldInfo, FunctionInfo, ImportInfo};
+use crate::models::{CallInfo, ClassInfo, FieldInfo, FunctionInfo, ImportInfo};
 use crate::parser::{PythonPropertyCallers, PythonPropertyDefinitions};
 
 pub(crate) struct AnalyzerCache {

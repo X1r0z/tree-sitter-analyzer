@@ -1,13 +1,16 @@
+mod symbols;
+
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use tree_sitter::Node;
 
 use crate::cache::AnalyzerCache;
-use crate::nodes::*;
+use crate::models::*;
 use crate::parser::BaseParser;
+use crate::utils::{extract_instance_attr, split_function_target, type_matches_class};
 
 pub struct CodeAnalyzer {
-    pub(crate) parser: BaseParser,
+    parser: BaseParser,
     cache: AnalyzerCache,
 }
 
@@ -352,39 +355,18 @@ impl CodeAnalyzer {
             call.object_name.as_deref(),
             call.caller_class_name.as_deref(),
         ) {
-            if let Some(attr_name) = Self::extract_instance_attr(object_name) {
+            if let Some(attr_name) = extract_instance_attr(object_name) {
                 for field in self.fields(caller_class_name) {
                     if field.name != attr_name {
                         continue;
                     }
-                    if Self::type_matches_class(field.field_type.as_deref(), class_name) {
+                    if type_matches_class(field.field_type.as_deref(), class_name) {
                         return true;
                     }
                 }
             }
         }
         false
-    }
-
-    fn extract_instance_attr(object_name: &str) -> Option<String> {
-        for prefix in ["self.", "this.", "cls."] {
-            if let Some(rest) = object_name.strip_prefix(prefix) {
-                if !rest.is_empty() {
-                    return Some(rest.split('.').next().unwrap_or(rest).to_string());
-                }
-            }
-        }
-        let candidate = object_name.split('.').next().unwrap_or(object_name);
-        (!candidate.is_empty()).then(|| candidate.to_string())
-    }
-
-    fn type_matches_class(field_type: Option<&str>, class_name: &str) -> bool {
-        let Some(field_type) = field_type else {
-            return false;
-        };
-        field_type
-            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-            .any(|token| !token.is_empty() && token == class_name)
     }
 
     pub fn functions(&mut self) -> Vec<FunctionInfo> {
@@ -480,97 +462,6 @@ impl CodeAnalyzer {
         self.cached_imports().to_vec()
     }
 
-    fn is_symbol_ref_node(&self, node: Node<'_>) -> bool {
-        match self.parser.language.as_str() {
-            "python" => matches!(
-                node.kind(),
-                "identifier" | "dotted_name" | "relative_import"
-            ),
-            "javascript" | "typescript" | "tsx" => matches!(
-                node.kind(),
-                "identifier"
-                    | "property_identifier"
-                    | "private_property_identifier"
-                    | "field_identifier"
-                    | "type_identifier"
-            ),
-            "java" => matches!(
-                node.kind(),
-                "identifier" | "type_identifier" | "scoped_identifier" | "scoped_type_identifier"
-            ),
-            "go" => matches!(
-                node.kind(),
-                "identifier" | "field_identifier" | "type_identifier" | "qualified_type"
-            ),
-            _ => false,
-        }
-    }
-
-    fn collect_symbols(&self, name: Option<&str>) -> Vec<SymbolRefInfo> {
-        let Some(name_bytes) = name.map(str::as_bytes) else {
-            return self.collect_all_symbols();
-        };
-        if name_bytes.is_empty() {
-            return Vec::new();
-        }
-        if !self
-            .parser
-            .source
-            .windows(name_bytes.len())
-            .any(|w| w == name_bytes)
-        {
-            return Vec::new();
-        }
-
-        self.scan_symbols(|node| {
-            (self.parser.node_bytes(node) == name_bytes).then(|| SymbolRefInfo {
-                name: String::from_utf8_lossy(name_bytes).into_owned(),
-                node_type: node.kind().to_string(),
-                location: self.parser.node_location(node),
-                start_column: node.start_position().column,
-                end_column: node.end_position().column,
-                context: String::new(),
-            })
-        })
-    }
-
-    fn collect_all_symbols(&self) -> Vec<SymbolRefInfo> {
-        self.scan_symbols(|node| {
-            let name = self.parser.node_text(node);
-            (!name.is_empty()).then(|| SymbolRefInfo {
-                name,
-                node_type: node.kind().to_string(),
-                location: self.parser.node_location(node),
-                start_column: node.start_position().column,
-                end_column: node.end_position().column,
-                context: String::new(),
-            })
-        })
-    }
-
-    fn scan_symbols(
-        &self,
-        mut map_node: impl FnMut(Node<'_>) -> Option<SymbolRefInfo>,
-    ) -> Vec<SymbolRefInfo> {
-        let mut refs = Vec::new();
-        let mut stack = vec![self.parser.tree.root_node()];
-        while let Some(node) = stack.pop() {
-            if node.is_named() {
-                if self.is_symbol_ref_node(node) {
-                    if let Some(symbol) = map_node(node) {
-                        refs.push(symbol);
-                    }
-                }
-                for i in (0..node.named_child_count()).rev() {
-                    if let Some(child) = node.named_child(i as u32) {
-                        stack.push(child);
-                    }
-                }
-            }
-        }
-        refs
-    }
-
     pub fn snapshot_for_index(&mut self) -> AnalyzerSnapshot {
         let functions = self.functions();
         let classes = self.classes();
@@ -583,7 +474,7 @@ impl CodeAnalyzer {
         let calls = self.calls();
         let imports = self.imports();
         let annotations = self.annotations();
-        let symbols = self.collect_all_symbols();
+        let symbols = symbols::collect_all(&self.parser);
 
         let mut python_properties = Vec::new();
         let mut python_property_callers = Vec::new();
@@ -645,13 +536,7 @@ impl CodeAnalyzer {
         let by_callee = self.cache.calls_by_callee().unwrap();
         let calls = self.cache.calls().unwrap().to_vec();
 
-        let mut target_function = function_name;
-        let mut target_object: Option<&str> = None;
-        if function_name.contains('.') {
-            let parts: Vec<&str> = function_name.rsplitn(2, '.').collect();
-            target_function = parts[0];
-            target_object = Some(parts[1]);
-        }
+        let (target_function, target_object) = split_function_target(function_name);
 
         let mut callers = Vec::new();
         let mut seen: HashSet<(String, usize)> = HashSet::new();
@@ -742,60 +627,11 @@ impl CodeAnalyzer {
     }
 
     pub fn find_symbols(&mut self, name: &str) -> Vec<SymbolRefInfo> {
-        let name_bytes = name.as_bytes();
-        if name_bytes.is_empty() {
-            return Vec::new();
-        }
-        if !self
-            .parser
-            .source
-            .windows(name_bytes.len())
-            .any(|w| w == name_bytes)
-        {
-            return Vec::new();
-        }
-
-        self.scan_symbols(|node| {
-            (self.parser.node_bytes(node) == name_bytes).then(|| SymbolRefInfo {
-                name: name.to_string(),
-                node_type: node.kind().to_string(),
-                location: self.parser.node_location(node),
-                start_column: node.start_position().column,
-                end_column: node.end_position().column,
-                context: node
-                    .parent()
-                    .map(|p| self.parser.node_text(p))
-                    .unwrap_or_default(),
-            })
-        })
+        symbols::find(&self.parser, name, true)
     }
 
     pub fn hydrate_symbol_contexts(&mut self, candidates: &[SymbolRefInfo]) -> Vec<SymbolRefInfo> {
-        if candidates.is_empty() {
-            return Vec::new();
-        }
-
-        let expected: HashSet<SymbolRefKey> =
-            candidates.iter().map(SymbolRefKey::from_symbol).collect();
-        self.scan_symbols(|node| {
-            let symbol = SymbolRefInfo {
-                name: self.parser.node_text(node),
-                node_type: node.kind().to_string(),
-                location: self.parser.node_location(node),
-                start_column: node.start_position().column,
-                end_column: node.end_position().column,
-                context: String::new(),
-            };
-            expected
-                .contains(&SymbolRefKey::from_symbol(&symbol))
-                .then(|| SymbolRefInfo {
-                    context: node
-                        .parent()
-                        .map(|p| self.parser.node_text(p))
-                        .unwrap_or_default(),
-                    ..symbol
-                })
-        })
+        symbols::hydrate(&self.parser, candidates)
     }
 
     pub fn class_named(&mut self, class_name: &str) -> Option<ClassInfo> {

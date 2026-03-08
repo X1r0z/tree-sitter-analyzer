@@ -6,14 +6,14 @@ use rayon::prelude::*;
 use crate::analyzer::CodeAnalyzer;
 use crate::cache::TextFilterCache;
 use crate::graph::{CallGraph, RawPropertyCaller};
-use crate::nodes::*;
+use crate::models::*;
 use crate::utils::{
-    find_files, is_simple_query, progress_bar, search_files_with_rg, sort_by_file_line,
-    QueryMatcher,
+    find_files, is_simple_query, progress_bar, search_files_with_rg, sort_callees_by_file_line,
+    sort_callers_by_file_line, QueryMatcher,
 };
 
 pub struct ProjectAnalyzer {
-    pub files: Vec<String>,
+    files: Vec<String>,
     path: String,
     text_filter_cache: TextFilterCache,
 }
@@ -65,6 +65,14 @@ impl ProjectAnalyzer {
 
     pub fn find_functions(&self, query: &str) -> Vec<FunctionInfo> {
         self.collect_functions(query)
+    }
+
+    pub fn file_count(&self) -> usize {
+        self.files.len()
+    }
+
+    pub(crate) fn files(&self) -> &[String] {
+        &self.files
     }
 
     pub fn hydrate_function_bodies(&self, candidates: Vec<FunctionInfo>) -> Vec<FunctionInfo> {
@@ -203,42 +211,32 @@ impl ProjectAnalyzer {
         })
     }
 
-    pub fn find_callers(
-        &self,
-        function_name: &str,
-        class_name: Option<&str>,
-    ) -> Vec<serde_json::Value> {
+    pub fn find_callers(&self, function_name: &str, class_name: Option<&str>) -> Vec<CallerInfo> {
         let candidate_files = self.filter_by_text(function_name);
         if candidate_files.is_empty() {
             return Vec::new();
         }
         let fn_name = function_name.to_string();
         let cn = class_name.map(|s| s.to_string());
-        let mut results: Vec<serde_json::Value> =
+        let mut results: Vec<CallerInfo> =
             self.analyze_files_with_progress(&candidate_files, |f| {
                 self.analyze_file(f, |analyzer| {
                     analyzer.find_function_callers(&fn_name, cn.as_deref())
                 })
                 .unwrap_or_default()
                 .into_iter()
-                .map(|(caller, line)| {
-                    serde_json::json!({
-                        "caller": caller,
-                        "line": line,
-                        "file": f,
-                    })
+                .map(|(caller, line)| CallerInfo {
+                    caller,
+                    line,
+                    file: f.clone(),
                 })
                 .collect::<Vec<_>>()
             });
-        sort_by_file_line(&mut results);
+        sort_callers_by_file_line(&mut results);
         results
     }
 
-    pub fn find_callees(
-        &self,
-        function_name: &str,
-        class_name: Option<&str>,
-    ) -> Vec<serde_json::Value> {
+    pub fn find_callees(&self, function_name: &str, class_name: Option<&str>) -> Vec<CalleeInfo> {
         let candidate_files = self.filter_by_text(function_name);
         if candidate_files.is_empty() {
             return Vec::new();
@@ -260,24 +258,21 @@ impl ProjectAnalyzer {
             relevant_files = candidate_files;
         }
 
-        let mut results: Vec<serde_json::Value> =
-            self.analyze_files_with_progress(&relevant_files, |f| {
-                self.analyze_file(f, |analyzer| {
-                    analyzer.find_function_callees(&fn_name, cn.as_deref())
-                })
-                .unwrap_or_default()
-                .into_iter()
-                .map(|(callee, line, callee_class)| {
-                    serde_json::json!({
-                            "callee": callee,
-                        "line": line,
-                        "file": f,
-                        "class_name": callee_class,
-                    })
-                })
-                .collect::<Vec<_>>()
-            });
-        sort_by_file_line(&mut results);
+        let mut results: Vec<CalleeInfo> = self.analyze_files_with_progress(&relevant_files, |f| {
+            self.analyze_file(f, |analyzer| {
+                analyzer.find_function_callees(&fn_name, cn.as_deref())
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(callee, line, callee_class)| CalleeInfo {
+                callee,
+                line,
+                file: f.clone(),
+                class_name: callee_class,
+            })
+            .collect::<Vec<_>>()
+        });
+        sort_callees_by_file_line(&mut results);
         results
     }
 
@@ -351,7 +346,7 @@ impl ProjectAnalyzer {
         Ok(graph.collect_graphs(&start_nodes, direction, max_depth))
     }
 
-    pub fn find_symbols(&self, name: &str) -> Vec<serde_json::Value> {
+    pub fn find_symbols(&self, name: &str) -> Vec<SymbolRefInfo> {
         let candidate_files = self.filter_by_text(name);
         if candidate_files.is_empty() {
             return Vec::new();
@@ -361,9 +356,7 @@ impl ProjectAnalyzer {
             self.analyze_file(f, |analyzer| analyzer.find_symbols(&symbol))
                 .unwrap_or_default()
         });
-        refs.into_iter()
-            .map(|symbol| symbol.to_json_value())
-            .collect()
+        refs
     }
 
     pub fn hydrate_symbol_contexts(&self, candidates: Vec<SymbolRefInfo>) -> Vec<SymbolRefInfo> {

@@ -1,25 +1,26 @@
 mod analyzer;
 mod cache;
+mod commands;
 mod db;
 mod graph;
 mod index;
 mod languages;
-mod nodes;
+mod models;
 mod parser;
 mod project;
 mod utils;
 
-use std::collections::HashSet;
 use std::path::Path;
 use std::process;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use serde_json::{json, Value};
 
-use crate::db::DbProjectAnalyzer;
-use crate::index::build_index;
-use crate::nodes::GraphDirection;
-use crate::project::ProjectAnalyzer;
+use crate::commands::{
+    cmd_annotations, cmd_callees, cmd_callers, cmd_classes, cmd_definition, cmd_fields,
+    cmd_functions, cmd_graph, cmd_imports, cmd_index, cmd_sub_classes, cmd_super_classes,
+    cmd_symbols,
+};
+use crate::models::GraphDirection;
 use crate::utils::relativize_json_file_paths;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -230,12 +231,12 @@ enum Commands {
     },
 }
 
-fn resolve_path(path: &str) -> String {
+pub(crate) fn resolve_path(path: &str) -> String {
     match std::fs::canonicalize(path) {
-        Ok(p) => p.to_string_lossy().to_string(),
+        Ok(path) => path.to_string_lossy().to_string(),
         Err(_) => {
-            let p = Path::new(path);
-            if p.is_absolute() {
+            let path_ref = Path::new(path);
+            if path_ref.is_absolute() {
                 path.to_string()
             } else {
                 std::env::current_dir()
@@ -258,40 +259,61 @@ fn parse_positive_depth(value: &str) -> Result<usize, String> {
 
 fn run() -> i32 {
     let cli = Cli::parse();
-
     let mut result = match cli.command {
         Commands::Functions {
             path,
             language,
             query,
-        } => cmd_functions(&path, language, query.as_deref().unwrap_or("")),
+        } => cmd_functions(
+            &path,
+            language.map(LanguageFilter::as_str),
+            query.as_deref().unwrap_or(""),
+        ),
         Commands::Classes {
             path,
             language,
             query,
-        } => cmd_classes(&path, language, query.as_deref().unwrap_or("")),
+        } => cmd_classes(
+            &path,
+            language.map(LanguageFilter::as_str),
+            query.as_deref().unwrap_or(""),
+        ),
         Commands::Fields {
             path,
             language,
             class_name,
-        } => cmd_fields(&path, language, &class_name),
+        } => cmd_fields(&path, language.map(LanguageFilter::as_str), &class_name),
         Commands::Imports {
             path,
             language,
             query,
-        } => cmd_imports(&path, language, query.as_deref().unwrap_or("")),
+        } => cmd_imports(
+            &path,
+            language.map(LanguageFilter::as_str),
+            query.as_deref().unwrap_or(""),
+        ),
         Commands::Callers {
             path,
             language,
             function,
             class_name,
-        } => cmd_callers(&path, language, &function, class_name.as_deref()),
+        } => cmd_callers(
+            &path,
+            language.map(LanguageFilter::as_str),
+            &function,
+            class_name.as_deref(),
+        ),
         Commands::Callees {
             path,
             language,
             function,
             class_name,
-        } => cmd_callees(&path, language, &function, class_name.as_deref()),
+        } => cmd_callees(
+            &path,
+            language.map(LanguageFilter::as_str),
+            &function,
+            class_name.as_deref(),
+        ),
         Commands::Graph {
             path,
             language,
@@ -302,7 +324,7 @@ fn run() -> i32 {
             forward: _,
         } => cmd_graph(
             &path,
-            language,
+            language.map(LanguageFilter::as_str),
             &function,
             class_name.as_deref(),
             depth,
@@ -316,29 +338,40 @@ fn run() -> i32 {
             path,
             language,
             name,
-        } => cmd_symbols(&path, language, &name),
+        } => cmd_symbols(&path, language.map(LanguageFilter::as_str), &name),
         Commands::Definition {
             path,
             language,
             function,
             class_name,
-        } => cmd_definition(&path, language, &function, class_name.as_deref()),
+        } => cmd_definition(
+            &path,
+            language.map(LanguageFilter::as_str),
+            &function,
+            class_name.as_deref(),
+        ),
         Commands::SuperClasses {
             path,
             language,
             class_name,
-        } => cmd_super_classes(&path, language, &class_name),
+        } => cmd_super_classes(&path, language.map(LanguageFilter::as_str), &class_name),
         Commands::SubClasses {
             path,
             language,
             class_name,
-        } => cmd_sub_classes(&path, language, &class_name),
+        } => cmd_sub_classes(&path, language.map(LanguageFilter::as_str), &class_name),
         Commands::Annotations {
             path,
             language,
             query,
-        } => cmd_annotations(&path, language, query.as_deref().unwrap_or("")),
-        Commands::Index { path, language } => cmd_index(&path, language),
+        } => cmd_annotations(
+            &path,
+            language.map(LanguageFilter::as_str),
+            query.as_deref().unwrap_or(""),
+        ),
+        Commands::Index { path, language } => {
+            cmd_index(&path, language.map(LanguageFilter::as_str))
+        }
     };
 
     if result.get("error").is_none() {
@@ -355,495 +388,6 @@ fn run() -> i32 {
     } else {
         0
     }
-}
-
-fn cmd_functions(path: &str, language: Option<LanguageFilter>, query: &str) -> Value {
-    let real_path = resolve_path(path);
-    if let Ok(Some(db)) = DbProjectAnalyzer::from_current_dir_if_compatible(
-        &real_path,
-        language.map(LanguageFilter::as_str),
-    ) {
-        match db.find_functions(query) {
-            Ok(functions) => {
-                return json!({
-                    "path": real_path,
-                    "searched_files": db.file_count(),
-                    "count": functions.len(),
-                    "functions": functions.iter().map(|f| f.to_json_value(false, true)).collect::<Vec<_>>(),
-                });
-            }
-            Err(e) => return json!({"error": e.to_string()}),
-        }
-    }
-    match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
-        Ok(project) => {
-            let functions = project.find_functions(query);
-            json!({
-                "path": real_path,
-                "searched_files": project.files.len(),
-                "count": functions.len(),
-                "functions": functions.iter().map(|f| f.to_json_value(false, true)).collect::<Vec<_>>(),
-            })
-        }
-        Err(e) => json!({"error": e.to_string()}),
-    }
-}
-
-fn cmd_classes(path: &str, language: Option<LanguageFilter>, query: &str) -> Value {
-    let real_path = resolve_path(path);
-    if let Ok(Some(db)) = DbProjectAnalyzer::from_current_dir_if_compatible(
-        &real_path,
-        language.map(LanguageFilter::as_str),
-    ) {
-        match db.find_classes(query) {
-            Ok(classes) => {
-                return json!({
-                    "path": real_path,
-                    "searched_files": db.file_count(),
-                    "count": classes.len(),
-                    "classes": classes.iter().map(|c| c.to_json_value(true)).collect::<Vec<_>>(),
-                });
-            }
-            Err(e) => return json!({"error": e.to_string()}),
-        }
-    }
-    match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
-        Ok(project) => {
-            let classes = project.find_classes(query);
-            json!({
-                "path": real_path,
-                "searched_files": project.files.len(),
-                "count": classes.len(),
-                "classes": classes.iter().map(|c| c.to_json_value(true)).collect::<Vec<_>>(),
-            })
-        }
-        Err(e) => json!({"error": e.to_string()}),
-    }
-}
-
-fn cmd_fields(path: &str, language: Option<LanguageFilter>, class_name: &str) -> Value {
-    let real_path = resolve_path(path);
-    if let Ok(Some(db)) = DbProjectAnalyzer::from_current_dir_if_compatible(
-        &real_path,
-        language.map(LanguageFilter::as_str),
-    ) {
-        match db.find_fields(class_name) {
-            Ok(fields) => {
-                return json!({
-                    "path": real_path,
-                    "searched_files": db.file_count(),
-                    "count": fields.len(),
-                    "class_name": class_name,
-                    "fields": fields.iter().map(|f| f.to_json_value(true)).collect::<Vec<_>>(),
-                });
-            }
-            Err(e) => return json!({"error": e.to_string()}),
-        }
-    }
-    match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
-        Ok(project) => {
-            let fields = project.find_fields(class_name);
-            json!({
-                "path": real_path,
-                "searched_files": project.files.len(),
-                "count": fields.len(),
-                "class_name": class_name,
-                "fields": fields.iter().map(|f| f.to_json_value(true)).collect::<Vec<_>>(),
-            })
-        }
-        Err(e) => json!({"error": e.to_string()}),
-    }
-}
-
-fn cmd_imports(path: &str, language: Option<LanguageFilter>, query: &str) -> Value {
-    let real_path = resolve_path(path);
-    if let Ok(Some(db)) = DbProjectAnalyzer::from_current_dir_if_compatible(
-        &real_path,
-        language.map(LanguageFilter::as_str),
-    ) {
-        match db.find_imports(query) {
-            Ok(imports) => {
-                return json!({
-                    "path": real_path,
-                    "searched_files": db.file_count(),
-                    "count": imports.len(),
-                    "imports": imports.iter().map(|i| i.to_json_value(true)).collect::<Vec<_>>(),
-                });
-            }
-            Err(e) => return json!({"error": e.to_string()}),
-        }
-    }
-    match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
-        Ok(project) => {
-            let imports = project.find_imports(query);
-            json!({
-                "path": real_path,
-                "searched_files": project.files.len(),
-                "count": imports.len(),
-                "imports": imports.iter().map(|i| i.to_json_value(true)).collect::<Vec<_>>(),
-            })
-        }
-        Err(e) => json!({"error": e.to_string()}),
-    }
-}
-
-fn cmd_callers(
-    path: &str,
-    language: Option<LanguageFilter>,
-    function_name: &str,
-    class_name: Option<&str>,
-) -> Value {
-    let real_path = resolve_path(path);
-    if let Ok(Some(db)) = DbProjectAnalyzer::from_current_dir_if_compatible(
-        &real_path,
-        language.map(LanguageFilter::as_str),
-    ) {
-        match db.find_callers(function_name, class_name) {
-            Ok(callers) => {
-                return json!({
-                    "path": real_path,
-                    "searched_files": db.file_count(),
-                    "count": callers.len(),
-                    "function": function_name,
-                    "class_name": class_name,
-                    "callers": callers,
-                });
-            }
-            Err(e) => return json!({"error": e.to_string()}),
-        }
-    }
-    match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
-        Ok(project) => {
-            let callers = project.find_callers(function_name, class_name);
-            json!({
-                "path": real_path,
-                "searched_files": project.files.len(),
-                "count": callers.len(),
-                "function": function_name,
-                "class_name": class_name,
-                "callers": callers,
-            })
-        }
-        Err(e) => json!({"error": e.to_string()}),
-    }
-}
-
-fn cmd_callees(
-    path: &str,
-    language: Option<LanguageFilter>,
-    function_name: &str,
-    class_name: Option<&str>,
-) -> Value {
-    let real_path = resolve_path(path);
-    if let Ok(Some(db)) = DbProjectAnalyzer::from_current_dir_if_compatible(
-        &real_path,
-        language.map(LanguageFilter::as_str),
-    ) {
-        match db.find_callees(function_name, class_name) {
-            Ok(callees) => {
-                return json!({
-                    "path": real_path,
-                    "searched_files": db.file_count(),
-                    "count": callees.len(),
-                    "function": function_name,
-                    "class_name": class_name,
-                    "callees": callees,
-                });
-            }
-            Err(e) => return json!({"error": e.to_string()}),
-        }
-    }
-    match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
-        Ok(project) => {
-            let callees = project.find_callees(function_name, class_name);
-            json!({
-                "path": real_path,
-                "searched_files": project.files.len(),
-                "count": callees.len(),
-                "function": function_name,
-                "class_name": class_name,
-                "callees": callees,
-            })
-        }
-        Err(e) => json!({"error": e.to_string()}),
-    }
-}
-
-fn cmd_graph(
-    path: &str,
-    language: Option<LanguageFilter>,
-    function_name: &str,
-    class_name: Option<&str>,
-    max_depth: usize,
-    direction: GraphDirection,
-) -> Value {
-    let real_path = resolve_path(path);
-    if let Ok(Some(db)) = DbProjectAnalyzer::from_current_dir_if_compatible(
-        &real_path,
-        language.map(LanguageFilter::as_str),
-    ) {
-        match db.find_graphs(function_name, class_name, direction, max_depth) {
-            Ok(graphs) => {
-                return json!({
-                    "path": real_path,
-                    "searched_files": db.file_count(),
-                    "count": graphs.len(),
-                    "function": function_name,
-                    "class_name": class_name,
-                    "direction": direction.as_str(),
-                    "max_depth": max_depth,
-                    "graphs": graphs,
-                });
-            }
-            Err(e) => return json!({"error": e.to_string()}),
-        }
-    }
-
-    match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
-        Ok(project) => match project.find_graphs(function_name, class_name, direction, max_depth) {
-            Ok(graphs) => json!({
-                "path": real_path,
-                "searched_files": project.files.len(),
-                "count": graphs.len(),
-                "function": function_name,
-                "class_name": class_name,
-                "direction": direction.as_str(),
-                "max_depth": max_depth,
-                "graphs": graphs,
-            }),
-            Err(e) => json!({"error": e.to_string()}),
-        },
-        Err(e) => json!({"error": e.to_string()}),
-    }
-}
-
-fn cmd_symbols(path: &str, language: Option<LanguageFilter>, name: &str) -> Value {
-    let real_path = resolve_path(path);
-    if let Ok(Some(db)) = DbProjectAnalyzer::from_current_dir_if_compatible(
-        &real_path,
-        language.map(LanguageFilter::as_str),
-    ) {
-        match db.find_symbols(name) {
-            Ok(refs) => {
-                if refs.is_empty() {
-                    return json!({
-                        "path": real_path,
-                        "searched_files": db.file_count(),
-                        "count": 0,
-                        "name": name,
-                        "references": Vec::<Value>::new(),
-                    });
-                }
-                return match ProjectAnalyzer::new_with_language(
-                    &real_path,
-                    language.map(LanguageFilter::as_str),
-                ) {
-                    Ok(project) => {
-                        let refs = project.hydrate_symbol_contexts(refs);
-                        json!({
-                            "path": real_path,
-                            "searched_files": db.file_count(),
-                            "count": refs.len(),
-                            "name": name,
-                            "references": refs.iter().map(|symbol| symbol.to_json_value()).collect::<Vec<_>>(),
-                        })
-                    }
-                    Err(e) => json!({"error": e.to_string()}),
-                };
-            }
-            Err(e) => return json!({"error": e.to_string()}),
-        }
-    }
-    match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
-        Ok(project) => {
-            let refs = project.find_symbols(name);
-            json!({
-                "path": real_path,
-                "searched_files": project.files.len(),
-                "count": refs.len(),
-                "name": name,
-                "references": refs,
-            })
-        }
-        Err(e) => json!({"error": e.to_string()}),
-    }
-}
-
-fn cmd_definition(
-    path: &str,
-    language: Option<LanguageFilter>,
-    function_name: &str,
-    class_name: Option<&str>,
-) -> Value {
-    let real_path = resolve_path(path);
-    if let Ok(Some(db)) = DbProjectAnalyzer::from_current_dir_if_compatible(
-        &real_path,
-        language.map(LanguageFilter::as_str),
-    ) {
-        match db.find_functions(function_name) {
-            Ok(functions) => {
-                let functions: Vec<_> = functions
-                    .into_iter()
-                    .filter(|function| {
-                        function.name == function_name
-                            && (class_name.is_none()
-                                || function.class_name.as_deref() == class_name)
-                    })
-                    .collect();
-                if functions.is_empty() {
-                    return json!({"error": format!("Function '{}' not found", function_name)});
-                }
-                return match ProjectAnalyzer::new_with_language(
-                    &real_path,
-                    language.map(LanguageFilter::as_str),
-                ) {
-                    Ok(project) => {
-                        let searched_files = unique_function_file_count(&functions);
-                        let functions = project.hydrate_function_bodies(functions);
-                        json!({
-                            "path": real_path,
-                            "searched_files": searched_files,
-                            "count": functions.len(),
-                            "class_name": class_name,
-                            "functions": functions.iter().map(|f| f.to_json_value(true, true)).collect::<Vec<_>>(),
-                        })
-                    }
-                    Err(e) => json!({"error": e.to_string()}),
-                };
-            }
-            Err(e) => return json!({"error": e.to_string()}),
-        }
-    }
-
-    match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
-        Ok(project) => {
-            let functions = project.find_function_definitions(function_name, class_name);
-            if functions.is_empty() {
-                return json!({"error": format!("Function '{}' not found", function_name)});
-            }
-            json!({
-                "path": real_path,
-                "searched_files": project.files.len(),
-                "count": functions.len(),
-                "class_name": class_name,
-                "functions": functions.iter().map(|f| f.to_json_value(true, true)).collect::<Vec<_>>(),
-            })
-        }
-        Err(e) => json!({"error": e.to_string()}),
-    }
-}
-
-fn cmd_super_classes(path: &str, language: Option<LanguageFilter>, class_name: &str) -> Value {
-    let real_path = resolve_path(path);
-    if let Ok(Some(db)) = DbProjectAnalyzer::from_current_dir_if_compatible(
-        &real_path,
-        language.map(LanguageFilter::as_str),
-    ) {
-        match db.find_super_classes(class_name) {
-            Ok(super_classes) => {
-                return json!({
-                    "path": real_path,
-                    "searched_files": db.file_count(),
-                    "count": super_classes.len(),
-                    "class_name": class_name,
-                    "super_classes": super_classes.iter().map(|c| c.to_json_value(true)).collect::<Vec<_>>(),
-                });
-            }
-            Err(e) => return json!({"error": e.to_string()}),
-        }
-    }
-    match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
-        Ok(project) => {
-            let super_classes = project.find_super_classes(class_name);
-            json!({
-                "path": real_path,
-                "searched_files": project.files.len(),
-                "count": super_classes.len(),
-                "class_name": class_name,
-                "super_classes": super_classes.iter().map(|c| c.to_json_value(true)).collect::<Vec<_>>(),
-            })
-        }
-        Err(e) => json!({"error": e.to_string()}),
-    }
-}
-
-fn cmd_sub_classes(path: &str, language: Option<LanguageFilter>, class_name: &str) -> Value {
-    let real_path = resolve_path(path);
-    if let Ok(Some(db)) = DbProjectAnalyzer::from_current_dir_if_compatible(
-        &real_path,
-        language.map(LanguageFilter::as_str),
-    ) {
-        match db.find_sub_classes(class_name) {
-            Ok(sub_classes) => {
-                return json!({
-                    "path": real_path,
-                    "searched_files": db.file_count(),
-                    "count": sub_classes.len(),
-                    "class_name": class_name,
-                    "sub_classes": sub_classes.iter().map(|c| c.to_json_value(true)).collect::<Vec<_>>(),
-                });
-            }
-            Err(e) => return json!({"error": e.to_string()}),
-        }
-    }
-    match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
-        Ok(project) => {
-            let sub_classes = project.find_sub_classes(class_name);
-            json!({
-                "path": real_path,
-                "searched_files": project.files.len(),
-                "count": sub_classes.len(),
-                "class_name": class_name,
-                "sub_classes": sub_classes.iter().map(|c| c.to_json_value(true)).collect::<Vec<_>>(),
-            })
-        }
-        Err(e) => json!({"error": e.to_string()}),
-    }
-}
-
-fn cmd_annotations(path: &str, language: Option<LanguageFilter>, query: &str) -> Value {
-    let real_path = resolve_path(path);
-    if let Ok(Some(db)) = DbProjectAnalyzer::from_current_dir_if_compatible(
-        &real_path,
-        language.map(LanguageFilter::as_str),
-    ) {
-        match db.find_annotations(query) {
-            Ok(annotations) => {
-                return json!({
-                    "path": real_path,
-                    "searched_files": db.file_count(),
-                    "count": annotations.len(),
-                    "annotations": annotations.iter().map(|a| a.to_json_value(true)).collect::<Vec<_>>(),
-                });
-            }
-            Err(e) => return json!({"error": e.to_string()}),
-        }
-    }
-    match ProjectAnalyzer::new_with_language(&real_path, language.map(LanguageFilter::as_str)) {
-        Ok(project) => {
-            let annotations = project.find_annotations(query);
-            json!({
-                "path": real_path,
-                "searched_files": project.files.len(),
-                "count": annotations.len(),
-                "annotations": annotations.iter().map(|a| a.to_json_value(true)).collect::<Vec<_>>(),
-            })
-        }
-        Err(e) => json!({"error": e.to_string()}),
-    }
-}
-
-fn cmd_index(path: &str, language: Option<LanguageFilter>) -> Value {
-    let real_path = resolve_path(path);
-    build_index(&real_path, language.map(LanguageFilter::as_str))
-}
-
-fn unique_function_file_count(functions: &[crate::nodes::FunctionInfo]) -> usize {
-    functions
-        .iter()
-        .map(|function| function.location.file.as_str())
-        .collect::<HashSet<_>>()
-        .len()
 }
 
 fn main() {

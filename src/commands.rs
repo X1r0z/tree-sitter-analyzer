@@ -2,23 +2,22 @@ use std::collections::HashSet;
 
 use serde_json::{json, Value};
 
-use crate::db::DbProjectAnalyzer;
+use crate::backend::{IndexedAnalyzer, SourceAnalyzer};
 use crate::index::build_index;
 use crate::models::{FunctionInfo, GraphDirection};
 use crate::output::{self, FunctionView};
-use crate::project::ProjectAnalyzer;
 
 pub fn cmd_functions(path: &str, language: Option<&str>, query: &str) -> Value {
     let context = match CommandContext::load(path, language) {
         Ok(context) => context,
         Err(error) => return error_response(error),
     };
-    let functions = match &context.source {
-        ProjectSource::Database(db) => match db.find_functions(query) {
+    let functions = match &context.backend {
+        AnalyzerBackend::Indexed(indexed_backend) => match indexed_backend.find_functions(query) {
             Ok(functions) => functions,
             Err(error) => return error_response(error),
         },
-        ProjectSource::Project(project) => project.find_functions(query),
+        AnalyzerBackend::Source(source_backend) => source_backend.find_functions(query),
     };
     success_response(
         &context.real_path,
@@ -35,12 +34,12 @@ pub fn cmd_classes(path: &str, language: Option<&str>, query: &str) -> Value {
         Ok(context) => context,
         Err(error) => return error_response(error),
     };
-    let classes = match &context.source {
-        ProjectSource::Database(db) => match db.find_classes(query) {
+    let classes = match &context.backend {
+        AnalyzerBackend::Indexed(indexed_backend) => match indexed_backend.find_classes(query) {
             Ok(classes) => classes,
             Err(error) => return error_response(error),
         },
-        ProjectSource::Project(project) => project.find_classes(query),
+        AnalyzerBackend::Source(source_backend) => source_backend.find_classes(query),
     };
     success_response(
         &context.real_path,
@@ -54,12 +53,14 @@ pub fn cmd_fields(path: &str, language: Option<&str>, class_name: &str) -> Value
         Ok(context) => context,
         Err(error) => return error_response(error),
     };
-    let fields = match &context.source {
-        ProjectSource::Database(db) => match db.find_fields(class_name) {
-            Ok(fields) => fields,
-            Err(error) => return error_response(error),
-        },
-        ProjectSource::Project(project) => project.find_fields(class_name),
+    let fields = match &context.backend {
+        AnalyzerBackend::Indexed(indexed_backend) => {
+            match indexed_backend.find_fields(class_name) {
+                Ok(fields) => fields,
+                Err(error) => return error_response(error),
+            }
+        }
+        AnalyzerBackend::Source(source_backend) => source_backend.find_fields(class_name),
     };
     success_response(
         &context.real_path,
@@ -76,12 +77,12 @@ pub fn cmd_imports(path: &str, language: Option<&str>, query: &str) -> Value {
         Ok(context) => context,
         Err(error) => return error_response(error),
     };
-    let imports = match &context.source {
-        ProjectSource::Database(db) => match db.find_imports(query) {
+    let imports = match &context.backend {
+        AnalyzerBackend::Indexed(indexed_backend) => match indexed_backend.find_imports(query) {
             Ok(imports) => imports,
             Err(error) => return error_response(error),
         },
-        ProjectSource::Project(project) => project.find_imports(query),
+        AnalyzerBackend::Source(source_backend) => source_backend.find_imports(query),
     };
     success_response(
         &context.real_path,
@@ -95,12 +96,14 @@ pub fn cmd_annotations(path: &str, language: Option<&str>, query: &str) -> Value
         Ok(context) => context,
         Err(error) => return error_response(error),
     };
-    let annotations = match &context.source {
-        ProjectSource::Database(db) => match db.find_annotations(query) {
-            Ok(annotations) => annotations,
-            Err(error) => return error_response(error),
-        },
-        ProjectSource::Project(project) => project.find_annotations(query),
+    let annotations = match &context.backend {
+        AnalyzerBackend::Indexed(indexed_backend) => {
+            match indexed_backend.find_annotations(query) {
+                Ok(annotations) => annotations,
+                Err(error) => return error_response(error),
+            }
+        }
+        AnalyzerBackend::Source(source_backend) => source_backend.find_annotations(query),
     };
     success_response(
         &context.real_path,
@@ -119,12 +122,16 @@ pub fn cmd_callers(
         Ok(context) => context,
         Err(error) => return error_response(error),
     };
-    let callers = match &context.source {
-        ProjectSource::Database(db) => match db.find_callers(function_name, class_name) {
-            Ok(callers) => callers,
-            Err(error) => return error_response(error),
-        },
-        ProjectSource::Project(project) => project.find_callers(function_name, class_name),
+    let callers = match &context.backend {
+        AnalyzerBackend::Indexed(indexed_backend) => {
+            match indexed_backend.find_callers(function_name, class_name) {
+                Ok(callers) => callers,
+                Err(error) => return error_response(error),
+            }
+        }
+        AnalyzerBackend::Source(source_backend) => {
+            source_backend.find_callers(function_name, class_name)
+        }
     };
     success_response(
         &context.real_path,
@@ -147,12 +154,16 @@ pub fn cmd_callees(
         Ok(context) => context,
         Err(error) => return error_response(error),
     };
-    let callees = match &context.source {
-        ProjectSource::Database(db) => match db.find_callees(function_name, class_name) {
-            Ok(callees) => callees,
-            Err(error) => return error_response(error),
-        },
-        ProjectSource::Project(project) => project.find_callees(function_name, class_name),
+    let callees = match &context.backend {
+        AnalyzerBackend::Indexed(indexed_backend) => {
+            match indexed_backend.find_callees(function_name, class_name) {
+                Ok(callees) => callees,
+                Err(error) => return error_response(error),
+            }
+        }
+        AnalyzerBackend::Source(source_backend) => {
+            source_backend.find_callees(function_name, class_name)
+        }
     };
     success_response(
         &context.real_path,
@@ -177,15 +188,15 @@ pub fn cmd_graph(
         Ok(context) => context,
         Err(error) => return error_response(error),
     };
-    let graphs = match &context.source {
-        ProjectSource::Database(db) => {
-            match db.find_graphs(function_name, class_name, direction, max_depth) {
+    let graphs = match &context.backend {
+        AnalyzerBackend::Indexed(indexed_backend) => {
+            match indexed_backend.find_graphs(function_name, class_name, direction, max_depth) {
                 Ok(graphs) => graphs,
                 Err(error) => return error_response(error),
             }
         }
-        ProjectSource::Project(project) => {
-            match project.find_graphs(function_name, class_name, direction, max_depth) {
+        AnalyzerBackend::Source(source_backend) => {
+            match source_backend.find_graphs(function_name, class_name, direction, max_depth) {
                 Ok(graphs) => graphs,
                 Err(error) => return error_response(error),
             }
@@ -209,8 +220,8 @@ pub fn cmd_symbols(path: &str, language: Option<&str>, name: &str) -> Value {
         Ok(context) => context,
         Err(error) => return error_response(error),
     };
-    match &context.source {
-        ProjectSource::Database(db) => match db.find_symbols(name) {
+    match &context.backend {
+        AnalyzerBackend::Indexed(indexed_backend) => match indexed_backend.find_symbols(name) {
             Ok(refs) if refs.is_empty() => success_response(
                 &context.real_path,
                 context.searched_files(),
@@ -219,9 +230,9 @@ pub fn cmd_symbols(path: &str, language: Option<&str>, name: &str) -> Value {
                     ("references", Value::Array(Vec::new())),
                 ],
             ),
-            Ok(refs) => match ProjectAnalyzer::new_with_language(&context.real_path, language) {
-                Ok(project) => {
-                    let refs = project.hydrate_symbol_contexts(refs);
+            Ok(refs) => match SourceAnalyzer::new_with_language(&context.real_path, language) {
+                Ok(source_backend) => {
+                    let refs = source_backend.hydrate_symbol_contexts(refs);
                     success_response(
                         &context.real_path,
                         context.searched_files(),
@@ -235,8 +246,8 @@ pub fn cmd_symbols(path: &str, language: Option<&str>, name: &str) -> Value {
             },
             Err(error) => error_response(error),
         },
-        ProjectSource::Project(project) => {
-            let refs = project.find_symbols(name);
+        AnalyzerBackend::Source(source_backend) => {
+            let refs = source_backend.find_symbols(name);
             success_response(
                 &context.real_path,
                 context.searched_files(),
@@ -259,43 +270,45 @@ pub fn cmd_definition(
         Ok(context) => context,
         Err(error) => return error_response(error),
     };
-    match &context.source {
-        ProjectSource::Database(db) => match db.find_functions(function_name) {
-            Ok(functions) => {
-                let functions: Vec<_> = functions
-                    .into_iter()
-                    .filter(|function| {
-                        function.name == function_name
-                            && (class_name.is_none()
-                                || function.class_name.as_deref() == class_name)
-                    })
-                    .collect();
-                if functions.is_empty() {
-                    return json!({"error": format!("Function '{}' not found", function_name)});
-                }
-                match ProjectAnalyzer::new_with_language(&context.real_path, language) {
-                    Ok(project) => {
-                        let searched_files = unique_function_file_count(&functions);
-                        let functions = project.hydrate_function_bodies(functions);
-                        success_response(
-                            &context.real_path,
-                            searched_files,
-                            [
-                                ("class_name", json!(class_name)),
-                                (
-                                    "functions",
-                                    output::functions(&functions, FunctionView::Definition),
-                                ),
-                            ],
-                        )
+    match &context.backend {
+        AnalyzerBackend::Indexed(indexed_backend) => {
+            match indexed_backend.find_functions(function_name) {
+                Ok(functions) => {
+                    let functions: Vec<_> = functions
+                        .into_iter()
+                        .filter(|function| {
+                            function.name == function_name
+                                && (class_name.is_none()
+                                    || function.class_name.as_deref() == class_name)
+                        })
+                        .collect();
+                    if functions.is_empty() {
+                        return json!({"error": format!("Function '{}' not found", function_name)});
                     }
-                    Err(error) => error_response(error),
+                    match SourceAnalyzer::new_with_language(&context.real_path, language) {
+                        Ok(source_backend) => {
+                            let searched_files = unique_function_file_count(&functions);
+                            let functions = source_backend.hydrate_function_bodies(functions);
+                            success_response(
+                                &context.real_path,
+                                searched_files,
+                                [
+                                    ("class_name", json!(class_name)),
+                                    (
+                                        "functions",
+                                        output::functions(&functions, FunctionView::Definition),
+                                    ),
+                                ],
+                            )
+                        }
+                        Err(error) => error_response(error),
+                    }
                 }
+                Err(error) => error_response(error),
             }
-            Err(error) => error_response(error),
-        },
-        ProjectSource::Project(project) => {
-            let functions = project.find_function_definitions(function_name, class_name);
+        }
+        AnalyzerBackend::Source(source_backend) => {
+            let functions = source_backend.find_function_definitions(function_name, class_name);
             if functions.is_empty() {
                 return json!({"error": format!("Function '{}' not found", function_name)});
             }
@@ -319,12 +332,14 @@ pub fn cmd_super_classes(path: &str, language: Option<&str>, class_name: &str) -
         Ok(context) => context,
         Err(error) => return error_response(error),
     };
-    let super_classes = match &context.source {
-        ProjectSource::Database(db) => match db.find_super_classes(class_name) {
-            Ok(super_classes) => super_classes,
-            Err(error) => return error_response(error),
-        },
-        ProjectSource::Project(project) => project.find_super_classes(class_name),
+    let super_classes = match &context.backend {
+        AnalyzerBackend::Indexed(indexed_backend) => {
+            match indexed_backend.find_super_classes(class_name) {
+                Ok(super_classes) => super_classes,
+                Err(error) => return error_response(error),
+            }
+        }
+        AnalyzerBackend::Source(source_backend) => source_backend.find_super_classes(class_name),
     };
     success_response(
         &context.real_path,
@@ -341,12 +356,14 @@ pub fn cmd_sub_classes(path: &str, language: Option<&str>, class_name: &str) -> 
         Ok(context) => context,
         Err(error) => return error_response(error),
     };
-    let sub_classes = match &context.source {
-        ProjectSource::Database(db) => match db.find_sub_classes(class_name) {
-            Ok(sub_classes) => sub_classes,
-            Err(error) => return error_response(error),
-        },
-        ProjectSource::Project(project) => project.find_sub_classes(class_name),
+    let sub_classes = match &context.backend {
+        AnalyzerBackend::Indexed(indexed_backend) => {
+            match indexed_backend.find_sub_classes(class_name) {
+                Ok(sub_classes) => sub_classes,
+                Err(error) => return error_response(error),
+            }
+        }
+        AnalyzerBackend::Source(source_backend) => source_backend.find_sub_classes(class_name),
     };
     success_response(
         &context.real_path,
@@ -365,34 +382,35 @@ pub fn cmd_index(path: &str, language: Option<&str>) -> Value {
 
 struct CommandContext {
     real_path: String,
-    source: ProjectSource,
+    backend: AnalyzerBackend,
 }
 
 impl CommandContext {
     fn load(path: &str, language: Option<&str>) -> anyhow::Result<Self> {
         let real_path = crate::resolve_path(path);
-        let source = with_project_source(&real_path, language)?;
-        Ok(Self { real_path, source })
+        let backend = with_analyzer_backend(&real_path, language)?;
+        Ok(Self { real_path, backend })
     }
 
     fn searched_files(&self) -> usize {
-        match &self.source {
-            ProjectSource::Database(db) => db.file_count(),
-            ProjectSource::Project(project) => project.file_count(),
+        match &self.backend {
+            AnalyzerBackend::Indexed(indexed_backend) => indexed_backend.file_count(),
+            AnalyzerBackend::Source(source_backend) => source_backend.file_count(),
         }
     }
 }
 
-enum ProjectSource {
-    Database(DbProjectAnalyzer),
-    Project(ProjectAnalyzer),
+enum AnalyzerBackend {
+    Indexed(IndexedAnalyzer),
+    Source(SourceAnalyzer),
 }
 
-fn with_project_source(path: &str, language: Option<&str>) -> anyhow::Result<ProjectSource> {
-    if let Some(db) = DbProjectAnalyzer::from_current_dir_if_compatible(path, language)? {
-        return Ok(ProjectSource::Database(db));
+fn with_analyzer_backend(path: &str, language: Option<&str>) -> anyhow::Result<AnalyzerBackend> {
+    if let Some(indexed_backend) = IndexedAnalyzer::from_current_dir_if_compatible(path, language)?
+    {
+        return Ok(AnalyzerBackend::Indexed(indexed_backend));
     }
-    ProjectAnalyzer::new_with_language(path, language).map(ProjectSource::Project)
+    SourceAnalyzer::new_with_language(path, language).map(AnalyzerBackend::Source)
 }
 
 fn success_response<const N: usize>(

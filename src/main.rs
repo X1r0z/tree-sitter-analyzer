@@ -1,17 +1,16 @@
-mod analyzer;
+mod backend;
 mod cache;
 mod commands;
-mod db;
+mod extractor;
 mod graph;
 mod index;
 mod languages;
 mod models;
 mod output;
 mod parser;
-mod project;
 mod symbols;
+mod traversal;
 mod utils;
-mod walk;
 
 use std::path::Path;
 use std::process;

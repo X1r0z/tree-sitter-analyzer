@@ -4,23 +4,23 @@ use std::path::Path;
 
 use rayon::prelude::*;
 
-use crate::analyzer::CodeAnalyzer;
 use crate::cache::TextFilterCache;
+use crate::extractor::CodeExtractor;
 use crate::graph::{CallGraph, RawPropertyCaller};
 use crate::models::*;
+use crate::traversal::bfs::collect_reachable;
 use crate::utils::{
     find_files, is_simple_query, progress_bar, search_files_with_rg, sort_callees_by_file_line,
     sort_callers_by_file_line, QueryMatcher,
 };
-use crate::walk::bfs::collect_reachable;
 
-pub struct ProjectAnalyzer {
+pub struct SourceAnalyzer {
     files: Vec<String>,
     path: String,
     text_filter_cache: TextFilterCache,
 }
 
-impl ProjectAnalyzer {
+impl SourceAnalyzer {
     pub fn new_with_language(path: &str, language: Option<&str>) -> anyhow::Result<Self> {
         let p = Path::new(path);
         if !p.exists() {
@@ -37,9 +37,9 @@ impl ProjectAnalyzer {
         })
     }
 
-    fn analyze_file<R>(&self, file: &str, f: impl FnOnce(&mut CodeAnalyzer) -> R) -> Option<R> {
-        let mut analyzer = CodeAnalyzer::new(file).ok()?;
-        Some(f(&mut analyzer))
+    fn analyze_file<R>(&self, file: &str, f: impl FnOnce(&mut CodeExtractor) -> R) -> Option<R> {
+        let mut extractor = CodeExtractor::new(file).ok()?;
+        Some(f(&mut extractor))
     }
 
     fn analyze_files_with_progress<T, R, F>(&self, files: &[T], f: F) -> Vec<R>
@@ -89,7 +89,7 @@ impl ProjectAnalyzer {
         Candidate: Clone + Send + Sync,
         KeyOf: Fn(&Candidate) -> K + Sync,
         FileOf: Fn(&Candidate) -> &str,
-        Resolve: Fn(&mut CodeAnalyzer, &HashSet<K>) -> Vec<Candidate> + Sync + Send,
+        Resolve: Fn(&mut CodeExtractor, &HashSet<K>) -> Vec<Candidate> + Sync + Send,
     {
         if candidates.is_empty() {
             return Vec::new();
@@ -106,7 +106,7 @@ impl ProjectAnalyzer {
         let expected_keys_by_file: Vec<_> = expected_keys_by_file.into_iter().collect();
         let resolved: HashMap<K, Candidate> = self
             .analyze_files_with_progress(&expected_keys_by_file, |(file, expected)| {
-                self.analyze_file(file, |analyzer| resolve(analyzer, expected))
+                self.analyze_file(file, |extractor| resolve(extractor, expected))
                     .unwrap_or_default()
                     .into_iter()
                     .map(|candidate| (key_of(&candidate), candidate))
@@ -131,8 +131,8 @@ impl ProjectAnalyzer {
             candidates,
             |candidate: &FunctionInfo| FunctionKey::from(candidate),
             |candidate| candidate.location.file.as_str(),
-            |analyzer, expected| {
-                analyzer
+            |extractor, expected| {
+                extractor
                     .functions_with_bodies()
                     .into_iter()
                     .filter(|function| expected.contains(&FunctionKey::from(function)))
@@ -149,7 +149,7 @@ impl ProjectAnalyzer {
         let matcher = QueryMatcher::new(query);
         self.analyze_files_with_progress(&candidate_files, |f| {
             let funcs = self
-                .analyze_file(f, |analyzer| analyzer.functions())
+                .analyze_file(f, |extractor| extractor.functions())
                 .unwrap_or_default();
             if matcher.matches_all() {
                 funcs
@@ -170,7 +170,7 @@ impl ProjectAnalyzer {
         let matcher = QueryMatcher::new(query);
         self.analyze_files_with_progress(&candidate_files, |f| {
             let classes = self
-                .analyze_file(f, |analyzer| analyzer.classes())
+                .analyze_file(f, |extractor| extractor.classes())
                 .unwrap_or_default();
             if matcher.matches_all() {
                 classes
@@ -190,7 +190,7 @@ impl ProjectAnalyzer {
         }
         let cn = class_name.to_string();
         self.analyze_files_with_progress(&candidate_files, |f| {
-            self.analyze_file(f, |analyzer| analyzer.fields(&cn))
+            self.analyze_file(f, |extractor| extractor.fields(&cn))
                 .unwrap_or_default()
         })
     }
@@ -203,7 +203,7 @@ impl ProjectAnalyzer {
         let matcher = QueryMatcher::new(query);
         self.analyze_files_with_progress(&candidate_files, |f| {
             let imports = self
-                .analyze_file(f, |analyzer| analyzer.imports())
+                .analyze_file(f, |extractor| extractor.imports())
                 .unwrap_or_default();
             if matcher.matches_all() {
                 imports
@@ -223,7 +223,7 @@ impl ProjectAnalyzer {
         let matcher = QueryMatcher::new(query);
         self.analyze_files_with_progress(&candidate_files, |f| {
             let annotations = self
-                .analyze_file(f, |analyzer| analyzer.annotations())
+                .analyze_file(f, |extractor| extractor.annotations())
                 .unwrap_or_default();
             if matcher.matches_all() {
                 annotations
@@ -245,8 +245,8 @@ impl ProjectAnalyzer {
         let cn = class_name.map(|s| s.to_string());
         let mut results: Vec<CallerInfo> =
             self.analyze_files_with_progress(&candidate_files, |f| {
-                self.analyze_file(f, |analyzer| {
-                    analyzer.find_function_callers(&fn_name, cn.as_deref())
+                self.analyze_file(f, |extractor| {
+                    extractor.find_function_callers(&fn_name, cn.as_deref())
                 })
                 .unwrap_or_default()
                 .into_iter()
@@ -271,8 +271,8 @@ impl ProjectAnalyzer {
         let cn = class_name.map(|s| s.to_string());
         let mut relevant_files: Vec<String> =
             self.analyze_files_with_progress(&candidate_files, |f| {
-                self.analyze_file(f, |analyzer| {
-                    analyzer.has_function_named(&fn_name, cn.as_deref())
+                self.analyze_file(f, |extractor| {
+                    extractor.has_function_named(&fn_name, cn.as_deref())
                 })
                 .and_then(|exists| exists.then(|| f.clone()))
                 .into_iter()
@@ -284,8 +284,8 @@ impl ProjectAnalyzer {
         }
 
         let mut results: Vec<CalleeInfo> = self.analyze_files_with_progress(&relevant_files, |f| {
-            self.analyze_file(f, |analyzer| {
-                analyzer.find_function_callees(&fn_name, cn.as_deref())
+            self.analyze_file(f, |extractor| {
+                extractor.find_function_callees(&fn_name, cn.as_deref())
             })
             .unwrap_or_default()
             .into_iter()
@@ -313,8 +313,8 @@ impl ProjectAnalyzer {
         let fn_name = name.to_string();
         let cn = class_name.map(|s| s.to_string());
         self.analyze_files_with_progress(&candidate_files, |f| {
-            self.analyze_file(f, |analyzer| {
-                analyzer.find_function_definitions(&fn_name, cn.as_deref())
+            self.analyze_file(f, |extractor| {
+                extractor.find_function_definitions(&fn_name, cn.as_deref())
             })
             .unwrap_or_default()
         })
@@ -328,8 +328,8 @@ impl ProjectAnalyzer {
         max_depth: usize,
     ) -> anyhow::Result<Vec<CallGraphPath>> {
         let snapshots = self.analyze_files_with_progress(&self.files, |file| {
-            vec![match CodeAnalyzer::new(file) {
-                Ok(mut analyzer) => anyhow::Ok(analyzer.snapshot_for_index()),
+            vec![match CodeExtractor::new(file) {
+                Ok(mut extractor) => anyhow::Ok(extractor.snapshot_for_index()),
                 Err(error) => Err(error),
             }]
         });
@@ -380,7 +380,7 @@ impl ProjectAnalyzer {
         }
         let symbol = name.to_string();
         let refs: Vec<SymbolRefInfo> = self.analyze_files_with_progress(&candidate_files, |f| {
-            self.analyze_file(f, |analyzer| analyzer.find_symbols(&symbol))
+            self.analyze_file(f, |extractor| extractor.find_symbols(&symbol))
                 .unwrap_or_default()
         });
         refs
@@ -391,7 +391,7 @@ impl ProjectAnalyzer {
             candidates,
             |candidate: &SymbolRefInfo| SymbolRefKey::from(candidate),
             |candidate| candidate.location.file.as_str(),
-            |analyzer, expected| {
+            |extractor, expected| {
                 let expected_symbols: Vec<_> = expected
                     .iter()
                     .map(|key| SymbolRefInfo {
@@ -407,7 +407,7 @@ impl ProjectAnalyzer {
                         context: String::new(),
                     })
                     .collect();
-                analyzer.hydrate_symbol_contexts(&expected_symbols)
+                extractor.hydrate_symbol_contexts(&expected_symbols)
             },
         )
     }
@@ -430,7 +430,7 @@ impl ProjectAnalyzer {
                         let candidate_files = self.filter_by_text(parent_name);
                         let parent_name = parent_name.clone();
                         self.analyze_files_with_progress(&candidate_files, |file| {
-                            self.analyze_file(file, |analyzer| analyzer.class_named(&parent_name))
+                            self.analyze_file(file, |extractor| extractor.class_named(&parent_name))
                                 .flatten()
                                 .into_iter()
                                 .collect::<Vec<_>>()
@@ -453,7 +453,7 @@ impl ProjectAnalyzer {
                 let candidate_files = self.filter_by_text(current_parent);
                 let current_parent = current_parent.clone();
                 self.analyze_files_with_progress(&candidate_files, |file| {
-                    self.analyze_file(file, |analyzer| analyzer.classes())
+                    self.analyze_file(file, |extractor| extractor.classes())
                         .unwrap_or_default()
                         .into_iter()
                         .filter(|class| class.super_classes.contains(&current_parent))
@@ -468,7 +468,7 @@ impl ProjectAnalyzer {
     fn find_class_by_name(&self, class_name: &str) -> Option<ClassInfo> {
         let candidate_files = self.filter_by_text(class_name);
         self.analyze_files_with_progress(&candidate_files, |f| {
-            self.analyze_file(f, |analyzer| analyzer.class_named(class_name))
+            self.analyze_file(f, |extractor| extractor.class_named(class_name))
                 .flatten()
                 .into_iter()
                 .collect()

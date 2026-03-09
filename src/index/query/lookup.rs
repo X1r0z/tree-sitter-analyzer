@@ -279,7 +279,7 @@ impl<'a> LookupQuery<'a> {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
-    pub(crate) fn find_symbol_refs(&self, name: &str) -> anyhow::Result<Vec<SymbolRefInfo>> {
+    pub(crate) fn find_symbols(&self, name: &str) -> anyhow::Result<Vec<SymbolRefInfo>> {
         let mut sql = String::from(
             "
             SELECT f.path, s.name, s.node_type, s.start_line, s.end_line, s.start_column, s.end_column

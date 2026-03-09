@@ -21,11 +21,11 @@ impl IndexSynchronizer {
         let mut conn = IndexStore::open_connection(db_path)?;
         IndexStore::ensure_schema(&conn)?;
         let tx = conn.transaction()?;
-        let existing = IndexStore::read_metadata(&tx)?;
+        let metadata = IndexStore::read_metadata(&tx)?;
         progress.inc(1);
         let indexed_language = language.unwrap_or("");
-        let compatible = existing.get("indexed_root_path").map(String::as_str) == Some(root_path)
-            && existing
+        let compatible = metadata.get("indexed_root_path").map(String::as_str) == Some(root_path)
+            && metadata
                 .get("language_filter")
                 .map(String::as_str)
                 .unwrap_or("")

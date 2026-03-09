@@ -1,20 +1,20 @@
 use rusqlite::Connection;
 
-use super::query::{
+use crate::index::query::{
     CallEdgeQuery, CallGraphQuery, ClassHierarchyQuery, LookupQuery, QueryContext,
 };
-use super::store::IndexStore;
+use crate::index::IndexStore;
 use crate::models::{
     AnnotationInfo, CallGraphPath, CalleeInfo, CallerInfo, ClassInfo, FieldInfo, FunctionInfo,
     GraphDirection, ImportInfo, SymbolRefInfo,
 };
 
-pub(crate) struct DbProjectAnalyzer {
+pub(crate) struct IndexedAnalyzer {
     conn: Connection,
     language: Option<String>,
 }
 
-impl DbProjectAnalyzer {
+impl IndexedAnalyzer {
     pub(crate) fn from_current_dir_if_compatible(
         root_path: &str,
         language: Option<&str>,
@@ -58,7 +58,7 @@ impl DbProjectAnalyzer {
     }
 
     pub(crate) fn find_symbols(&self, name: &str) -> anyhow::Result<Vec<SymbolRefInfo>> {
-        LookupQuery::new(self.query_context()).find_symbol_refs(name)
+        LookupQuery::new(self.query_context()).find_symbols(name)
     }
 
     pub(crate) fn find_callers(

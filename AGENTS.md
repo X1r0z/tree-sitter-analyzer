@@ -9,11 +9,11 @@
 ## Architecture
 Rust CLI tool using **clap** (derive) for arg parsing. Parses source code via **tree-sitter** grammars (Python, JS, TS, TSX, Java, Go) and provides structural analysis (functions, classes, imports, call graphs, inheritance, symbol references).
 - `src/main.rs` — CLI entry point, subcommand dispatch, JSON output via `serde_json`
-- `src/analyzer.rs` — `CodeAnalyzer`: core analysis logic (functions, classes, calls, imports, refs)
+- `src/extractor.rs` — `CodeExtractor`: single-file extraction logic (functions, classes, calls, imports, refs)
 - `src/parser/` — `BaseParser` + per-language modules (`python.rs`, `java.rs`, `go.rs`, `javascript.rs`) defining tree-sitter queries
 - `src/db/` — SQLite index (`rusqlite`) for project-wide queries: schema, sync, query, prefilter, types, helpers
 - `src/nodes.rs` — data structs (`FunctionInfo`, `ClassInfo`, etc.) for analysis results
-- `src/project.rs` — `ProjectAnalyzer`: multi-file analysis using `rayon` + `ignore` crate for gitignore-aware walking
+- `src/source.rs` — `SourceAnalyzer`: multi-file analysis using `rayon` + `ignore` crate for gitignore-aware walking
 - `src/graph.rs` — graph-based analysis utilities
 - `src/index.rs` — `build_index`: indexes a project into SQLite
 - `src/cache.rs` / `src/languages.rs` / `src/utils.rs` — internal helpers

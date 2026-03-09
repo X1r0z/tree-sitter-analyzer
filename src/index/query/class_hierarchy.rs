@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use super::{LookupQuery, QueryContext};
 use crate::models::ClassInfo;
-use crate::walk::bfs::collect_reachable;
+use crate::traversal::bfs::collect_reachable;
 
 pub(crate) struct ClassHierarchyQuery<'a> {
     ctx: QueryContext<'a>,

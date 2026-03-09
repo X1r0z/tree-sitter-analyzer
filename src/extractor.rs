@@ -9,12 +9,12 @@ use crate::parser::BaseParser;
 use crate::symbols;
 use crate::utils::{extract_instance_attr, split_function_target, type_matches_class};
 
-pub struct CodeAnalyzer {
+pub struct CodeExtractor {
     parser: BaseParser,
     cache: AnalyzerCache,
 }
 
-impl CodeAnalyzer {
+impl CodeExtractor {
     pub fn new(file_path: &str) -> anyhow::Result<Self> {
         let parser = BaseParser::new(file_path)?;
         Ok(Self {

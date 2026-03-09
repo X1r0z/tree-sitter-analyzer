@@ -4,8 +4,8 @@ use crate::models::{
     CallGraphPath, CallInfo, FieldInfo, FunctionInfo, FunctionKey, GraphDirection, GraphPathNode,
     PythonPropertyInfo,
 };
+use crate::traversal::dfs::{collect_paths, PathStep};
 use crate::utils::{extract_instance_attr, type_matches_class};
-use crate::walk::dfs::{collect_paths, PathStep};
 
 #[derive(Debug, Clone)]
 pub(crate) struct RawPropertyCaller {

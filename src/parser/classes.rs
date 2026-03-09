@@ -8,24 +8,6 @@ use crate::languages::QueryKind;
 use crate::models::{ClassInfo, FieldInfo};
 
 impl ParseContext {
-    pub(crate) fn first_identifier_text(&self, node: Node) -> String {
-        let mut stack = vec![node];
-        while let Some(current) = stack.pop() {
-            if matches!(current.kind(), "identifier" | "keyword_identifier") {
-                let text = self.node_text(current);
-                if !text.is_empty() {
-                    return text;
-                }
-            }
-            for i in (0..current.named_child_count()).rev() {
-                if let Some(child) = current.named_child(i as u32) {
-                    stack.push(child);
-                }
-            }
-        }
-        String::new()
-    }
-
     pub(crate) fn classes(&self) -> Vec<ClassInfo> {
         let mut methods_by_class = std::collections::HashMap::new();
         if self.language == "go" {
@@ -80,7 +62,7 @@ impl ParseContext {
                 }
             }
             let field_names = self.class_field_names(class_node);
-            let super_class_names = self.extract_super_class_names(class_node);
+            let super_class_names = self.super_class_names(class_node);
 
             classes.push(ClassInfo {
                 name,
@@ -194,12 +176,12 @@ impl ParseContext {
                 if include_embedded_type_names && names.is_empty() {
                     if let Some(field_type_text) = field_type.as_ref() {
                         let type_str = field_type_text.trim_start_matches('*');
-                        let name = if type_str.contains('.') {
+                        let embedded_type_name = if type_str.contains('.') {
                             type_str.rsplit('.').next().unwrap_or(type_str)
                         } else {
                             type_str
                         };
-                        names.push(name.to_string());
+                        names.push(embedded_type_name.to_string());
                     }
                 }
 
@@ -273,22 +255,20 @@ impl ParseContext {
 
     pub(crate) fn class_field_infos(&self, class_node: Node, class_name: &str) -> Vec<FieldInfo> {
         match self.language.as_str() {
-            "python" => self.extract_python_field_infos(class_node, class_name),
-            "javascript" | "typescript" | "tsx" => {
-                self.extract_js_field_infos(class_node, class_name)
-            }
-            "java" => self.extract_java_field_infos(class_node, class_name),
-            "go" => self.extract_go_field_infos(class_node, class_name),
+            "python" => self.python_field_infos(class_node, class_name),
+            "javascript" | "typescript" | "tsx" => self.js_field_infos(class_node, class_name),
+            "java" => self.java_field_infos(class_node, class_name),
+            "go" => self.go_field_infos(class_node, class_name),
             _ => Vec::new(),
         }
     }
 
-    pub(crate) fn extract_super_class_names(&self, class_node: Node) -> Vec<String> {
+    pub(crate) fn super_class_names(&self, class_node: Node) -> Vec<String> {
         match self.language.as_str() {
-            "python" => self.extract_python_super_class_names(class_node),
-            "javascript" | "typescript" | "tsx" => self.extract_js_super_class_names(class_node),
-            "java" => self.extract_java_super_class_names(class_node),
-            "go" => self.extract_go_embedded_type_names(class_node),
+            "python" => self.python_super_class_names(class_node),
+            "javascript" | "typescript" | "tsx" => self.js_super_class_names(class_node),
+            "java" => self.java_super_class_names(class_node),
+            "go" => self.go_embedded_type_names(class_node),
             _ => Vec::new(),
         }
     }

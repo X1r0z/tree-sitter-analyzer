@@ -1,14 +1,15 @@
 mod classes;
-mod context;
+mod file;
 pub(crate) mod languages {
     pub(crate) mod go;
     pub(crate) mod java;
     pub(crate) mod javascript;
     pub(crate) mod python;
 }
-mod parsed_file;
 mod query;
+mod scope;
+pub(crate) mod symbols;
 
+pub(crate) use file::{ParseContext, PythonPropertyCallers, PythonPropertyDefinitions};
 #[allow(unused_imports)]
-pub(crate) use context::EnclosingContext;
-pub(crate) use parsed_file::{ParseContext, PythonPropertyCallers, PythonPropertyDefinitions};
+pub(crate) use scope::EnclosingContext;

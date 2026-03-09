@@ -65,7 +65,7 @@ impl JsAliasResolverState {
 }
 
 impl ParseContext {
-    pub(crate) fn extract_js_function_params(&self, function_node: Node) -> Vec<FunctionParamInfo> {
+    pub(crate) fn js_function_params(&self, function_node: Node) -> Vec<FunctionParamInfo> {
         let Some(parameters) = function_node.child_by_field_name("parameters") else {
             return Vec::new();
         };
@@ -144,13 +144,13 @@ impl ParseContext {
         };
 
         let mut resolvers = self.js_alias_resolvers_by_function.borrow_mut();
-        let resolver = resolvers.entry(func_node.id()).or_insert_with(|| {
-            JsAliasResolverState::new(self.build_js_alias_event_stream(func_node))
-        });
+        let resolver = resolvers
+            .entry(func_node.id())
+            .or_insert_with(|| JsAliasResolverState::new(self.js_alias_events(func_node)));
         resolver.resolve(call_node.start_byte(), identifier_name)
     }
 
-    pub(crate) fn build_js_alias_event_stream(&self, func_node: Node<'_>) -> Vec<JsAliasEvent> {
+    pub(crate) fn js_alias_events(&self, func_node: Node<'_>) -> Vec<JsAliasEvent> {
         let mut aliases: HashMap<String, Vec<String>> = HashMap::new();
         let mut events = Vec::new();
 
@@ -174,7 +174,7 @@ impl ParseContext {
             Some((name, entry.clone()))
         }
 
-        let extract_loop_var = |node: Node<'_>| -> Option<String> {
+        let find_loop_var_name = |node: Node<'_>| -> Option<String> {
             if node.kind() == "identifier" {
                 return Some(self.node_text(node));
             }
@@ -237,7 +237,7 @@ impl ParseContext {
                 let right_node = node.child_by_field_name("right");
                 if let (Some(left_node), Some(right_node)) = (left_node, right_node) {
                     if right_node.kind() == "identifier" {
-                        let loop_var = extract_loop_var(left_node);
+                        let loop_var = find_loop_var_name(left_node);
                         let iterable = self.node_text(right_node);
                         if let Some(targets) = aliases.get(&iterable).cloned() {
                             if let Some((name, targets)) =
@@ -272,11 +272,7 @@ impl ParseContext {
         events
     }
 
-    pub(crate) fn extract_js_field_infos(
-        &self,
-        class_node: Node,
-        class_name: &str,
-    ) -> Vec<FieldInfo> {
+    pub(crate) fn js_field_infos(&self, class_node: Node, class_name: &str) -> Vec<FieldInfo> {
         let body = class_node.child_by_field_name("body").or_else(|| {
             for i in 0..class_node.child_count() {
                 let child = class_node.child(i as u32).unwrap();
@@ -532,7 +528,7 @@ impl ParseContext {
         }
     }
 
-    pub(crate) fn extract_js_super_class_names(&self, class_node: Node) -> Vec<String> {
+    pub(crate) fn js_super_class_names(&self, class_node: Node) -> Vec<String> {
         let mut super_classes = Vec::new();
         let mut seen = HashSet::new();
         self.collect_super_class_names_from_heritage(class_node, &mut super_classes, &mut seen);

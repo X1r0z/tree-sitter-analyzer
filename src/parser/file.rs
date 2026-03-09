@@ -136,7 +136,7 @@ impl ParseContext {
                     String::new()
                 },
                 class_name,
-                params: self.extract_function_params(func_node),
+                params: self.function_params(func_node),
             });
         }
 
@@ -167,17 +167,17 @@ impl ParseContext {
             let mut callee = String::new();
             let mut is_method = false;
             let mut obj_name: Option<String> = None;
-            let mut callee_function_node_opt: Option<Node<'_>> = None;
+            let mut callee_function_node: Option<Node<'_>> = None;
 
             if self.language == "java" {
-                let (resolved_callee, resolved_is_method, resolved_object_name) =
+                let (callee_name, resolved_is_method, object_name) =
                     self.resolve_java_call_parts(call_node);
-                callee = resolved_callee;
+                callee = callee_name;
                 is_method = resolved_is_method;
-                obj_name = resolved_object_name;
+                obj_name = object_name;
             } else {
                 if let Some(func_node) = call_node.child_by_field_name("function") {
-                    callee_function_node_opt = Some(func_node);
+                    callee_function_node = Some(func_node);
                     if func_node.kind() == "identifier" {
                         callee = self.node_text(func_node);
                     } else if matches!(
@@ -185,10 +185,9 @@ impl ParseContext {
                         "attribute" | "member_expression" | "selector_expression"
                     ) {
                         is_method = true;
-                        let (resolved_callee, resolved_object_name) =
-                            self.split_attribute_parts(func_node);
-                        callee = resolved_callee;
-                        obj_name = resolved_object_name;
+                        let (callee_name, object_name) = self.split_attribute_parts(func_node);
+                        callee = callee_name;
+                        obj_name = object_name;
                     }
                 }
                 if callee.is_empty() {
@@ -210,10 +209,10 @@ impl ParseContext {
             }
 
             let call_location = self.node_location(call_node);
-            let mut pushed_resolved_calls = false;
+            let mut used_resolved_calls = false;
             if is_js_family
                 && !is_method
-                && callee_function_node_opt
+                && callee_function_node
                     .map(|node| node.kind() == "identifier")
                     .unwrap_or(false)
                 && enclosing.function_node.is_some()
@@ -229,11 +228,11 @@ impl ParseContext {
                             object_name: obj_name.clone(),
                         });
                     }
-                    pushed_resolved_calls = true;
+                    used_resolved_calls = true;
                 }
             }
 
-            if !pushed_resolved_calls {
+            if !used_resolved_calls {
                 calls.push(CallInfo {
                     callee,
                     location: call_location,
@@ -253,6 +252,18 @@ impl ParseContext {
             "python" => self.extract_python_decorators(),
             _ => Vec::new(),
         }
+    }
+
+    pub(crate) fn symbols(&self) -> Vec<SymbolRefInfo> {
+        super::symbols::collect_all(self)
+    }
+
+    pub(crate) fn find_symbols(&self, name: &str, with_context: bool) -> Vec<SymbolRefInfo> {
+        super::symbols::find(self, name, with_context)
+    }
+
+    pub(crate) fn hydrate_symbols(&self, candidates: &[SymbolRefInfo]) -> Vec<SymbolRefInfo> {
+        super::symbols::hydrate(self, candidates)
     }
 
     pub(crate) fn find_enclosing_function_node<'a>(&self, node: Node<'a>) -> Option<Node<'a>> {
@@ -323,13 +334,13 @@ impl ParseContext {
         (callee, obj_name)
     }
 
-    pub(crate) fn extract_function_params(&self, function_node: Node) -> Vec<FunctionParamInfo> {
+    pub(crate) fn function_params(&self, function_node: Node) -> Vec<FunctionParamInfo> {
         let target = self.unwrap_callable_node(function_node);
         match self.language.as_str() {
-            "python" => self.extract_python_function_params(target),
-            "javascript" | "typescript" | "tsx" => self.extract_js_function_params(target),
-            "java" => self.extract_java_function_params(target),
-            "go" => self.extract_go_function_params(target),
+            "python" => self.python_function_params(target),
+            "javascript" | "typescript" | "tsx" => self.js_function_params(target),
+            "java" => self.java_function_params(target),
+            "go" => self.go_function_params(target),
             _ => Vec::new(),
         }
     }

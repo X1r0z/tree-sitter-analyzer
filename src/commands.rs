@@ -232,7 +232,7 @@ pub fn cmd_symbols(path: &str, language: Option<&str>, name: &str) -> Value {
             ),
             Ok(refs) => match SourceAnalyzer::new_with_language(&context.real_path, language) {
                 Ok(source_backend) => {
-                    let refs = source_backend.hydrate_symbol_contexts(refs);
+                    let refs = source_backend.hydrate_symbols(refs);
                     success_response(
                         &context.real_path,
                         context.searched_files(),

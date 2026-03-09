@@ -386,7 +386,7 @@ impl SourceAnalyzer {
         refs
     }
 
-    pub fn hydrate_symbol_contexts(&self, candidates: Vec<SymbolRefInfo>) -> Vec<SymbolRefInfo> {
+    pub fn hydrate_symbols(&self, candidates: Vec<SymbolRefInfo>) -> Vec<SymbolRefInfo> {
         self.hydrate_candidates(
             candidates,
             |candidate: &SymbolRefInfo| SymbolRefKey::from(candidate),
@@ -407,7 +407,7 @@ impl SourceAnalyzer {
                         context: String::new(),
                     })
                     .collect();
-                extractor.hydrate_symbol_contexts(&expected_symbols)
+                extractor.hydrate_symbols(&expected_symbols)
             },
         )
     }

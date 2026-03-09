@@ -8,7 +8,6 @@ mod languages;
 mod models;
 mod output;
 mod parser;
-mod symbols;
 mod traversal;
 mod utils;
 

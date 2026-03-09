@@ -9,6 +9,13 @@ pub(crate) struct EnclosingContext<'a> {
 }
 
 impl ParseContext {
+    fn find_language_specific_enclosing_class_name(&self, node: Node) -> Option<String> {
+        match self.language.as_str() {
+            "go" if node.kind() == "method_declaration" => self.go_receiver_type_name(node),
+            _ => None,
+        }
+    }
+
     pub(crate) fn is_function_like(node_kind: &str) -> bool {
         matches!(
             node_kind,
@@ -27,7 +34,7 @@ impl ParseContext {
     pub(crate) fn find_enclosing_context<'a>(&self, node: Node<'a>) -> EnclosingContext<'a> {
         if let Some(class_name) = self.find_language_specific_enclosing_class_name(node) {
             return EnclosingContext {
-                function_name: self.function_name_cached(node),
+                function_name: self.cached_function_name(node),
                 class_name: Some(class_name),
                 function_node: Some(node),
             };
@@ -40,7 +47,7 @@ impl ParseContext {
 
         while let Some(cur) = current {
             if function_name.is_none() && Self::is_function_like(cur.kind()) {
-                function_name = self.function_name_cached(cur);
+                function_name = self.cached_function_name(cur);
                 function_node = Some(cur);
             }
 
@@ -75,7 +82,7 @@ impl ParseContext {
         }
     }
 
-    pub(crate) fn infer_anonymous_function_name(&self, func_node: Node) -> Option<String> {
+    pub(crate) fn anonymous_function_name(&self, func_node: Node) -> Option<String> {
         let parent = func_node.parent()?;
         match parent.kind() {
             "variable_declarator" => {
@@ -119,7 +126,7 @@ impl ParseContext {
             return Some(self.node_text(name_node));
         }
         if anonymous_types.contains(&node.kind()) || node.kind() == "function_expression" {
-            return self.infer_anonymous_function_name(node);
+            return self.anonymous_function_name(node);
         }
         for i in 0..node.child_count() {
             let child = node.child(i as u32).unwrap();
@@ -133,7 +140,7 @@ impl ParseContext {
         None
     }
 
-    fn function_name_cached(&self, node: Node) -> Option<String> {
+    fn cached_function_name(&self, node: Node) -> Option<String> {
         let node_id = node.id();
         if let Some(name) = self.function_names_by_node.borrow().get(&node_id) {
             return name.clone();

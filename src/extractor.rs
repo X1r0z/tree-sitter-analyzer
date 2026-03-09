@@ -3,7 +3,6 @@ use std::collections::{HashMap, HashSet};
 use crate::cache::AnalyzerCache;
 use crate::models::*;
 use crate::parser::ParseContext;
-use crate::symbols;
 use crate::utils::{extract_instance_attr, split_function_target, type_matches_class};
 
 pub struct CodeExtractor {
@@ -249,7 +248,7 @@ impl CodeExtractor {
         let calls = self.calls();
         let imports = self.imports();
         let annotations = self.annotations();
-        let symbols = symbols::collect_all(&self.parser);
+        let symbols = self.parser.symbols();
 
         let mut python_properties = Vec::new();
         let mut python_property_callers = Vec::new();
@@ -415,11 +414,11 @@ impl CodeExtractor {
     }
 
     pub fn find_symbols(&mut self, name: &str) -> Vec<SymbolRefInfo> {
-        symbols::find(&self.parser, name, true)
+        self.parser.find_symbols(name, true)
     }
 
-    pub fn hydrate_symbol_contexts(&mut self, candidates: &[SymbolRefInfo]) -> Vec<SymbolRefInfo> {
-        symbols::hydrate(&self.parser, candidates)
+    pub fn hydrate_symbols(&mut self, candidates: &[SymbolRefInfo]) -> Vec<SymbolRefInfo> {
+        self.parser.hydrate_symbols(candidates)
     }
 
     pub fn find_class(&mut self, class_name: &str) -> Option<ClassInfo> {

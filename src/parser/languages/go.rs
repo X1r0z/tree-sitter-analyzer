@@ -4,7 +4,7 @@ use super::super::ParseContext;
 use crate::models::{FieldInfo, FunctionParamInfo};
 
 impl ParseContext {
-    pub(crate) fn extract_go_function_params(&self, function_node: Node) -> Vec<FunctionParamInfo> {
+    pub(crate) fn go_function_params(&self, function_node: Node) -> Vec<FunctionParamInfo> {
         let Some(parameters) = function_node.child_by_field_name("parameters") else {
             return Vec::new();
         };
@@ -57,14 +57,7 @@ impl ParseContext {
         params
     }
 
-    pub(crate) fn find_language_specific_enclosing_class_name(&self, node: Node) -> Option<String> {
-        if self.language == "go" && node.kind() == "method_declaration" {
-            return self.extract_go_receiver_type_name(node);
-        }
-        None
-    }
-
-    pub(crate) fn extract_go_receiver_type_name(&self, method_node: Node) -> Option<String> {
+    pub(crate) fn go_receiver_type_name(&self, method_node: Node) -> Option<String> {
         let receiver_list = method_node.child_by_field_name("receiver").or_else(|| {
             for i in 0..method_node.child_count() {
                 let child = method_node.child(i as u32).unwrap();
@@ -81,7 +74,7 @@ impl ParseContext {
                 continue;
             }
             if let Some(type_node) = param.child_by_field_name("type") {
-                return self.extract_go_base_type_name(type_node);
+                return self.go_base_type_name(type_node);
             }
             for j in 0..param.child_count() {
                 let child = param.child(j as u32).unwrap();
@@ -101,21 +94,21 @@ impl ParseContext {
         None
     }
 
-    pub(crate) fn extract_go_base_type_name(&self, type_node: Node) -> Option<String> {
+    pub(crate) fn go_base_type_name(&self, type_node: Node) -> Option<String> {
         match type_node.kind() {
             "type_identifier" => Some(self.node_text(type_node)),
             "pointer_type" => {
                 for i in 0..type_node.child_count() {
                     let child = type_node.child(i as u32).unwrap();
                     if child.kind() != "*" {
-                        return self.extract_go_base_type_name(child);
+                        return self.go_base_type_name(child);
                     }
                 }
                 None
             }
             "generic_type" => {
                 if let Some(base) = type_node.child_by_field_name("type") {
-                    return self.extract_go_base_type_name(base);
+                    return self.go_base_type_name(base);
                 }
                 for i in 0..type_node.child_count() {
                     let child = type_node.child(i as u32).unwrap();
@@ -129,15 +122,11 @@ impl ParseContext {
         }
     }
 
-    pub(crate) fn extract_go_field_infos(
-        &self,
-        class_node: Node,
-        class_name: &str,
-    ) -> Vec<FieldInfo> {
+    pub(crate) fn go_field_infos(&self, class_node: Node, class_name: &str) -> Vec<FieldInfo> {
         self.declared_fields_with_embedded_types(class_node, class_name)
     }
 
-    pub(crate) fn extract_go_embedded_type_names(&self, class_node: Node) -> Vec<String> {
+    pub(crate) fn go_embedded_type_names(&self, class_node: Node) -> Vec<String> {
         let mut embedded_type_names = Vec::new();
 
         for i in 0..class_node.child_count() {
@@ -161,7 +150,7 @@ impl ParseContext {
                             continue;
                         }
                         if let Some(embedded) =
-                            self.extract_embedded_type_from_field_declaration(field_declaration)
+                            self.embedded_type_from_field_declaration(field_declaration)
                         {
                             embedded_type_names.push(embedded);
                         }
@@ -173,10 +162,7 @@ impl ParseContext {
         embedded_type_names
     }
 
-    fn extract_embedded_type_from_field_declaration(
-        &self,
-        field_declaration: Node,
-    ) -> Option<String> {
+    fn embedded_type_from_field_declaration(&self, field_declaration: Node) -> Option<String> {
         for i in 0..field_declaration.child_count() {
             let child = field_declaration.child(i as u32).unwrap();
             if child.kind() == "field_identifier" {
@@ -196,12 +182,12 @@ impl ParseContext {
                     | "pointer_type"
                     | "parenthesized_type"
             ) {
-                return self.extract_embedded_type_name(child);
+                return self.embedded_type_name(child);
             }
         }
         for i in 0..field_declaration.named_child_count() {
             if let Some(child) = field_declaration.named_child(i as u32) {
-                if let Some(name) = self.extract_embedded_type_name(child) {
+                if let Some(name) = self.embedded_type_name(child) {
                     return Some(name);
                 }
             }
@@ -209,7 +195,7 @@ impl ParseContext {
         None
     }
 
-    fn extract_embedded_type_name(&self, node: Node) -> Option<String> {
+    fn embedded_type_name(&self, node: Node) -> Option<String> {
         match node.kind() {
             "type_identifier" => Some(self.node_text(node)),
             "qualified_type" => {
@@ -228,7 +214,7 @@ impl ParseContext {
                         child.kind(),
                         "type_identifier" | "qualified_type" | "pointer_type"
                     ) {
-                        return self.extract_embedded_type_name(child);
+                        return self.embedded_type_name(child);
                     }
                 }
                 None
@@ -243,7 +229,7 @@ impl ParseContext {
                             | "generic_type"
                             | "parenthesized_type"
                     ) {
-                        return self.extract_embedded_type_name(child);
+                        return self.embedded_type_name(child);
                     }
                 }
                 None
@@ -251,7 +237,7 @@ impl ParseContext {
             "parenthesized_type" => {
                 for i in 0..node.named_child_count() {
                     if let Some(child) = node.named_child(i as u32) {
-                        if let Some(name) = self.extract_embedded_type_name(child) {
+                        if let Some(name) = self.embedded_type_name(child) {
                             return Some(name);
                         }
                     }

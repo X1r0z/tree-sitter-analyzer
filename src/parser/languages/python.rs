@@ -8,10 +8,7 @@ use crate::models::{AnnotationInfo, FieldInfo, FunctionParamInfo, PythonProperty
 type PythonPropertyCallerKey = (String, String, Option<String>, Option<String>, usize);
 
 impl ParseContext {
-    pub(crate) fn extract_python_function_params(
-        &self,
-        function_node: Node,
-    ) -> Vec<FunctionParamInfo> {
+    pub(crate) fn python_function_params(&self, function_node: Node) -> Vec<FunctionParamInfo> {
         let Some(parameters) = function_node.child_by_field_name("parameters") else {
             return Vec::new();
         };
@@ -37,7 +34,7 @@ impl ParseContext {
                 .or_else(|| param.child_by_field_name("pattern"))
                 .or_else(|| param.child_by_field_name("left"))
                 .map(|node| self.node_text(node))
-                .unwrap_or_else(|| self.first_identifier_text(param)),
+                .unwrap_or_else(|| self.first_python_identifier_text(param)),
             "list_splat_pattern" | "dictionary_splat_pattern" => {
                 self.node_text(param).trim_start_matches('*').to_string()
             }
@@ -46,7 +43,7 @@ impl ParseContext {
                 .or_else(|| param.child_by_field_name("pattern"))
                 .or_else(|| param.child_by_field_name("left"))
                 .map(|node| self.node_text(node))
-                .unwrap_or_else(|| self.first_identifier_text(param)),
+                .unwrap_or_else(|| self.first_python_identifier_text(param)),
         };
 
         if name.is_empty() {
@@ -104,7 +101,7 @@ impl ParseContext {
                     .child_by_field_name("name")
                     .map(|node| self.node_text(node))
                     .unwrap_or_default();
-                let kind = match definition_node.kind() {
+                let target_kind = match definition_node.kind() {
                     "function_definition" => {
                         if self.find_enclosing_class_name(definition_node).is_some() {
                             "method"
@@ -117,7 +114,7 @@ impl ParseContext {
                 };
                 (
                     name,
-                    kind.to_string(),
+                    target_kind.to_string(),
                     self.extract_python_definition_header(definition_node),
                 )
             }
@@ -253,11 +250,7 @@ impl ParseContext {
         (properties, callers_by_property)
     }
 
-    pub(crate) fn extract_python_field_infos(
-        &self,
-        class_node: Node,
-        class_name: &str,
-    ) -> Vec<FieldInfo> {
+    pub(crate) fn python_field_infos(&self, class_node: Node, class_name: &str) -> Vec<FieldInfo> {
         let fields = Vec::new();
         let seen = HashSet::new();
 
@@ -365,7 +358,7 @@ impl ParseContext {
         ctx.fields
     }
 
-    pub(crate) fn extract_python_super_class_names(&self, class_node: Node) -> Vec<String> {
+    pub(crate) fn python_super_class_names(&self, class_node: Node) -> Vec<String> {
         let mut super_classes = Vec::new();
         for i in 0..class_node.child_count() {
             let child = class_node.child(i as u32).unwrap();
@@ -380,5 +373,23 @@ impl ParseContext {
             }
         }
         super_classes
+    }
+
+    fn first_python_identifier_text(&self, node: Node) -> String {
+        let mut stack = vec![node];
+        while let Some(current) = stack.pop() {
+            if matches!(current.kind(), "identifier" | "keyword_identifier") {
+                let text = self.node_text(current);
+                if !text.is_empty() {
+                    return text;
+                }
+            }
+            for i in (0..current.named_child_count()).rev() {
+                if let Some(child) = current.named_child(i as u32) {
+                    stack.push(child);
+                }
+            }
+        }
+        String::new()
     }
 }

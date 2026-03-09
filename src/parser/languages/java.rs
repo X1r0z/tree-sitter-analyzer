@@ -4,10 +4,7 @@ use super::super::ParseContext;
 use crate::models::{AnnotationInfo, FieldInfo, FunctionParamInfo};
 
 impl ParseContext {
-    pub(crate) fn extract_java_function_params(
-        &self,
-        function_node: Node,
-    ) -> Vec<FunctionParamInfo> {
+    pub(crate) fn java_function_params(&self, function_node: Node) -> Vec<FunctionParamInfo> {
         let Some(parameters) = function_node.child_by_field_name("parameters") else {
             return Vec::new();
         };
@@ -258,7 +255,7 @@ impl ParseContext {
                     ),
                 ),
                 "field_declaration" => {
-                    let field_name = self.field_declarator_name(parent);
+                    let field_name = self.declarator_name(parent);
                     (field_name, "field".to_string(), self.node_text(parent))
                 }
                 "formal_parameter" | "spread_parameter" => (
@@ -270,7 +267,7 @@ impl ParseContext {
                     self.find_enclosing_java_callable_signature(parent),
                 ),
                 "local_variable_declaration" => {
-                    let var_name = self.field_declarator_name(parent);
+                    let var_name = self.declarator_name(parent);
                     (var_name, "variable".to_string(), self.node_text(parent))
                 }
                 "modifiers" | "annotation_argument_list" => {
@@ -301,7 +298,7 @@ impl ParseContext {
         String::new()
     }
 
-    fn field_declarator_name(&self, decl_node: Node) -> String {
+    fn declarator_name(&self, decl_node: Node) -> String {
         for i in 0..decl_node.child_count() {
             let child = decl_node.child(i as u32).unwrap();
             if child.kind() == "variable_declarator" {
@@ -313,15 +310,11 @@ impl ParseContext {
         String::new()
     }
 
-    pub(crate) fn extract_java_field_infos(
-        &self,
-        class_node: Node,
-        class_name: &str,
-    ) -> Vec<FieldInfo> {
+    pub(crate) fn java_field_infos(&self, class_node: Node, class_name: &str) -> Vec<FieldInfo> {
         self.declared_field_infos(class_node, class_name)
     }
 
-    pub(crate) fn extract_java_super_class_names(&self, class_node: Node) -> Vec<String> {
+    pub(crate) fn java_super_class_names(&self, class_node: Node) -> Vec<String> {
         let mut super_classes = Vec::new();
 
         for i in 0..class_node.child_count() {

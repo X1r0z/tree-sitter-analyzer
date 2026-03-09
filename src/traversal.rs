@@ -10,26 +10,30 @@ pub(crate) struct TraversalPathStep<N, E> {
     pub(crate) edge: Option<E>,
 }
 
-pub(crate) fn collect_paths_dfs<K, N, E, P, Err, KeyOf, Neighbors, Materialize>(
+pub(crate) fn collect_paths_dfs<K, PK, N, E, P, Err, KeyOf, Neighbors, PathIdentity, Materialize>(
     start_nodes: &[N],
     direction: GraphDirection,
     max_depth: usize,
     mut key_of: KeyOf,
     mut neighbors_for: Neighbors,
+    mut path_identity: PathIdentity,
     mut materialize: Materialize,
 ) -> Result<Vec<P>, Err>
 where
     K: Clone + Eq + Hash,
+    PK: Eq + Hash,
     N: Clone,
     E: Clone,
     KeyOf: FnMut(&N) -> K,
     Neighbors: FnMut(&N) -> Result<Vec<(N, E)>, Err>,
+    PathIdentity: FnMut(&[TraversalPathStep<N, E>]) -> PK,
     Materialize: FnMut(GraphDirection, &[TraversalPathStep<N, E>]) -> P,
 {
-    let mut walker = DfsWalker::<K, N, E, P, Err, KeyOf, Neighbors, Materialize> {
+    let mut walker = DfsWalker::<K, PK, N, E, P, Err, KeyOf, Neighbors, PathIdentity, Materialize> {
         direction,
         key_of: &mut key_of,
         neighbors_for: &mut neighbors_for,
+        path_identity: &mut path_identity,
         materialize: &mut materialize,
         seen_paths: HashSet::new(),
         results: Vec::new(),
@@ -40,32 +44,37 @@ where
     Ok(walker.results)
 }
 
-struct DfsWalker<'a, K, N, E, P, Err, KeyOf, Neighbors, Materialize>
+struct DfsWalker<'a, K, PK, N, E, P, Err, KeyOf, Neighbors, PathIdentity, Materialize>
 where
     K: Clone + Eq + Hash,
+    PK: Eq + Hash,
     N: Clone,
     E: Clone,
     KeyOf: FnMut(&N) -> K,
     Neighbors: FnMut(&N) -> Result<Vec<(N, E)>, Err>,
+    PathIdentity: FnMut(&[TraversalPathStep<N, E>]) -> PK,
     Materialize: FnMut(GraphDirection, &[TraversalPathStep<N, E>]) -> P,
 {
     direction: GraphDirection,
     key_of: &'a mut KeyOf,
     neighbors_for: &'a mut Neighbors,
+    path_identity: &'a mut PathIdentity,
     materialize: &'a mut Materialize,
-    seen_paths: HashSet<Vec<K>>,
+    seen_paths: HashSet<PK>,
     results: Vec<P>,
     _marker: PhantomData<(N, E)>,
 }
 
-impl<'a, K, N, E, P, Err, KeyOf, Neighbors, Materialize>
-    DfsWalker<'a, K, N, E, P, Err, KeyOf, Neighbors, Materialize>
+impl<'a, K, PK, N, E, P, Err, KeyOf, Neighbors, PathIdentity, Materialize>
+    DfsWalker<'a, K, PK, N, E, P, Err, KeyOf, Neighbors, PathIdentity, Materialize>
 where
     K: Clone + Eq + Hash,
+    PK: Eq + Hash,
     N: Clone,
     E: Clone,
     KeyOf: FnMut(&N) -> K,
     Neighbors: FnMut(&N) -> Result<Vec<(N, E)>, Err>,
+    PathIdentity: FnMut(&[TraversalPathStep<N, E>]) -> PK,
     Materialize: FnMut(GraphDirection, &[TraversalPathStep<N, E>]) -> P,
 {
     fn run(&mut self, start_nodes: &[N], max_depth: usize) -> Result<(), Err> {
@@ -101,7 +110,7 @@ where
         }
 
         if remaining_depth == 0 || next_nodes.is_empty() {
-            let keys: Vec<_> = path.iter().map(|step| (self.key_of)(&step.node)).collect();
+            let keys = (self.path_identity)(path);
             if self.seen_paths.insert(keys) {
                 self.results.push((self.materialize)(self.direction, path));
             }

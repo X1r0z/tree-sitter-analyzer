@@ -10,7 +10,7 @@ use crate::models::{
 };
 use crate::traversal::{collect_paths_dfs, TraversalPathStep};
 
-#[derive(Clone)]
+#[derive(Clone, Eq, Hash, PartialEq)]
 struct CallSite {
     file: String,
     line: usize,
@@ -19,6 +19,12 @@ struct CallSite {
 #[derive(Clone)]
 struct GraphNeighbor {
     node: IndexedFunction,
+    call_site: CallSite,
+}
+
+#[derive(Clone, Eq, Hash, PartialEq)]
+struct GraphEdgeKey {
+    node: FunctionKey,
     call_site: CallSite,
 }
 
@@ -95,6 +101,7 @@ impl<'a> CallGraphQuery<'a> {
                         .collect(),
                 )
             },
+            graph_path_identity,
             Self::materialize_graph,
         )?;
 
@@ -247,7 +254,13 @@ impl<'a> CallGraphQuery<'a> {
                 ));
             }
             for candidate in resolved {
-                let key = candidate.key();
+                let key = GraphEdgeKey {
+                    node: candidate.key(),
+                    call_site: CallSite {
+                        file: node.function.location.file.clone(),
+                        line,
+                    },
+                };
                 if seen.insert(key) {
                     results.push(GraphNeighbor {
                         node: candidate,
@@ -305,7 +318,13 @@ impl<'a> CallGraphQuery<'a> {
             }
 
             for candidate in matched {
-                let key = candidate.key();
+                let key = GraphEdgeKey {
+                    node: candidate.key(),
+                    call_site: CallSite {
+                        file: node.function.location.file.clone(),
+                        line,
+                    },
+                };
                 if seen.insert(key) {
                     results.push(GraphNeighbor {
                         node: candidate,
@@ -443,7 +462,13 @@ impl<'a> CallGraphQuery<'a> {
                         continue;
                     }
                 }
-                let key = caller.key();
+                let key = GraphEdgeKey {
+                    node: caller.key(),
+                    call_site: CallSite {
+                        file: file.clone(),
+                        line,
+                    },
+                };
                 if seen.insert(key) {
                     results.push(GraphNeighbor {
                         node: caller,
@@ -514,7 +539,13 @@ impl<'a> CallGraphQuery<'a> {
                     )? {
                         continue;
                     }
-                    let key = caller.key();
+                    let key = GraphEdgeKey {
+                        node: caller.key(),
+                        call_site: CallSite {
+                            file: file.clone(),
+                            line,
+                        },
+                    };
                     if seen.insert(key) {
                         results.push(GraphNeighbor {
                             node: caller,
@@ -527,6 +558,15 @@ impl<'a> CallGraphQuery<'a> {
 
         Ok(results)
     }
+}
+
+fn graph_path_identity(
+    steps: &[TraversalPathStep<IndexedFunction, CallSite>],
+) -> Vec<(FunctionKey, Option<CallSite>)> {
+    steps
+        .iter()
+        .map(|step| (step.node.key(), step.edge.clone()))
+        .collect()
 }
 
 fn unresolved_indexed_function(

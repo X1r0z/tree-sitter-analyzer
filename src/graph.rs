@@ -22,7 +22,7 @@ pub(crate) struct RawPropertyCaller {
     pub(crate) line: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, Hash, PartialEq)]
 struct CallSite {
     file: String,
     line: usize,
@@ -31,6 +31,12 @@ struct CallSite {
 #[derive(Debug, Clone)]
 struct GraphNeighbor {
     key: FunctionKey,
+    call_site: CallSite,
+}
+
+#[derive(Debug, Clone, Eq, Hash, PartialEq)]
+struct GraphEdgeKey {
+    neighbor_key: FunctionKey,
     call_site: CallSite,
 }
 
@@ -97,8 +103,7 @@ impl CallGraph {
                 .sort_by_key(|function| (function.location.start_line, function.location.end_line));
         }
 
-        let mut forward_edge_sets: HashMap<FunctionKey, HashMap<FunctionKey, CallSite>> =
-            HashMap::new();
+        let mut forward_edge_sets: HashMap<FunctionKey, HashSet<GraphEdgeKey>> = HashMap::new();
         for call in calls {
             let Some(caller) = resolve_enclosing_function(
                 &functions_by_file_context,
@@ -129,8 +134,10 @@ impl CallGraph {
                 forward_edge_sets
                     .entry(caller_key)
                     .or_default()
-                    .entry(callee)
-                    .or_insert(call_site);
+                    .insert(GraphEdgeKey {
+                        neighbor_key: callee,
+                        call_site,
+                    });
             }
         }
 
@@ -171,8 +178,10 @@ impl CallGraph {
                 forward_edge_sets
                     .entry(caller_key)
                     .or_default()
-                    .entry(property_key)
-                    .or_insert(call_site);
+                    .insert(GraphEdgeKey {
+                        neighbor_key: property_key,
+                        call_site,
+                    });
                 matched = true;
             }
 
@@ -189,21 +198,24 @@ impl CallGraph {
                 forward_edge_sets
                     .entry(caller_key)
                     .or_default()
-                    .entry(unresolved)
-                    .or_insert(call_site);
+                    .insert(GraphEdgeKey {
+                        neighbor_key: unresolved,
+                        call_site,
+                    });
             }
         }
 
         let forward_edges = freeze_edges(forward_edge_sets);
-        let mut backward_edge_sets: HashMap<FunctionKey, HashMap<FunctionKey, CallSite>> =
-            HashMap::new();
+        let mut backward_edge_sets: HashMap<FunctionKey, HashSet<GraphEdgeKey>> = HashMap::new();
         for (caller, callees) in &forward_edges {
             for callee in callees {
                 backward_edge_sets
                     .entry(callee.key.clone())
                     .or_default()
-                    .entry(caller.clone())
-                    .or_insert_with(|| callee.call_site.clone());
+                    .insert(GraphEdgeKey {
+                        neighbor_key: caller.clone(),
+                        call_site: callee.call_site.clone(),
+                    });
             }
         }
 
@@ -260,6 +272,7 @@ impl CallGraph {
                         .collect(),
                 )
             },
+            graph_path_identity,
             |direction, steps| self.materialize_graph(direction, steps),
         )
         .unwrap_or_else(|never| match never {});
@@ -337,21 +350,33 @@ fn matches_property_target(
 }
 
 fn freeze_edges(
-    edges: HashMap<FunctionKey, HashMap<FunctionKey, CallSite>>,
+    edges: HashMap<FunctionKey, HashSet<GraphEdgeKey>>,
 ) -> HashMap<FunctionKey, Vec<GraphNeighbor>> {
     edges
         .into_iter()
         .map(|(key, values)| {
             let mut values: Vec<_> = values
                 .into_iter()
-                .map(|(neighbor_key, call_site)| GraphNeighbor {
-                    key: neighbor_key,
-                    call_site,
+                .map(|edge| GraphNeighbor {
+                    key: edge.neighbor_key,
+                    call_site: edge.call_site,
                 })
                 .collect();
-            values.sort_by(|left, right| compare_keys(&left.key, &right.key));
+            values.sort_by(|left, right| {
+                compare_keys(&left.key, &right.key)
+                    .then(compare_call_sites(&left.call_site, &right.call_site))
+            });
             (key, values)
         })
+        .collect()
+}
+
+fn graph_path_identity(
+    steps: &[TraversalPathStep<FunctionKey, CallSite>],
+) -> Vec<(FunctionKey, Option<CallSite>)> {
+    steps
+        .iter()
+        .map(|step| (step.node.clone(), step.edge.clone()))
         .collect()
 }
 
@@ -444,6 +469,10 @@ fn compare_keys(left: &FunctionKey, right: &FunctionKey) -> std::cmp::Ordering {
         .then(left.end_line.cmp(&right.end_line))
         .then(left.class_name.cmp(&right.class_name))
         .then(left.name.cmp(&right.name))
+}
+
+fn compare_call_sites(left: &CallSite, right: &CallSite) -> std::cmp::Ordering {
+    left.file.cmp(&right.file).then(left.line.cmp(&right.line))
 }
 
 fn compare_graphs(left: &CallGraphPath, right: &CallGraphPath) -> std::cmp::Ordering {

@@ -1,9 +1,9 @@
 use tree_sitter::Node;
 
 use crate::models::{SymbolRefInfo, SymbolRefKey};
-use crate::parser::BaseParser;
+use crate::parser::ParseContext;
 
-fn is_symbol_ref_node(parser: &BaseParser, node: Node<'_>) -> bool {
+fn is_symbol_ref_node(parser: &ParseContext, node: Node<'_>) -> bool {
     match parser.language.as_str() {
         "python" => matches!(
             node.kind(),
@@ -30,7 +30,7 @@ fn is_symbol_ref_node(parser: &BaseParser, node: Node<'_>) -> bool {
 }
 
 fn scan_symbols(
-    parser: &BaseParser,
+    parser: &ParseContext,
     mut map_node: impl FnMut(Node<'_>) -> Option<SymbolRefInfo>,
 ) -> Vec<SymbolRefInfo> {
     let mut refs = Vec::new();
@@ -52,7 +52,7 @@ fn scan_symbols(
     refs
 }
 
-pub(crate) fn collect_all(parser: &BaseParser) -> Vec<SymbolRefInfo> {
+pub(crate) fn collect_all(parser: &ParseContext) -> Vec<SymbolRefInfo> {
     scan_symbols(parser, |node| {
         let name = parser.node_text(node);
         (!name.is_empty()).then(|| SymbolRefInfo {
@@ -66,7 +66,7 @@ pub(crate) fn collect_all(parser: &BaseParser) -> Vec<SymbolRefInfo> {
     })
 }
 
-pub(crate) fn find(parser: &BaseParser, name: &str, with_context: bool) -> Vec<SymbolRefInfo> {
+pub(crate) fn find(parser: &ParseContext, name: &str, with_context: bool) -> Vec<SymbolRefInfo> {
     let name_bytes = name.as_bytes();
     if name_bytes.is_empty()
         || !parser
@@ -95,7 +95,7 @@ pub(crate) fn find(parser: &BaseParser, name: &str, with_context: bool) -> Vec<S
     })
 }
 
-pub(crate) fn hydrate(parser: &BaseParser, candidates: &[SymbolRefInfo]) -> Vec<SymbolRefInfo> {
+pub(crate) fn hydrate(parser: &ParseContext, candidates: &[SymbolRefInfo]) -> Vec<SymbolRefInfo> {
     if candidates.is_empty() {
         return Vec::new();
     }

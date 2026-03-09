@@ -1,74 +1,28 @@
 use std::collections::{HashMap, HashSet};
 
-use tree_sitter::Node;
-
 use crate::cache::AnalyzerCache;
-use crate::languages::QueryKind;
 use crate::models::*;
-use crate::parser::BaseParser;
+use crate::parser::ParseContext;
 use crate::symbols;
 use crate::utils::{extract_instance_attr, split_function_target, type_matches_class};
 
 pub struct CodeExtractor {
-    parser: BaseParser,
+    parser: ParseContext,
     cache: AnalyzerCache,
 }
 
 impl CodeExtractor {
     pub fn new(file_path: &str) -> anyhow::Result<Self> {
-        let parser = BaseParser::new(file_path)?;
+        let parser = ParseContext::new(file_path)?;
         Ok(Self {
             parser,
             cache: AnalyzerCache::new(),
         })
     }
 
-    fn build_functions(&self, include_body: bool) -> Vec<FunctionInfo> {
-        let mut func_pairs =
-            self.parser
-                .query_capture_pairs(QueryKind::Function, "function", "name");
-        func_pairs.sort_by_key(|(f, _)| (f.start_byte(), std::cmp::Reverse(f.end_byte())));
-
-        let mut functions = Vec::new();
-        let mut active_ranges: Vec<usize> = Vec::new();
-
-        for (func_node, name_node) in func_pairs {
-            let name = self.parser.node_text(name_node);
-            if name.is_empty() {
-                continue;
-            }
-            let start = func_node.start_byte();
-            let end = func_node.end_byte();
-            while let Some(&active_end) = active_ranges.last() {
-                if start >= active_end {
-                    active_ranges.pop();
-                } else {
-                    break;
-                }
-            }
-            if !active_ranges.is_empty() {
-                continue;
-            }
-            active_ranges.push(end);
-            let class_name = self.parser.find_enclosing_class_name(func_node);
-            functions.push(FunctionInfo {
-                name,
-                location: self.parser.node_location(func_node),
-                body: if include_body {
-                    self.parser.node_text(func_node)
-                } else {
-                    String::new()
-                },
-                class_name,
-                params: self.parser.extract_function_params(func_node),
-            });
-        }
-        functions
-    }
-
     fn cached_functions(&mut self) -> &[FunctionInfo] {
         if self.cache.functions().is_none() {
-            self.cache.set_functions(self.build_functions(false));
+            self.cache.set_functions(self.parser.functions(false));
         }
         self.cache.functions().unwrap_or(&[])
     }
@@ -76,97 +30,21 @@ impl CodeExtractor {
     fn cached_functions_with_bodies(&mut self) -> &[FunctionInfo] {
         if self.cache.functions_with_bodies().is_none() {
             self.cache
-                .set_functions_with_bodies(self.build_functions(true));
+                .set_functions_with_bodies(self.parser.functions(true));
         }
         self.cache.functions_with_bodies().unwrap_or(&[])
     }
 
     fn cached_classes(&mut self) -> &[ClassInfo] {
         if self.cache.classes().is_none() {
-            let mut methods_by_class: HashMap<String, Vec<String>> = HashMap::new();
-            if self.parser.language == "go" {
-                for func in self.cached_functions() {
-                    if let Some(ref cn) = func.class_name {
-                        methods_by_class
-                            .entry(cn.clone())
-                            .or_default()
-                            .push(func.name.clone());
-                    }
-                }
-                for methods in methods_by_class.values_mut() {
-                    methods.sort_unstable();
-                    methods.dedup();
-                }
-            }
-
-            let matches = self
-                .parser
-                .query_capture_pairs(QueryKind::Class, "class", "name");
-            let mut class_pairs = matches;
-            class_pairs.sort_by_key(|(c, _)| (c.start_byte(), std::cmp::Reverse(c.end_byte())));
-
-            let mut classes = Vec::new();
-            let mut active_ranges: Vec<usize> = Vec::new();
-
-            for (class_node, name_node) in class_pairs {
-                let name = self.parser.node_text(name_node);
-                if name.is_empty() {
-                    continue;
-                }
-                let start = class_node.start_byte();
-                let end = class_node.end_byte();
-                while let Some(&active_end) = active_ranges.last() {
-                    if start >= active_end {
-                        active_ranges.pop();
-                    } else {
-                        break;
-                    }
-                }
-                let is_nested = !active_ranges.is_empty();
-                if is_nested && self.parser.language != "java" {
-                    continue;
-                }
-                active_ranges.push(end);
-
-                let mut methods = self.parser.extract_method_names_from_class(class_node);
-                if self.parser.language == "go" {
-                    if let Some(go_methods) = methods_by_class.get(&name) {
-                        methods.extend(go_methods.iter().cloned());
-                        methods.sort_unstable();
-                        methods.dedup();
-                    }
-                }
-                let fields = self.parser.extract_field_names_from_class(class_node);
-                let super_classes = self.parser.extract_super_class_names(class_node);
-
-                classes.push(ClassInfo {
-                    name,
-                    location: self.parser.node_location(class_node),
-                    methods,
-                    fields,
-                    super_classes,
-                });
-            }
-            self.cache.set_classes(classes);
+            self.cache.set_classes(self.parser.classes());
         }
         self.cache.classes().unwrap_or(&[])
     }
 
     fn cached_imports(&mut self) -> &[ImportInfo] {
         if self.cache.imports().is_none() {
-            let module_nodes = self
-                .parser
-                .query_capture_nodes_for(QueryKind::Import, "module");
-
-            let mut imports = Vec::new();
-            for node in module_nodes {
-                let text = self.parser.node_text_unquoted(node).into_owned();
-                imports.push(ImportInfo {
-                    module: text,
-                    location: self.parser.node_location(node),
-                });
-            }
-            self.cache.set_imports(imports);
+            self.cache.set_imports(self.parser.imports());
         }
         self.cache.imports().unwrap_or(&[])
     }
@@ -175,123 +53,7 @@ impl CodeExtractor {
         if self.cache.has_calls() {
             return;
         }
-
-        let mut call_matches = self.parser.query_call_matches_for(QueryKind::Call);
-        let is_js_like = matches!(
-            self.parser.language.as_str(),
-            "javascript" | "typescript" | "tsx"
-        );
-        if is_js_like {
-            call_matches.sort_by_key(|m| m.call.start_byte());
-        }
-        let mut calls = Vec::new();
-        for m in &call_matches {
-            let call_node = m.call;
-            let (caller, caller_class_name, enclosing_function_node) =
-                self.parser.find_enclosing_context(call_node);
-            let mut callee = String::new();
-            let mut is_method = false;
-            let mut obj_name: Option<String> = None;
-            let mut callee_function_node_opt: Option<Node<'_>> = None;
-
-            if self.parser.language == "java" {
-                if call_node.kind() == "explicit_constructor_invocation" {
-                    if let Some(ctor_node) = call_node.child_by_field_name("constructor") {
-                        callee = self.parser.node_text(ctor_node);
-                    }
-                } else if call_node.kind() == "object_creation_expression" {
-                    if let Some(type_node) = call_node.child_by_field_name("type") {
-                        if type_node.kind() == "generic_type" {
-                            for i in 0..type_node.named_child_count() {
-                                let child = type_node.named_child(i as u32).unwrap();
-                                if child.kind() == "type_identifier" {
-                                    callee = self.parser.node_text(child);
-                                    break;
-                                }
-                            }
-                        } else {
-                            callee = self.parser.node_text(type_node);
-                        }
-                    }
-                } else {
-                    if let Some(name_node) = call_node.child_by_field_name("name") {
-                        callee = self.parser.node_text(name_node);
-                    }
-                    if let Some(object_node) = call_node.child_by_field_name("object") {
-                        is_method = true;
-                        obj_name = Some(self.parser.node_text(object_node));
-                    }
-                }
-            } else {
-                if let Some(func_node) = call_node.child_by_field_name("function") {
-                    callee_function_node_opt = Some(func_node);
-                    if func_node.kind() == "identifier" {
-                        callee = self.parser.node_text(func_node);
-                    } else if matches!(
-                        func_node.kind(),
-                        "attribute" | "member_expression" | "selector_expression"
-                    ) {
-                        is_method = true;
-                        let (c, o) = self.parser.extract_attribute_parts(func_node);
-                        callee = c;
-                        obj_name = o;
-                    }
-                }
-                // Handle callee/method captures from the query
-                if callee.is_empty() {
-                    if let Some(callee_cap) = m.callee {
-                        callee = self.parser.node_text(callee_cap);
-                    }
-                    if let Some(method_cap) = m.method {
-                        callee = self.parser.node_text(method_cap);
-                        is_method = true;
-                        if let Some(obj_cap) = m.object {
-                            obj_name = Some(self.parser.node_text(obj_cap));
-                        }
-                    }
-                }
-            }
-
-            if !callee.is_empty() {
-                let call_location = self.parser.node_location(call_node);
-                let mut pushed_resolved_calls = false;
-                if is_js_like
-                    && !is_method
-                    && callee_function_node_opt
-                        .map(|n| n.kind() == "identifier")
-                        .unwrap_or(false)
-                    && enclosing_function_node.is_some()
-                {
-                    let resolved = self
-                        .parser
-                        .resolve_js_call_targets_for_identifier(call_node, &callee);
-                    if !resolved.is_empty() {
-                        for resolved_callee in resolved {
-                            calls.push(CallInfo {
-                                callee: resolved_callee,
-                                location: call_location.clone(),
-                                caller: caller.clone(),
-                                caller_class_name: caller_class_name.clone(),
-                                object_name: obj_name.clone(),
-                            });
-                        }
-                        pushed_resolved_calls = true;
-                    }
-                }
-
-                if !pushed_resolved_calls {
-                    calls.push(CallInfo {
-                        callee,
-                        location: call_location,
-                        caller,
-                        caller_class_name,
-                        object_name: obj_name,
-                    });
-                }
-            }
-        }
-
-        self.cache.set_calls(calls);
+        self.cache.set_calls(self.parser.calls());
     }
 
     fn ensure_calls_by_callee(&mut self) {
@@ -327,11 +89,11 @@ impl CodeExtractor {
         if self.parser.language != "python" || self.cache.python_properties().is_some() {
             return;
         }
-        let (properties, callers) = self.parser.build_python_property_indexes();
+        let (properties, callers) = self.parser.collect_python_property_indexes();
         self.cache.set_python_properties(properties, callers);
     }
 
-    fn find_enclosing_function_info(
+    fn enclosing_function_info_at_line(
         &mut self,
         function_name: &str,
         class_name: Option<&str>,
@@ -348,7 +110,7 @@ impl CodeExtractor {
             .cloned()
     }
 
-    fn matches_target_class(
+    fn matches_class_target(
         &mut self,
         caller_name: Option<&str>,
         caller_class_name: Option<&str>,
@@ -397,7 +159,8 @@ impl CodeExtractor {
         let Some(caller_name) = caller_name else {
             return false;
         };
-        let Some(caller) = self.find_enclosing_function_info(caller_name, caller_class_name, line)
+        let Some(caller) =
+            self.enclosing_function_info_at_line(caller_name, caller_class_name, line)
         else {
             return false;
         };
@@ -407,8 +170,8 @@ impl CodeExtractor {
         })
     }
 
-    fn matches_call_target_class(&mut self, call: &CallInfo, class_name: &str) -> bool {
-        self.matches_target_class(
+    fn call_matches_class_target(&mut self, call: &CallInfo, class_name: &str) -> bool {
+        self.matches_class_target(
             call.caller.as_deref(),
             call.caller_class_name.as_deref(),
             call.object_name.as_deref(),
@@ -458,7 +221,7 @@ impl CodeExtractor {
             .iter()
             .any(|cls| cls.name == class_name)
         {
-            fields.extend(self.parser.find_field_infos_by_class_name(class_name));
+            fields.extend(self.parser.field_infos_for_class(class_name));
         }
         self.cache
             .insert_fields(class_name.to_string(), fields.clone());
@@ -563,7 +326,7 @@ impl CodeExtractor {
                 }
             }
             if let Some(cn) = class_name {
-                if !self.matches_call_target_class(&call, cn) {
+                if !self.call_matches_class_target(&call, cn) {
                     continue;
                 }
             }
@@ -594,7 +357,7 @@ impl CodeExtractor {
                 .unwrap_or_default()
             {
                 if let Some(class_name) = class_name {
-                    if !self.matches_target_class(
+                    if !self.matches_class_target(
                         Some(&caller.caller),
                         caller.caller_class_name.as_deref(),
                         caller.object_name.as_deref(),
@@ -648,7 +411,7 @@ impl CodeExtractor {
     }
 
     pub fn annotations(&self) -> Vec<AnnotationInfo> {
-        self.parser.extract_annotations()
+        self.parser.annotations()
     }
 
     pub fn find_symbols(&mut self, name: &str) -> Vec<SymbolRefInfo> {
@@ -659,7 +422,7 @@ impl CodeExtractor {
         symbols::hydrate(&self.parser, candidates)
     }
 
-    pub fn class_named(&mut self, class_name: &str) -> Option<ClassInfo> {
+    pub fn find_class(&mut self, class_name: &str) -> Option<ClassInfo> {
         self.cached_classes()
             .iter()
             .find(|c| c.name == class_name)

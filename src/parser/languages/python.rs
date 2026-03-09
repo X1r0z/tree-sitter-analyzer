@@ -2,11 +2,13 @@ use std::collections::{HashMap, HashSet};
 
 use tree_sitter::Node;
 
-use super::{BaseParser, PythonPropertyCallers, PythonPropertyDefinitions};
+use super::super::{ParseContext, PythonPropertyCallers, PythonPropertyDefinitions};
 use crate::models::{AnnotationInfo, FieldInfo, FunctionParamInfo, PythonPropertyCallerInfo};
 
-impl BaseParser {
-    pub(super) fn extract_python_function_params(
+type PythonPropertyCallerKey = (String, String, Option<String>, Option<String>, usize);
+
+impl ParseContext {
+    pub(crate) fn extract_python_function_params(
         &self,
         function_node: Node,
     ) -> Vec<FunctionParamInfo> {
@@ -19,14 +21,14 @@ impl BaseParser {
             let Some(param) = parameters.named_child(i as u32) else {
                 continue;
             };
-            if let Some(info) = self.build_python_param_info(param) {
+            if let Some(info) = self.build_python_parameter_info(param) {
                 params.push(info);
             }
         }
         params
     }
 
-    fn build_python_param_info(&self, param: Node) -> Option<FunctionParamInfo> {
+    fn build_python_parameter_info(&self, param: Node) -> Option<FunctionParamInfo> {
         let type_node = param.child_by_field_name("type");
         let name = match param.kind() {
             "identifier" => self.node_text(param),
@@ -35,7 +37,7 @@ impl BaseParser {
                 .or_else(|| param.child_by_field_name("pattern"))
                 .or_else(|| param.child_by_field_name("left"))
                 .map(|node| self.node_text(node))
-                .unwrap_or_else(|| self.find_first_identifier_text(param)),
+                .unwrap_or_else(|| self.first_identifier_text(param)),
             "list_splat_pattern" | "dictionary_splat_pattern" => {
                 self.node_text(param).trim_start_matches('*').to_string()
             }
@@ -44,7 +46,7 @@ impl BaseParser {
                 .or_else(|| param.child_by_field_name("pattern"))
                 .or_else(|| param.child_by_field_name("left"))
                 .map(|node| self.node_text(node))
-                .unwrap_or_else(|| self.find_first_identifier_text(param)),
+                .unwrap_or_else(|| self.first_identifier_text(param)),
         };
 
         if name.is_empty() {
@@ -57,7 +59,17 @@ impl BaseParser {
         })
     }
 
-    pub(super) fn extract_python_decorators(&self) -> Vec<AnnotationInfo> {
+    pub(crate) fn extract_python_definition_header(&self, definition_node: Node) -> String {
+        let end_byte = definition_node
+            .child_by_field_name("body")
+            .map(|body| body.start_byte())
+            .unwrap_or_else(|| definition_node.end_byte());
+        self.source_text(definition_node.start_byte(), end_byte)
+            .trim_end()
+            .to_string()
+    }
+
+    pub(crate) fn extract_python_decorators(&self) -> Vec<AnnotationInfo> {
         let mut annotations = Vec::new();
         let mut stack = vec![self.tree.root_node()];
 
@@ -87,14 +99,14 @@ impl BaseParser {
     ) {
         let definition = decorated_node.child_by_field_name("definition");
         let (target_name, target_type, target_signature) = match definition {
-            Some(def) => {
-                let name = def
+            Some(definition_node) => {
+                let name = definition_node
                     .child_by_field_name("name")
-                    .map(|n| self.node_text(n))
+                    .map(|node| self.node_text(node))
                     .unwrap_or_default();
-                let kind = match def.kind() {
+                let kind = match definition_node.kind() {
                     "function_definition" => {
-                        if self.find_enclosing_class_name(def).is_some() {
+                        if self.find_enclosing_class_name(definition_node).is_some() {
                             "method"
                         } else {
                             "function"
@@ -106,7 +118,7 @@ impl BaseParser {
                 (
                     name,
                     kind.to_string(),
-                    self.extract_python_definition_header(def),
+                    self.extract_python_definition_header(definition_node),
                 )
             }
             None => (String::new(), String::new(), String::new()),
@@ -123,11 +135,9 @@ impl BaseParser {
                 continue;
             }
 
-            let signature = self.node_text(child);
-
             annotations.push(AnnotationInfo {
                 name,
-                signature,
+                signature: self.node_text(child),
                 location: self.node_location(child),
                 target_name: target_name.clone(),
                 target_type: target_type.clone(),
@@ -140,13 +150,11 @@ impl BaseParser {
         for i in 0..decorator_node.child_count() {
             let child = decorator_node.child(i as u32).unwrap();
             match child.kind() {
-                "identifier" | "attribute" => {
-                    return self.node_text(child);
-                }
+                "identifier" | "attribute" => return self.node_text(child),
                 "call" => {
                     return child
                         .child_by_field_name("function")
-                        .map(|n| self.node_text(n))
+                        .map(|node| self.node_text(node))
                         .unwrap_or_default();
                 }
                 _ => {}
@@ -155,7 +163,7 @@ impl BaseParser {
         String::new()
     }
 
-    pub(crate) fn build_python_property_indexes(
+    pub(crate) fn collect_python_property_indexes(
         &self,
     ) -> (PythonPropertyDefinitions, PythonPropertyCallers) {
         if self.language != "python" {
@@ -165,8 +173,7 @@ impl BaseParser {
         let mut properties = HashSet::new();
         let mut callers_by_property: HashMap<String, Vec<PythonPropertyCallerInfo>> =
             HashMap::new();
-        let mut seen_callers: HashSet<(String, String, Option<String>, Option<String>, usize)> =
-            HashSet::new();
+        let mut seen_callers: HashSet<PythonPropertyCallerKey> = HashSet::new();
         let mut stack = vec![self.tree.root_node()];
 
         while let Some(node) = stack.pop() {
@@ -188,7 +195,7 @@ impl BaseParser {
                             continue;
                         };
                         if child.kind() == "decorator"
-                            && self.node_trimmed_eq_str(child, "@property")
+                            && self.node_trimmed_text_eq(child, "@property")
                         {
                             is_property = true;
                             break;
@@ -203,17 +210,19 @@ impl BaseParser {
                     }
                 }
                 "attribute" => {
-                    let (property_name, object_name) = self.extract_attribute_parts(node);
+                    let (property_name, object_name) = self.split_attribute_parts(node);
                     if property_name.is_empty() {
                         continue;
                     }
-                    let (caller, caller_class_name, _) = self.find_enclosing_context(node);
-                    let caller = caller.unwrap_or_else(|| "<module>".to_string());
+                    let enclosing = self.find_enclosing_context(node);
+                    let caller = enclosing
+                        .function_name
+                        .unwrap_or_else(|| "<module>".to_string());
                     let line = node.start_position().row + 1;
                     let seen_key = (
                         property_name.clone(),
                         caller.clone(),
-                        caller_class_name.clone(),
+                        enclosing.class_name.clone(),
                         object_name.clone(),
                         line,
                     );
@@ -225,7 +234,7 @@ impl BaseParser {
                                 file: self.file_path.clone(),
                                 property_name: property_name.clone(),
                                 caller,
-                                caller_class_name,
+                                caller_class_name: enclosing.class_name.clone(),
                                 object_name,
                                 line,
                             });
@@ -244,16 +253,16 @@ impl BaseParser {
         (properties, callers_by_property)
     }
 
-    pub(super) fn extract_python_field_infos(
+    pub(crate) fn extract_python_field_infos(
         &self,
         class_node: Node,
         class_name: &str,
     ) -> Vec<FieldInfo> {
-        let fields: Vec<FieldInfo> = Vec::new();
-        let seen: HashSet<String> = HashSet::new();
+        let fields = Vec::new();
+        let seen = HashSet::new();
 
         struct WalkCtx<'a> {
-            analyzer: &'a BaseParser,
+            parser: &'a ParseContext,
             class_node_id: usize,
             class_name: String,
             fields: Vec<FieldInfo>,
@@ -275,7 +284,7 @@ impl BaseParser {
             {
                 let nested_name = node
                     .child_by_field_name("name")
-                    .map(|n| ctx.analyzer.node_text(n))
+                    .map(|child| ctx.parser.node_text(child))
                     .unwrap_or_default();
                 if !nested_name.is_empty() && nested_name != ctx.class_name {
                     return;
@@ -304,13 +313,12 @@ impl BaseParser {
                         continue;
                     }
 
-                    let left_node = match child.child_by_field_name("left") {
-                        Some(n) => n,
-                        None => continue,
+                    let Some(left_node) = child.child_by_field_name("left") else {
+                        continue;
                     };
                     let field_type = child
                         .child_by_field_name("type")
-                        .map(|n| ctx.analyzer.node_text(n));
+                        .map(|node| ctx.parser.node_text(node));
                     let mut name = String::new();
 
                     if inside_method {
@@ -318,19 +326,19 @@ impl BaseParser {
                             let obj_node = left_node.child_by_field_name("object");
                             let attr_node = left_node.child_by_field_name("attribute");
                             if let (Some(obj), Some(attr)) = (obj_node, attr_node) {
-                                if ctx.analyzer.node_eq_str(obj, "self") {
-                                    name = ctx.analyzer.node_text(attr);
+                                if ctx.parser.node_text_eq(obj, "self") {
+                                    name = ctx.parser.node_text(attr);
                                 }
                             }
                         }
                     } else if left_node.kind() == "identifier" {
-                        name = ctx.analyzer.node_text(left_node);
+                        name = ctx.parser.node_text(left_node);
                     }
 
                     if !name.is_empty() && ctx.seen.insert(name.clone()) {
                         ctx.fields.push(FieldInfo {
                             name,
-                            location: ctx.analyzer.node_location(child),
+                            location: ctx.parser.node_location(child),
                             field_type,
                             class_name: Some(ctx.class_name.clone()),
                         });
@@ -347,7 +355,7 @@ impl BaseParser {
         }
 
         let mut ctx = WalkCtx {
-            analyzer: self,
+            parser: self,
             class_node_id: class_node.id(),
             class_name: class_name.to_string(),
             fields,
@@ -357,7 +365,7 @@ impl BaseParser {
         ctx.fields
     }
 
-    pub(super) fn extract_python_super_class_names(&self, class_node: Node) -> Vec<String> {
+    pub(crate) fn extract_python_super_class_names(&self, class_node: Node) -> Vec<String> {
         let mut super_classes = Vec::new();
         for i in 0..class_node.child_count() {
             let child = class_node.child(i as u32).unwrap();

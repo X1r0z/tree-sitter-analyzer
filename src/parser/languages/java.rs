@@ -1,10 +1,10 @@
 use tree_sitter::Node;
 
-use super::BaseParser;
+use super::super::ParseContext;
 use crate::models::{AnnotationInfo, FieldInfo, FunctionParamInfo};
 
-impl BaseParser {
-    pub(super) fn extract_java_function_params(
+impl ParseContext {
+    pub(crate) fn extract_java_function_params(
         &self,
         function_node: Node,
     ) -> Vec<FunctionParamInfo> {
@@ -45,13 +45,97 @@ impl BaseParser {
         params
     }
 
-    pub(super) fn extract_java_annotations(&self) -> Vec<AnnotationInfo> {
+    pub(crate) fn resolve_java_call_parts(
+        &self,
+        call_node: Node<'_>,
+    ) -> (String, bool, Option<String>) {
+        if call_node.kind() == "explicit_constructor_invocation" {
+            if let Some(constructor_node) = call_node.child_by_field_name("constructor") {
+                return (self.node_text(constructor_node), false, None);
+            }
+            return (String::new(), false, None);
+        }
+
+        if call_node.kind() == "object_creation_expression" {
+            if let Some(type_node) = call_node.child_by_field_name("type") {
+                if type_node.kind() == "generic_type" {
+                    for i in 0..type_node.named_child_count() {
+                        let child = type_node.named_child(i as u32).unwrap();
+                        if child.kind() == "type_identifier" {
+                            return (self.node_text(child), false, None);
+                        }
+                    }
+                } else {
+                    return (self.node_text(type_node), false, None);
+                }
+            }
+            return (String::new(), false, None);
+        }
+
+        let callee = call_node
+            .child_by_field_name("name")
+            .map(|node| self.node_text(node))
+            .unwrap_or_default();
+        let object_name = call_node
+            .child_by_field_name("object")
+            .map(|node| self.node_text(node));
+        (callee, object_name.is_some(), object_name)
+    }
+
+    pub(crate) fn extract_java_signature(&self, declaration_node: Node) -> String {
+        let end_byte = declaration_node
+            .child_by_field_name("body")
+            .map(|body| body.start_byte())
+            .unwrap_or_else(|| declaration_node.end_byte());
+        let start_byte = self.java_signature_start_byte(declaration_node);
+        self.source_text(start_byte, end_byte)
+            .trim_end()
+            .trim_end_matches(';')
+            .trim_end()
+            .to_string()
+    }
+
+    pub(crate) fn extract_java_class_header_line(&self, declaration_node: Node) -> String {
+        let signature = self.extract_java_signature(declaration_node);
+        signature
+            .lines()
+            .next()
+            .unwrap_or("")
+            .trim_end()
+            .to_string()
+    }
+
+    fn java_signature_start_byte(&self, declaration_node: Node) -> usize {
+        for i in 0..declaration_node.child_count() {
+            let Some(child) = declaration_node.child(i as u32) else {
+                continue;
+            };
+            match child.kind() {
+                "marker_annotation" | "annotation" => continue,
+                "modifiers" => {
+                    let mut cursor = child.walk();
+                    for modifier_child in child.children(&mut cursor) {
+                        if matches!(modifier_child.kind(), "marker_annotation" | "annotation") {
+                            continue;
+                        }
+                        return modifier_child.start_byte();
+                    }
+                    continue;
+                }
+                _ => return child.start_byte(),
+            }
+        }
+
+        declaration_node.start_byte()
+    }
+
+    pub(crate) fn extract_java_annotations(&self) -> Vec<AnnotationInfo> {
         let mut annotations = Vec::new();
         let mut stack = vec![self.tree.root_node()];
 
         while let Some(node) = stack.pop() {
             if matches!(node.kind(), "marker_annotation" | "annotation") {
-                if let Some(info) = self.build_java_annotation_info(node) {
+                if let Some(info) = self.java_annotation_info(node) {
                     annotations.push(info);
                 }
                 continue;
@@ -65,7 +149,7 @@ impl BaseParser {
         annotations
     }
 
-    fn build_java_annotation_info(&self, node: Node) -> Option<AnnotationInfo> {
+    fn java_annotation_info(&self, node: Node) -> Option<AnnotationInfo> {
         let name_node = node.child_by_field_name("name")?;
         let name = self.node_text(name_node);
         if name.is_empty() {
@@ -92,7 +176,7 @@ impl BaseParser {
                 "method_declaration" => (
                     parent
                         .child_by_field_name("name")
-                        .map(|n| self.node_text(n))
+                        .map(|node| self.node_text(node))
                         .unwrap_or_default(),
                     "method".to_string(),
                     format!(
@@ -104,7 +188,7 @@ impl BaseParser {
                 "constructor_declaration" => (
                     parent
                         .child_by_field_name("name")
-                        .map(|n| self.node_text(n))
+                        .map(|node| self.node_text(node))
                         .unwrap_or_default(),
                     "constructor".to_string(),
                     format!(
@@ -116,7 +200,7 @@ impl BaseParser {
                 "class_declaration" => (
                     parent
                         .child_by_field_name("name")
-                        .map(|n| self.node_text(n))
+                        .map(|node| self.node_text(node))
                         .unwrap_or_default(),
                     "class".to_string(),
                     format!(
@@ -128,7 +212,7 @@ impl BaseParser {
                 "interface_declaration" => (
                     parent
                         .child_by_field_name("name")
-                        .map(|n| self.node_text(n))
+                        .map(|node| self.node_text(node))
                         .unwrap_or_default(),
                     "interface".to_string(),
                     format!(
@@ -140,7 +224,7 @@ impl BaseParser {
                 "enum_declaration" => (
                     parent
                         .child_by_field_name("name")
-                        .map(|n| self.node_text(n))
+                        .map(|node| self.node_text(node))
                         .unwrap_or_default(),
                     "enum".to_string(),
                     format!(
@@ -152,7 +236,7 @@ impl BaseParser {
                 "record_declaration" => (
                     parent
                         .child_by_field_name("name")
-                        .map(|n| self.node_text(n))
+                        .map(|node| self.node_text(node))
                         .unwrap_or_default(),
                     "record".to_string(),
                     format!(
@@ -164,7 +248,7 @@ impl BaseParser {
                 "annotation_type_declaration" => (
                     parent
                         .child_by_field_name("name")
-                        .map(|n| self.node_text(n))
+                        .map(|node| self.node_text(node))
                         .unwrap_or_default(),
                     "annotation_type".to_string(),
                     format!(
@@ -174,19 +258,19 @@ impl BaseParser {
                     ),
                 ),
                 "field_declaration" => {
-                    let field_name = self.first_field_declarator_name(parent);
+                    let field_name = self.field_declarator_name(parent);
                     (field_name, "field".to_string(), self.node_text(parent))
                 }
                 "formal_parameter" | "spread_parameter" => (
                     parent
                         .child_by_field_name("name")
-                        .map(|n| self.node_text(n))
+                        .map(|node| self.node_text(node))
                         .unwrap_or_default(),
                     "parameter".to_string(),
                     self.find_enclosing_java_callable_signature(parent),
                 ),
                 "local_variable_declaration" => {
-                    let var_name = self.first_field_declarator_name(parent);
+                    let var_name = self.field_declarator_name(parent);
                     (var_name, "variable".to_string(), self.node_text(parent))
                 }
                 "modifiers" | "annotation_argument_list" => {
@@ -217,7 +301,7 @@ impl BaseParser {
         String::new()
     }
 
-    fn first_field_declarator_name(&self, decl_node: Node) -> String {
+    fn field_declarator_name(&self, decl_node: Node) -> String {
         for i in 0..decl_node.child_count() {
             let child = decl_node.child(i as u32).unwrap();
             if child.kind() == "variable_declarator" {
@@ -229,15 +313,15 @@ impl BaseParser {
         String::new()
     }
 
-    pub(super) fn extract_java_field_infos(
+    pub(crate) fn extract_java_field_infos(
         &self,
         class_node: Node,
         class_name: &str,
     ) -> Vec<FieldInfo> {
-        self.extract_declared_field_infos(class_node, class_name)
+        self.declared_field_infos(class_node, class_name)
     }
 
-    pub(super) fn extract_java_super_class_names(&self, class_node: Node) -> Vec<String> {
+    pub(crate) fn extract_java_super_class_names(&self, class_node: Node) -> Vec<String> {
         let mut super_classes = Vec::new();
 
         for i in 0..class_node.child_count() {
@@ -250,9 +334,9 @@ impl BaseParser {
                             super_classes.push(self.node_text(sub));
                         } else if sub.kind() == "generic_type" {
                             for k in 0..sub.child_count() {
-                                let g = sub.child(k as u32).unwrap();
-                                if g.kind() == "type_identifier" {
-                                    super_classes.push(self.node_text(g));
+                                let grandchild = sub.child(k as u32).unwrap();
+                                if grandchild.kind() == "type_identifier" {
+                                    super_classes.push(self.node_text(grandchild));
                                     break;
                                 }
                             }
@@ -266,14 +350,14 @@ impl BaseParser {
                             continue;
                         }
                         for k in 0..sub.child_count() {
-                            let t = sub.child(k as u32).unwrap();
-                            if t.kind() == "type_identifier" {
-                                super_classes.push(self.node_text(t));
-                            } else if t.kind() == "generic_type" {
-                                for l in 0..t.child_count() {
-                                    let g = t.child(l as u32).unwrap();
-                                    if g.kind() == "type_identifier" {
-                                        super_classes.push(self.node_text(g));
+                            let type_node = sub.child(k as u32).unwrap();
+                            if type_node.kind() == "type_identifier" {
+                                super_classes.push(self.node_text(type_node));
+                            } else if type_node.kind() == "generic_type" {
+                                for l in 0..type_node.child_count() {
+                                    let grandchild = type_node.child(l as u32).unwrap();
+                                    if grandchild.kind() == "type_identifier" {
+                                        super_classes.push(self.node_text(grandchild));
                                         break;
                                     }
                                 }

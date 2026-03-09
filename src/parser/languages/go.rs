@@ -1,10 +1,10 @@
 use tree_sitter::Node;
 
-use super::BaseParser;
+use super::super::ParseContext;
 use crate::models::{FieldInfo, FunctionParamInfo};
 
-impl BaseParser {
-    pub(super) fn extract_go_function_params(&self, function_node: Node) -> Vec<FunctionParamInfo> {
+impl ParseContext {
+    pub(crate) fn extract_go_function_params(&self, function_node: Node) -> Vec<FunctionParamInfo> {
         let Some(parameters) = function_node.child_by_field_name("parameters") else {
             return Vec::new();
         };
@@ -57,7 +57,7 @@ impl BaseParser {
         params
     }
 
-    pub(super) fn find_language_specific_enclosing_class_name(&self, node: Node) -> Option<String> {
+    pub(crate) fn find_language_specific_enclosing_class_name(&self, node: Node) -> Option<String> {
         if self.language == "go" && node.kind() == "method_declaration" {
             return self.extract_go_receiver_type_name(node);
         }
@@ -84,17 +84,17 @@ impl BaseParser {
                 return self.extract_go_base_type_name(type_node);
             }
             for j in 0..param.child_count() {
-                let p = param.child(j as u32).unwrap();
-                if p.kind() == "pointer_type" {
-                    for k in 0..p.child_count() {
-                        let pt = p.child(k as u32).unwrap();
-                        if pt.kind() == "type_identifier" {
-                            return Some(self.node_text(pt));
+                let child = param.child(j as u32).unwrap();
+                if child.kind() == "pointer_type" {
+                    for k in 0..child.child_count() {
+                        let pointer_child = child.child(k as u32).unwrap();
+                        if pointer_child.kind() == "type_identifier" {
+                            return Some(self.node_text(pointer_child));
                         }
                     }
                 }
-                if p.kind() == "type_identifier" {
-                    return Some(self.node_text(p));
+                if child.kind() == "type_identifier" {
+                    return Some(self.node_text(child));
                 }
             }
         }
@@ -129,16 +129,16 @@ impl BaseParser {
         }
     }
 
-    pub(super) fn extract_go_field_infos(
+    pub(crate) fn extract_go_field_infos(
         &self,
         class_node: Node,
         class_name: &str,
     ) -> Vec<FieldInfo> {
-        self.extract_declared_field_infos_with_embedded_type_names(class_node, class_name)
+        self.declared_fields_with_embedded_types(class_node, class_name)
     }
 
-    pub(super) fn extract_go_super_class_names(&self, class_node: Node) -> Vec<String> {
-        let mut super_classes = Vec::new();
+    pub(crate) fn extract_go_embedded_type_names(&self, class_node: Node) -> Vec<String> {
+        let mut embedded_type_names = Vec::new();
 
         for i in 0..class_node.child_count() {
             let child = class_node.child(i as u32).unwrap();
@@ -156,49 +156,52 @@ impl BaseParser {
                         continue;
                     }
                     for l in 0..field.child_count() {
-                        let fd = field.child(l as u32).unwrap();
-                        if fd.kind() != "field_declaration" {
+                        let field_declaration = field.child(l as u32).unwrap();
+                        if field_declaration.kind() != "field_declaration" {
                             continue;
                         }
                         if let Some(embedded) =
-                            self.extract_embedded_type_from_field_declaration(fd)
+                            self.extract_embedded_type_from_field_declaration(field_declaration)
                         {
-                            super_classes.push(embedded);
+                            embedded_type_names.push(embedded);
                         }
                     }
                 }
             }
         }
 
-        super_classes
+        embedded_type_names
     }
 
-    fn extract_embedded_type_from_field_declaration(&self, fd: Node) -> Option<String> {
-        for i in 0..fd.child_count() {
-            let c = fd.child(i as u32).unwrap();
-            if c.kind() == "field_identifier" {
+    fn extract_embedded_type_from_field_declaration(
+        &self,
+        field_declaration: Node,
+    ) -> Option<String> {
+        for i in 0..field_declaration.child_count() {
+            let child = field_declaration.child(i as u32).unwrap();
+            if child.kind() == "field_identifier" {
                 return None;
             }
         }
-        for i in 0..fd.child_count() {
-            let c = fd.child(i as u32).unwrap();
-            if c.kind() == "*" {
+        for i in 0..field_declaration.child_count() {
+            let child = field_declaration.child(i as u32).unwrap();
+            if child.kind() == "*" {
                 continue;
             }
             if matches!(
-                c.kind(),
+                child.kind(),
                 "type_identifier"
                     | "qualified_type"
                     | "generic_type"
                     | "pointer_type"
                     | "parenthesized_type"
             ) {
-                return self.extract_embedded_type_name(c);
+                return self.extract_embedded_type_name(child);
             }
         }
-        for i in 0..fd.named_child_count() {
-            if let Some(c) = fd.named_child(i as u32) {
-                if let Some(name) = self.extract_embedded_type_name(c) {
+        for i in 0..field_declaration.named_child_count() {
+            if let Some(child) = field_declaration.named_child(i as u32) {
+                if let Some(name) = self.extract_embedded_type_name(child) {
                     return Some(name);
                 }
             }
@@ -211,44 +214,44 @@ impl BaseParser {
             "type_identifier" => Some(self.node_text(node)),
             "qualified_type" => {
                 for i in 0..node.child_count() {
-                    let c = node.child(i as u32).unwrap();
-                    if c.kind() == "type_identifier" {
-                        return Some(self.node_text(c));
+                    let child = node.child(i as u32).unwrap();
+                    if child.kind() == "type_identifier" {
+                        return Some(self.node_text(child));
                     }
                 }
                 None
             }
             "generic_type" => {
                 for i in 0..node.child_count() {
-                    let c = node.child(i as u32).unwrap();
+                    let child = node.child(i as u32).unwrap();
                     if matches!(
-                        c.kind(),
+                        child.kind(),
                         "type_identifier" | "qualified_type" | "pointer_type"
                     ) {
-                        return self.extract_embedded_type_name(c);
+                        return self.extract_embedded_type_name(child);
                     }
                 }
                 None
             }
             "pointer_type" => {
                 for i in 0..node.child_count() {
-                    let c = node.child(i as u32).unwrap();
+                    let child = node.child(i as u32).unwrap();
                     if matches!(
-                        c.kind(),
+                        child.kind(),
                         "type_identifier"
                             | "qualified_type"
                             | "generic_type"
                             | "parenthesized_type"
                     ) {
-                        return self.extract_embedded_type_name(c);
+                        return self.extract_embedded_type_name(child);
                     }
                 }
                 None
             }
             "parenthesized_type" => {
                 for i in 0..node.named_child_count() {
-                    if let Some(c) = node.named_child(i as u32) {
-                        if let Some(name) = self.extract_embedded_type_name(c) {
+                    if let Some(child) = node.named_child(i as u32) {
+                        if let Some(name) = self.extract_embedded_type_name(child) {
                             return Some(name);
                         }
                     }

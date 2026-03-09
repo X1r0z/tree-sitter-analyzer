@@ -430,7 +430,7 @@ impl SourceAnalyzer {
                         let candidate_files = self.filter_by_text(parent_name);
                         let parent_name = parent_name.clone();
                         self.analyze_files_with_progress(&candidate_files, |file| {
-                            self.analyze_file(file, |extractor| extractor.class_named(&parent_name))
+                            self.analyze_file(file, |extractor| extractor.find_class(&parent_name))
                                 .flatten()
                                 .into_iter()
                                 .collect::<Vec<_>>()
@@ -468,7 +468,7 @@ impl SourceAnalyzer {
     fn find_class_by_name(&self, class_name: &str) -> Option<ClassInfo> {
         let candidate_files = self.filter_by_text(class_name);
         self.analyze_files_with_progress(&candidate_files, |f| {
-            self.analyze_file(f, |extractor| extractor.class_named(class_name))
+            self.analyze_file(f, |extractor| extractor.find_class(class_name))
                 .flatten()
                 .into_iter()
                 .collect()

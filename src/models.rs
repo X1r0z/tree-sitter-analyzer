@@ -197,6 +197,16 @@ pub struct CalleeInfo {
     pub class_name: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IndexInfo {
+    pub database: String,
+    pub discovered_files: usize,
+    pub indexed_files: usize,
+    pub reparsed_files: usize,
+    pub failed_files: usize,
+    pub errors: Vec<String>,
+}
+
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
 pub struct SymbolRefKey {
     pub file: String,

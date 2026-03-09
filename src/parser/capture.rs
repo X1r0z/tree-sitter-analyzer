@@ -4,27 +4,27 @@ use tree_sitter::{Node, Query, QueryCursor};
 use super::ParseContext;
 use crate::languages::{compiled_query, QueryKind};
 
-pub(crate) struct CallQueryMatch<'a> {
+pub(crate) struct CallCaptureMatch<'a> {
     pub(crate) call: Node<'a>,
     pub(crate) callee: Option<Node<'a>>,
     pub(crate) method: Option<Node<'a>>,
     pub(crate) object: Option<Node<'a>>,
 }
 
-fn with_compiled_query<T>(
-    parser: &ParseContext,
+fn with_compiled_capture_query<T>(
+    context: &ParseContext,
     kind: QueryKind,
-    f: impl FnOnce(&Query) -> T,
+    build: impl FnOnce(&Query) -> T,
 ) -> Option<T> {
-    compiled_query(&parser.language, kind).map(f)
+    compiled_query(&context.language, kind).map(build)
 }
 
-pub(crate) fn query_capture_nodes<'a>(
-    parser: &'a ParseContext,
+pub(crate) fn collect_capture_nodes<'a>(
+    context: &'a ParseContext,
     kind: QueryKind,
     capture_name: &str,
 ) -> Vec<Node<'a>> {
-    with_compiled_query(parser, kind, |query| {
+    with_compiled_capture_query(context, kind, |query| {
         let Some(capture_index) = query
             .capture_names()
             .iter()
@@ -35,10 +35,11 @@ pub(crate) fn query_capture_nodes<'a>(
         };
 
         let mut cursor = QueryCursor::new();
-        let mut matches = cursor.matches(query, parser.tree.root_node(), parser.source.as_slice());
+        let mut capture_matches =
+            cursor.matches(query, context.tree.root_node(), context.source.as_slice());
         let mut nodes = Vec::new();
-        while let Some(matched) = matches.next() {
-            for capture in matched.captures {
+        while let Some(capture_match) = capture_matches.next() {
+            for capture in capture_match.captures {
                 if capture.index == capture_index {
                     nodes.push(capture.node);
                 }
@@ -49,13 +50,13 @@ pub(crate) fn query_capture_nodes<'a>(
     .unwrap_or_default()
 }
 
-pub(crate) fn query_capture_pairs<'a>(
-    parser: &'a ParseContext,
+pub(crate) fn collect_capture_pairs<'a>(
+    context: &'a ParseContext,
     kind: QueryKind,
     first_capture: &str,
     second_capture: &str,
 ) -> Vec<(Node<'a>, Node<'a>)> {
-    with_compiled_query(parser, kind, |query| {
+    with_compiled_capture_query(context, kind, |query| {
         let capture_names = query.capture_names();
         let Some(first_index) = capture_names
             .iter()
@@ -73,12 +74,13 @@ pub(crate) fn query_capture_pairs<'a>(
         };
 
         let mut cursor = QueryCursor::new();
-        let mut matches = cursor.matches(query, parser.tree.root_node(), parser.source.as_slice());
+        let mut capture_matches =
+            cursor.matches(query, context.tree.root_node(), context.source.as_slice());
         let mut pairs = Vec::new();
-        while let Some(matched) = matches.next() {
+        while let Some(capture_match) = capture_matches.next() {
             let mut first = None;
             let mut second = None;
-            for capture in matched.captures {
+            for capture in capture_match.captures {
                 if capture.index == first_index {
                     first = Some(capture.node);
                 } else if capture.index == second_index {
@@ -95,11 +97,11 @@ pub(crate) fn query_capture_pairs<'a>(
 }
 
 pub(crate) fn has_function_capture_named(
-    parser: &ParseContext,
+    context: &ParseContext,
     function_name: &str,
     class_name: Option<&str>,
 ) -> bool {
-    with_compiled_query(parser, QueryKind::Function, |query| {
+    with_compiled_capture_query(context, QueryKind::Function, |query| {
         let capture_names = query.capture_names();
         let Some(function_index) = capture_names
             .iter()
@@ -117,11 +119,12 @@ pub(crate) fn has_function_capture_named(
         };
 
         let mut cursor = QueryCursor::new();
-        let mut matches = cursor.matches(query, parser.tree.root_node(), parser.source.as_slice());
-        while let Some(matched) = matches.next() {
+        let mut capture_matches =
+            cursor.matches(query, context.tree.root_node(), context.source.as_slice());
+        while let Some(capture_match) = capture_matches.next() {
             let mut function_node = None;
             let mut name_node = None;
-            for capture in matched.captures {
+            for capture in capture_match.captures {
                 if capture.index == function_index {
                     function_node = Some(capture.node);
                 } else if capture.index == name_index {
@@ -131,11 +134,11 @@ pub(crate) fn has_function_capture_named(
             let (Some(function_node), Some(name_node)) = (function_node, name_node) else {
                 continue;
             };
-            if !parser.node_text_eq(name_node, function_name) {
+            if !context.node_text_eq(name_node, function_name) {
                 continue;
             }
             if class_name.is_none()
-                || parser
+                || context
                     .find_enclosing_context(function_node)
                     .class_name
                     .as_deref()
@@ -149,11 +152,11 @@ pub(crate) fn has_function_capture_named(
     .unwrap_or(false)
 }
 
-pub(crate) fn collect_call_matches<'a>(
-    parser: &'a ParseContext,
+pub(crate) fn collect_call_capture_matches<'a>(
+    context: &'a ParseContext,
     kind: QueryKind,
-) -> Vec<CallQueryMatch<'a>> {
-    with_compiled_query(parser, kind, |query| {
+) -> Vec<CallCaptureMatch<'a>> {
+    with_compiled_capture_query(context, kind, |query| {
         let capture_names = query.capture_names();
         let call_index = capture_names
             .iter()
@@ -176,14 +179,15 @@ pub(crate) fn collect_call_matches<'a>(
         };
 
         let mut cursor = QueryCursor::new();
-        let mut matches = cursor.matches(query, parser.tree.root_node(), parser.source.as_slice());
+        let mut capture_matches =
+            cursor.matches(query, context.tree.root_node(), context.source.as_slice());
         let mut out = Vec::new();
-        while let Some(matched) = matches.next() {
+        while let Some(capture_match) = capture_matches.next() {
             let mut call = None;
             let mut callee = None;
             let mut method = None;
             let mut object = None;
-            for capture in matched.captures {
+            for capture in capture_match.captures {
                 if capture.index == call_index {
                     call = Some(capture.node);
                 } else if callee_index == Some(capture.index) {
@@ -195,7 +199,7 @@ pub(crate) fn collect_call_matches<'a>(
                 }
             }
             if let Some(call) = call {
-                out.push(CallQueryMatch {
+                out.push(CallCaptureMatch {
                     call,
                     callee,
                     method,

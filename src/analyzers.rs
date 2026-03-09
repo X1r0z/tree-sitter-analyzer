@@ -3,22 +3,30 @@ use std::hash::Hash;
 use std::path::Path;
 
 use rayon::prelude::*;
+use rusqlite::Connection;
 
-use super::extractor::CodeExtractor;
-use super::graph::{CallGraph, RawPropertyCaller};
-use super::search::{FileSearch, QueryMatcher};
+use crate::db::IndexStore;
+use crate::extractor::CodeExtractor;
+use crate::graph::{CallGraph, RawPropertyCaller};
 use crate::models::*;
-use crate::traversal::bfs::collect_reachable;
+use crate::query::{CallEdgeQuery, CallGraphQuery, ClassHierarchyQuery, LookupQuery, QueryContext};
+use crate::search::{FileSearch, QueryMatcher};
+use crate::traversal::collect_reachable_bfs;
 use crate::utils::{
     find_files, progress_bar, sort_callees_by_file_line, sort_callers_by_file_line,
 };
 
-pub struct SourceAnalyzer {
+pub(crate) struct SourceAnalyzer {
     search: FileSearch,
 }
 
+pub(crate) struct StoreAnalyzer {
+    conn: Connection,
+    language: Option<String>,
+}
+
 impl SourceAnalyzer {
-    pub fn new_with_language(path: &str, language: Option<&str>) -> anyhow::Result<Self> {
+    pub(crate) fn new_with_language(path: &str, language: Option<&str>) -> anyhow::Result<Self> {
         let p = Path::new(path);
         if !p.exists() {
             anyhow::bail!("Path not found: {}", path);
@@ -60,16 +68,33 @@ impl SourceAnalyzer {
         results
     }
 
-    pub fn find_functions(&self, query: &str) -> Vec<FunctionInfo> {
-        self.collect_functions(query)
-    }
-
-    pub fn file_count(&self) -> usize {
+    pub(crate) fn file_count(&self) -> usize {
         self.search.files().len()
     }
 
-    pub fn files(&self) -> &[String] {
+    pub(crate) fn files(&self) -> &[String] {
         self.search.files()
+    }
+
+    pub(crate) fn find_functions(&self, query: &str) -> Vec<FunctionInfo> {
+        let candidate_files = self.search.filter_candidates(query);
+        if candidate_files.is_empty() {
+            return Vec::new();
+        }
+        let matcher = QueryMatcher::new(query);
+        self.analyze_files_with_progress(&candidate_files, |f: &String| {
+            let funcs = self
+                .analyze_file(f, |extractor| extractor.collect_functions())
+                .unwrap_or_default();
+            if matcher.matches_all() {
+                funcs
+            } else {
+                funcs
+                    .into_iter()
+                    .filter(|func| matcher.is_match(&func.name))
+                    .collect()
+            }
+        })
     }
 
     fn hydrate_candidates<K, Candidate, KeyOf, FileOf, Resolve>(
@@ -121,7 +146,10 @@ impl SourceAnalyzer {
             .collect()
     }
 
-    pub fn hydrate_function_bodies(&self, candidates: Vec<FunctionInfo>) -> Vec<FunctionInfo> {
+    pub(crate) fn hydrate_function_bodies(
+        &self,
+        candidates: Vec<FunctionInfo>,
+    ) -> Vec<FunctionInfo> {
         self.hydrate_candidates(
             candidates,
             |candidate: &FunctionInfo| FunctionKey::from(candidate),
@@ -136,34 +164,13 @@ impl SourceAnalyzer {
         )
     }
 
-    fn collect_functions(&self, query: &str) -> Vec<FunctionInfo> {
+    pub(crate) fn find_classes(&self, query: &str) -> Vec<ClassInfo> {
         let candidate_files = self.search.filter_candidates(query);
         if candidate_files.is_empty() {
             return Vec::new();
         }
         let matcher = QueryMatcher::new(query);
-        self.analyze_files_with_progress(&candidate_files, |f| {
-            let funcs = self
-                .analyze_file(f, |extractor| extractor.collect_functions())
-                .unwrap_or_default();
-            if matcher.matches_all() {
-                funcs
-            } else {
-                funcs
-                    .into_iter()
-                    .filter(|func| matcher.is_match(&func.name))
-                    .collect()
-            }
-        })
-    }
-
-    pub fn find_classes(&self, query: &str) -> Vec<ClassInfo> {
-        let candidate_files = self.search.filter_candidates(query);
-        if candidate_files.is_empty() {
-            return Vec::new();
-        }
-        let matcher = QueryMatcher::new(query);
-        self.analyze_files_with_progress(&candidate_files, |f| {
+        self.analyze_files_with_progress(&candidate_files, |f: &String| {
             let classes = self
                 .analyze_file(f, |extractor| extractor.collect_classes())
                 .unwrap_or_default();
@@ -178,25 +185,25 @@ impl SourceAnalyzer {
         })
     }
 
-    pub fn find_fields(&self, class_name: &str) -> Vec<FieldInfo> {
+    pub(crate) fn find_fields(&self, class_name: &str) -> Vec<FieldInfo> {
         let candidate_files = self.search.filter_by_text(class_name);
         if candidate_files.is_empty() {
             return Vec::new();
         }
         let cn = class_name.to_string();
-        self.analyze_files_with_progress(&candidate_files, |f| {
+        self.analyze_files_with_progress(&candidate_files, |f: &String| {
             self.analyze_file(f, |extractor| extractor.collect_fields(&cn))
                 .unwrap_or_default()
         })
     }
 
-    pub fn find_imports(&self, query: &str) -> Vec<ImportInfo> {
+    pub(crate) fn find_imports(&self, query: &str) -> Vec<ImportInfo> {
         let candidate_files = self.search.filter_candidates(query);
         if candidate_files.is_empty() {
             return Vec::new();
         }
         let matcher = QueryMatcher::new(query);
-        self.analyze_files_with_progress(&candidate_files, |f| {
+        self.analyze_files_with_progress(&candidate_files, |f: &String| {
             let imports = self
                 .analyze_file(f, |extractor| extractor.collect_imports())
                 .unwrap_or_default();
@@ -210,13 +217,14 @@ impl SourceAnalyzer {
             }
         })
     }
-    pub fn find_annotations(&self, query: &str) -> Vec<AnnotationInfo> {
+
+    pub(crate) fn find_annotations(&self, query: &str) -> Vec<AnnotationInfo> {
         let candidate_files = self.search.filter_candidates(query);
         if candidate_files.is_empty() {
             return Vec::new();
         }
         let matcher = QueryMatcher::new(query);
-        self.analyze_files_with_progress(&candidate_files, |f| {
+        self.analyze_files_with_progress(&candidate_files, |f: &String| {
             let annotations = self
                 .analyze_file(f, |extractor| extractor.collect_annotations())
                 .unwrap_or_default();
@@ -225,13 +233,17 @@ impl SourceAnalyzer {
             } else {
                 annotations
                     .into_iter()
-                    .filter(|a| matcher.is_match(&a.name))
+                    .filter(|annotation| matcher.is_match(&annotation.name))
                     .collect()
             }
         })
     }
 
-    pub fn find_callers(&self, function_name: &str, class_name: Option<&str>) -> Vec<CallerInfo> {
+    pub(crate) fn find_callers(
+        &self,
+        function_name: &str,
+        class_name: Option<&str>,
+    ) -> Vec<CallerInfo> {
         let candidate_files = self.search.filter_by_text(function_name);
         if candidate_files.is_empty() {
             return Vec::new();
@@ -239,7 +251,7 @@ impl SourceAnalyzer {
         let fn_name = function_name.to_string();
         let cn = class_name.map(|s| s.to_string());
         let mut results: Vec<CallerInfo> =
-            self.analyze_files_with_progress(&candidate_files, |f| {
+            self.analyze_files_with_progress(&candidate_files, |f: &String| {
                 self.analyze_file(f, |extractor| {
                     extractor.find_function_callers(&fn_name, cn.as_deref())
                 })
@@ -256,7 +268,11 @@ impl SourceAnalyzer {
         results
     }
 
-    pub fn find_callees(&self, function_name: &str, class_name: Option<&str>) -> Vec<CalleeInfo> {
+    pub(crate) fn find_callees(
+        &self,
+        function_name: &str,
+        class_name: Option<&str>,
+    ) -> Vec<CalleeInfo> {
         let candidate_files = self.search.filter_by_text(function_name);
         if candidate_files.is_empty() {
             return Vec::new();
@@ -278,25 +294,26 @@ impl SourceAnalyzer {
             relevant_files = candidate_files;
         }
 
-        let mut results: Vec<CalleeInfo> = self.analyze_files_with_progress(&relevant_files, |f| {
-            self.analyze_file(f, |extractor| {
-                extractor.find_function_callees(&fn_name, cn.as_deref())
-            })
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(callee, line, callee_class)| CalleeInfo {
-                callee,
-                line,
-                file: f.clone(),
-                class_name: callee_class,
-            })
-            .collect::<Vec<_>>()
-        });
+        let mut results: Vec<CalleeInfo> =
+            self.analyze_files_with_progress(&relevant_files, |f: &String| {
+                self.analyze_file(f, |extractor| {
+                    extractor.find_function_callees(&fn_name, cn.as_deref())
+                })
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(callee, line, callee_class)| CalleeInfo {
+                    callee,
+                    line,
+                    file: f.clone(),
+                    class_name: callee_class,
+                })
+                .collect::<Vec<_>>()
+            });
         sort_callees_by_file_line(&mut results);
         results
     }
 
-    pub fn find_function_definitions(
+    pub(crate) fn find_function_definitions(
         &self,
         name: &str,
         class_name: Option<&str>,
@@ -307,7 +324,7 @@ impl SourceAnalyzer {
         }
         let fn_name = name.to_string();
         let cn = class_name.map(|s| s.to_string());
-        self.analyze_files_with_progress(&candidate_files, |f| {
+        self.analyze_files_with_progress(&candidate_files, |f: &String| {
             self.analyze_file(f, |extractor| {
                 extractor.find_function_definitions(&fn_name, cn.as_deref())
             })
@@ -315,14 +332,14 @@ impl SourceAnalyzer {
         })
     }
 
-    pub fn find_graphs(
+    pub(crate) fn find_graphs(
         &self,
         function_name: &str,
         class_name: Option<&str>,
         direction: GraphDirection,
         max_depth: usize,
     ) -> anyhow::Result<Vec<CallGraphPath>> {
-        let snapshots = self.analyze_files_with_progress(self.search.files(), |file| {
+        let snapshots = self.analyze_files_with_progress(self.search.files(), |file: &String| {
             vec![match CodeExtractor::new(file) {
                 Ok(mut extractor) => anyhow::Ok(extractor.snapshot_for_index()),
                 Err(error) => Err(error),
@@ -368,20 +385,19 @@ impl SourceAnalyzer {
         Ok(graph.collect_graphs(&start_nodes, direction, max_depth))
     }
 
-    pub fn find_symbols(&self, name: &str) -> Vec<SymbolRefInfo> {
+    pub(crate) fn find_symbols(&self, name: &str) -> Vec<SymbolRefInfo> {
         let candidate_files = self.search.filter_by_text(name);
         if candidate_files.is_empty() {
             return Vec::new();
         }
         let symbol = name.to_string();
-        let refs: Vec<SymbolRefInfo> = self.analyze_files_with_progress(&candidate_files, |f| {
+        self.analyze_files_with_progress(&candidate_files, |f: &String| {
             self.analyze_file(f, |extractor| extractor.find_symbols(&symbol))
                 .unwrap_or_default()
-        });
-        refs
+        })
     }
 
-    pub fn hydrate_symbols(&self, candidates: Vec<SymbolRefInfo>) -> Vec<SymbolRefInfo> {
+    pub(crate) fn hydrate_symbols(&self, candidates: Vec<SymbolRefInfo>) -> Vec<SymbolRefInfo> {
         self.hydrate_candidates(
             candidates,
             |candidate: &SymbolRefInfo| SymbolRefKey::from(candidate),
@@ -407,14 +423,14 @@ impl SourceAnalyzer {
         )
     }
 
-    pub fn find_super_classes(&self, class_name: &str) -> Vec<ClassInfo> {
+    pub(crate) fn find_super_classes(&self, class_name: &str) -> Vec<ClassInfo> {
         let target = self.find_class_by_name(class_name);
         let target = match target {
-            Some(c) => c,
+            Some(class_info) => class_info,
             None => return Vec::new(),
         };
 
-        collect_reachable(
+        collect_reachable_bfs(
             [target],
             [class_name.to_string()],
             |current| {
@@ -424,7 +440,7 @@ impl SourceAnalyzer {
                     .filter_map(|parent_name| {
                         let candidate_files = self.search.filter_by_text(parent_name);
                         let parent_name = parent_name.clone();
-                        self.analyze_files_with_progress(&candidate_files, |file| {
+                        self.analyze_files_with_progress(&candidate_files, |file: &String| {
                             self.analyze_file(file, |extractor| extractor.find_class(&parent_name))
                                 .flatten()
                                 .into_iter()
@@ -440,14 +456,14 @@ impl SourceAnalyzer {
         )
     }
 
-    pub fn find_sub_classes(&self, class_name: &str) -> Vec<ClassInfo> {
-        collect_reachable(
+    pub(crate) fn find_sub_classes(&self, class_name: &str) -> Vec<ClassInfo> {
+        collect_reachable_bfs(
             [class_name.to_string()],
             [class_name.to_string()],
             |current_parent| {
                 let candidate_files = self.search.filter_by_text(current_parent);
                 let current_parent = current_parent.clone();
-                self.analyze_files_with_progress(&candidate_files, |file| {
+                self.analyze_files_with_progress(&candidate_files, |file: &String| {
                     self.analyze_file(file, |extractor| extractor.collect_classes())
                         .unwrap_or_default()
                         .into_iter()
@@ -462,7 +478,7 @@ impl SourceAnalyzer {
 
     fn find_class_by_name(&self, class_name: &str) -> Option<ClassInfo> {
         let candidate_files = self.search.filter_by_text(class_name);
-        self.analyze_files_with_progress(&candidate_files, |f| {
+        self.analyze_files_with_progress(&candidate_files, |f: &String| {
             self.analyze_file(f, |extractor| extractor.find_class(class_name))
                 .flatten()
                 .into_iter()
@@ -470,5 +486,99 @@ impl SourceAnalyzer {
         })
         .into_iter()
         .next()
+    }
+}
+
+impl StoreAnalyzer {
+    pub(crate) fn from_current_dir_if_compatible(
+        root_path: &str,
+        language: Option<&str>,
+    ) -> anyhow::Result<Option<Self>> {
+        let db_path = std::env::current_dir()?.join("tsa.db");
+        if !db_path.exists() {
+            return Ok(None);
+        }
+        let store = match IndexStore::open_if_compatible(&db_path, root_path, language)? {
+            Some(store) => store,
+            None => return Ok(None),
+        };
+        Ok(Some(Self {
+            conn: store.into_connection(),
+            language: language.map(str::to_string),
+        }))
+    }
+
+    pub(crate) fn file_count(&self) -> usize {
+        LookupQuery::new(self.query_context()).file_count()
+    }
+
+    pub(crate) fn find_functions(&self, query: &str) -> anyhow::Result<Vec<FunctionInfo>> {
+        LookupQuery::new(self.query_context()).find_functions(query)
+    }
+
+    pub(crate) fn find_classes(&self, query: &str) -> anyhow::Result<Vec<ClassInfo>> {
+        LookupQuery::new(self.query_context()).find_classes(query)
+    }
+
+    pub(crate) fn find_fields(&self, class_name: &str) -> anyhow::Result<Vec<FieldInfo>> {
+        LookupQuery::new(self.query_context()).find_fields(class_name)
+    }
+
+    pub(crate) fn find_imports(&self, query: &str) -> anyhow::Result<Vec<ImportInfo>> {
+        LookupQuery::new(self.query_context()).find_imports(query)
+    }
+
+    pub(crate) fn find_annotations(&self, query: &str) -> anyhow::Result<Vec<AnnotationInfo>> {
+        LookupQuery::new(self.query_context()).find_annotations(query)
+    }
+
+    pub(crate) fn find_symbols(&self, name: &str) -> anyhow::Result<Vec<SymbolRefInfo>> {
+        LookupQuery::new(self.query_context()).find_symbols(name)
+    }
+
+    pub(crate) fn find_callers(
+        &self,
+        function_name: &str,
+        class_name: Option<&str>,
+    ) -> anyhow::Result<Vec<CallerInfo>> {
+        CallEdgeQuery::new(self.query_context()).find_callers(function_name, class_name)
+    }
+
+    pub(crate) fn find_callees(
+        &self,
+        function_name: &str,
+        class_name: Option<&str>,
+    ) -> anyhow::Result<Vec<CalleeInfo>> {
+        CallEdgeQuery::new(self.query_context()).find_callees(function_name, class_name)
+    }
+
+    pub(crate) fn find_graphs(
+        &self,
+        function_name: &str,
+        class_name: Option<&str>,
+        direction: GraphDirection,
+        max_depth: usize,
+    ) -> anyhow::Result<Vec<CallGraphPath>> {
+        CallGraphQuery::new(self.query_context()).find_graphs(
+            function_name,
+            class_name,
+            direction,
+            max_depth,
+        )
+    }
+
+    pub(crate) fn find_super_classes(&self, class_name: &str) -> anyhow::Result<Vec<ClassInfo>> {
+        ClassHierarchyQuery::new(self.query_context()).find_super_classes(class_name)
+    }
+
+    pub(crate) fn find_sub_classes(&self, class_name: &str) -> anyhow::Result<Vec<ClassInfo>> {
+        ClassHierarchyQuery::new(self.query_context()).find_sub_classes(class_name)
+    }
+
+    fn query_context(&self) -> QueryContext<'_> {
+        QueryContext {
+            conn: &self.conn,
+            language: self.language.as_deref(),
+        }
     }
 }

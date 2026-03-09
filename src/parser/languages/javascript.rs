@@ -64,7 +64,7 @@ impl JsAliasResolverState {
     }
 }
 
-pub(crate) fn js_function_params(
+pub(crate) fn function_params(
     parser: &ParseContext,
     function_node: Node<'_>,
 ) -> Vec<FunctionParamInfo> {
@@ -251,7 +251,7 @@ pub(crate) fn js_alias_events(parser: &ParseContext, func_node: Node<'_>) -> Vec
     events
 }
 
-pub(crate) fn js_field_infos(
+pub(crate) fn field_infos(
     parser: &ParseContext,
     class_node: Node<'_>,
     class_name: &str,
@@ -512,7 +512,7 @@ fn normalize_type_text(text: &str) -> String {
     }
 }
 
-pub(crate) fn js_super_class_names(parser: &ParseContext, class_node: Node<'_>) -> Vec<String> {
+pub(crate) fn super_class_names(parser: &ParseContext, class_node: Node<'_>) -> Vec<String> {
     let mut super_classes = Vec::new();
     let mut seen = HashSet::new();
     collect_super_class_names_from_heritage(parser, class_node, &mut super_classes, &mut seen);

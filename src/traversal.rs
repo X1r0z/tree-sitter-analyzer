@@ -1,44 +1,16 @@
-use std::collections::HashSet;
-use std::convert::Infallible;
+use std::collections::{HashSet, VecDeque};
 use std::hash::Hash;
 use std::marker::PhantomData;
 
 use crate::models::GraphDirection;
 
 #[derive(Clone)]
-pub struct PathStep<N, E> {
-    pub node: N,
-    pub edge: Option<E>,
+pub(crate) struct TraversalPathStep<N, E> {
+    pub(crate) node: N,
+    pub(crate) edge: Option<E>,
 }
 
-pub fn collect_paths<K, N, E, P, KeyOf, Neighbors, Materialize>(
-    start_nodes: &[N],
-    direction: GraphDirection,
-    max_depth: usize,
-    key_of: KeyOf,
-    mut neighbors_for: Neighbors,
-    materialize: Materialize,
-) -> Vec<P>
-where
-    K: Clone + Eq + Hash,
-    N: Clone,
-    E: Clone,
-    KeyOf: FnMut(&N) -> K,
-    Neighbors: FnMut(&N) -> Vec<(N, E)>,
-    Materialize: FnMut(GraphDirection, &[PathStep<N, E>]) -> P,
-{
-    try_collect_paths(
-        start_nodes,
-        direction,
-        max_depth,
-        key_of,
-        |node| Ok::<_, Infallible>(neighbors_for(node)),
-        materialize,
-    )
-    .unwrap_or_else(|never| match never {})
-}
-
-pub fn try_collect_paths<K, N, E, P, Err, KeyOf, Neighbors, Materialize>(
+pub(crate) fn collect_paths_dfs<K, N, E, P, Err, KeyOf, Neighbors, Materialize>(
     start_nodes: &[N],
     direction: GraphDirection,
     max_depth: usize,
@@ -52,9 +24,9 @@ where
     E: Clone,
     KeyOf: FnMut(&N) -> K,
     Neighbors: FnMut(&N) -> Result<Vec<(N, E)>, Err>,
-    Materialize: FnMut(GraphDirection, &[PathStep<N, E>]) -> P,
+    Materialize: FnMut(GraphDirection, &[TraversalPathStep<N, E>]) -> P,
 {
-    let mut walker = Walker::<K, N, E, P, Err, KeyOf, Neighbors, Materialize> {
+    let mut walker = DfsWalker::<K, N, E, P, Err, KeyOf, Neighbors, Materialize> {
         direction,
         key_of: &mut key_of,
         neighbors_for: &mut neighbors_for,
@@ -68,14 +40,14 @@ where
     Ok(walker.results)
 }
 
-struct Walker<'a, K, N, E, P, Err, KeyOf, Neighbors, Materialize>
+struct DfsWalker<'a, K, N, E, P, Err, KeyOf, Neighbors, Materialize>
 where
     K: Clone + Eq + Hash,
     N: Clone,
     E: Clone,
     KeyOf: FnMut(&N) -> K,
     Neighbors: FnMut(&N) -> Result<Vec<(N, E)>, Err>,
-    Materialize: FnMut(GraphDirection, &[PathStep<N, E>]) -> P,
+    Materialize: FnMut(GraphDirection, &[TraversalPathStep<N, E>]) -> P,
 {
     direction: GraphDirection,
     key_of: &'a mut KeyOf,
@@ -87,19 +59,19 @@ where
 }
 
 impl<'a, K, N, E, P, Err, KeyOf, Neighbors, Materialize>
-    Walker<'a, K, N, E, P, Err, KeyOf, Neighbors, Materialize>
+    DfsWalker<'a, K, N, E, P, Err, KeyOf, Neighbors, Materialize>
 where
     K: Clone + Eq + Hash,
     N: Clone,
     E: Clone,
     KeyOf: FnMut(&N) -> K,
     Neighbors: FnMut(&N) -> Result<Vec<(N, E)>, Err>,
-    Materialize: FnMut(GraphDirection, &[PathStep<N, E>]) -> P,
+    Materialize: FnMut(GraphDirection, &[TraversalPathStep<N, E>]) -> P,
 {
     fn run(&mut self, start_nodes: &[N], max_depth: usize) -> Result<(), Err> {
         for start in start_nodes {
             let start_key = (self.key_of)(start);
-            let mut path = vec![PathStep {
+            let mut path = vec![TraversalPathStep {
                 node: start.clone(),
                 edge: None,
             }];
@@ -112,7 +84,7 @@ where
     fn walk(
         &mut self,
         remaining_depth: usize,
-        path: &mut Vec<PathStep<N, E>>,
+        path: &mut Vec<TraversalPathStep<N, E>>,
         visited: &mut HashSet<K>,
     ) -> Result<(), Err> {
         let current = path
@@ -138,7 +110,7 @@ where
 
         for (next_key, next_node, next_edge) in next_nodes {
             visited.insert(next_key.clone());
-            path.push(PathStep {
+            path.push(TraversalPathStep {
                 node: next_node,
                 edge: Some(next_edge),
             });
@@ -149,4 +121,37 @@ where
 
         Ok(())
     }
+}
+
+pub(crate) fn collect_reachable_bfs<State, Item, Key, Expand, NextState, KeyOf>(
+    start_states: impl IntoIterator<Item = State>,
+    initial_visited: impl IntoIterator<Item = Key>,
+    mut expand: Expand,
+    mut next_state: NextState,
+    mut key_of: KeyOf,
+) -> Vec<Item>
+where
+    State: Clone,
+    Item: Clone,
+    Key: Clone + Eq + Hash,
+    Expand: FnMut(&State) -> Vec<Item>,
+    NextState: FnMut(&Item) -> State,
+    KeyOf: FnMut(&Item) -> Key,
+{
+    let mut results = Vec::new();
+    let mut visited: HashSet<Key> = initial_visited.into_iter().collect();
+    let mut queue: VecDeque<State> = start_states.into_iter().collect();
+
+    while let Some(state) = queue.pop_front() {
+        for item in expand(&state) {
+            let key = key_of(&item);
+            if !visited.insert(key) {
+                continue;
+            }
+            queue.push_back(next_state(&item));
+            results.push(item);
+        }
+    }
+
+    results
 }

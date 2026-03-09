@@ -1,10 +1,9 @@
 use tree_sitter::Node;
 
-use super::super::classes as class;
-use super::super::ParseContext;
+use super::super::{context, ParseContext};
 use crate::models::{FieldInfo, FunctionParamInfo};
 
-pub(crate) fn go_function_params(
+pub(crate) fn function_params(
     parser: &ParseContext,
     function_node: Node<'_>,
 ) -> Vec<FunctionParamInfo> {
@@ -60,10 +59,7 @@ pub(crate) fn go_function_params(
     params
 }
 
-pub(crate) fn go_receiver_type_name(
-    parser: &ParseContext,
-    method_node: Node<'_>,
-) -> Option<String> {
+pub(crate) fn receiver_type_name(parser: &ParseContext, method_node: Node<'_>) -> Option<String> {
     let receiver_list = method_node.child_by_field_name("receiver").or_else(|| {
         for i in 0..method_node.child_count() {
             let child = method_node.child(i as u32).unwrap();
@@ -128,15 +124,15 @@ pub(crate) fn go_base_type_name(parser: &ParseContext, type_node: Node<'_>) -> O
     }
 }
 
-pub(crate) fn go_field_infos(
+pub(crate) fn field_infos(
     parser: &ParseContext,
     class_node: Node<'_>,
     class_name: &str,
 ) -> Vec<FieldInfo> {
-    class::declared_fields_with_embedded_types(parser, class_node, class_name)
+    context::collect_field_infos_from_declarations(parser, class_node, class_name, true)
 }
 
-pub(crate) fn go_embedded_type_names(parser: &ParseContext, class_node: Node<'_>) -> Vec<String> {
+pub(crate) fn embedded_type_names(parser: &ParseContext, class_node: Node<'_>) -> Vec<String> {
     let mut embedded_type_names = Vec::new();
 
     for i in 0..class_node.child_count() {

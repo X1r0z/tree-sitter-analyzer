@@ -1,10 +1,9 @@
 use tree_sitter::Node;
 
-use super::super::classes as class;
-use super::super::ParseContext;
+use super::super::{context, ParseContext};
 use crate::models::{AnnotationInfo, FieldInfo, FunctionParamInfo};
 
-pub(crate) fn java_function_params(
+pub(crate) fn function_params(
     parser: &ParseContext,
     function_node: Node<'_>,
 ) -> Vec<FunctionParamInfo> {
@@ -321,15 +320,15 @@ fn declarator_name(parser: &ParseContext, decl_node: Node<'_>) -> String {
     String::new()
 }
 
-pub(crate) fn java_field_infos(
+pub(crate) fn field_infos(
     parser: &ParseContext,
     class_node: Node<'_>,
     class_name: &str,
 ) -> Vec<FieldInfo> {
-    class::declared_field_infos(parser, class_node, class_name)
+    context::collect_field_infos_from_declarations(parser, class_node, class_name, false)
 }
 
-pub(crate) fn java_super_class_names(parser: &ParseContext, class_node: Node<'_>) -> Vec<String> {
+pub(crate) fn super_class_names(parser: &ParseContext, class_node: Node<'_>) -> Vec<String> {
     let mut super_classes = Vec::new();
 
     for i in 0..class_node.child_count() {

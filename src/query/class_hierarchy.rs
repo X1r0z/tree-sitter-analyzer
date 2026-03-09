@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use super::{LookupQuery, QueryContext};
 use crate::models::ClassInfo;
-use crate::traversal::bfs::collect_reachable;
+use crate::traversal::collect_reachable_bfs;
 
 pub(crate) struct ClassHierarchyQuery<'a> {
     ctx: QueryContext<'a>,
@@ -24,7 +24,7 @@ impl<'a> ClassHierarchyQuery<'a> {
             return Ok(Vec::new());
         };
 
-        Ok(collect_reachable(
+        Ok(collect_reachable_bfs(
             [target],
             [class_name.to_string()],
             |current| {
@@ -56,7 +56,7 @@ impl<'a> ClassHierarchyQuery<'a> {
             }
         }
 
-        Ok(collect_reachable(
+        Ok(collect_reachable_bfs(
             [class_name.to_string()],
             [class_name.to_string()],
             |current| children_by_parent.get(current).cloned().unwrap_or_default(),

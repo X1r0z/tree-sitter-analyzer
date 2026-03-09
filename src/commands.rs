@@ -1,16 +1,134 @@
-use std::collections::HashSet;
 use std::path::Path;
 
+use rayon::prelude::*;
 use serde_json::{json, Value};
 
-use crate::analyzer::{IndexedAnalyzer, SourceAnalyzer};
-use crate::index::build_index;
-use crate::models::{FunctionInfo, GraphDirection};
+use crate::analyzers::{SourceAnalyzer, StoreAnalyzer};
+use crate::db::{
+    db_path_in_current_dir, file_record_metadata, file_record_with_hash, FileIndexData, IndexStore,
+    IndexSyncPlan, IndexSynchronizer, IndexedFileRecord,
+};
+use crate::extractor::CodeExtractor;
+use crate::languages::detect_language;
+use crate::models::{GraphDirection, IndexInfo};
 use crate::output::{self, FunctionView};
+use crate::utils::progress_bar;
+
+enum AnalyzerBackend {
+    Store(StoreAnalyzer),
+    Source(SourceAnalyzer),
+}
+
+struct CommandContext {
+    real_path: String,
+    backend: AnalyzerBackend,
+}
+
+impl CommandContext {
+    fn load(path: &str, language: Option<&str>) -> anyhow::Result<Self> {
+        let real_path = resolve_path(path);
+        let backend = if let Some(store_backend) =
+            StoreAnalyzer::from_current_dir_if_compatible(&real_path, language)?
+        {
+            AnalyzerBackend::Store(store_backend)
+        } else {
+            AnalyzerBackend::Source(SourceAnalyzer::new_with_language(&real_path, language)?)
+        };
+        Ok(Self { real_path, backend })
+    }
+
+    fn searched_files(&self) -> usize {
+        match &self.backend {
+            AnalyzerBackend::Store(store_backend) => store_backend.file_count(),
+            AnalyzerBackend::Source(source_backend) => source_backend.file_count(),
+        }
+    }
+}
 
 pub(crate) fn index(path: &str, language: Option<&str>) -> Value {
     let real_path = resolve_path(path);
-    build_index(&real_path, language)
+    let source_backend = match SourceAnalyzer::new_with_language(&real_path, language) {
+        Ok(source_backend) => source_backend,
+        Err(error) => return error_response(error),
+    };
+
+    let total_files = source_backend.file_count();
+    let progress = progress_bar(total_files, "files", "cyan/blue", "Parsing source files");
+
+    let db_path = match db_path_in_current_dir() {
+        Ok(path) => path,
+        Err(error) => return error_response(error),
+    };
+
+    let existing = match IndexStore::open(&db_path) {
+        Ok(store)
+            if store
+                .is_compatible_with(&real_path, language)
+                .unwrap_or(false) =>
+        {
+            store.indexed_files_by_path().unwrap_or_default()
+        }
+        Ok(_) => Default::default(),
+        Err(_) => Default::default(),
+    };
+
+    let indexed: Vec<Result<(IndexedFileRecord, Option<FileIndexData>), String>> = source_backend
+        .files()
+        .par_iter()
+        .map(|file| {
+            let result = build_file_index(file, existing.get(file));
+            progress.inc(1);
+            result.map_err(|error| format!("{}: {}", file, error))
+        })
+        .collect();
+    progress.finish_and_clear();
+
+    let mut current_files = Vec::new();
+    let mut snapshots = Vec::new();
+    let mut errors = Vec::new();
+    for entry in indexed {
+        match entry {
+            Ok((record, snapshot)) => {
+                current_files.push(record);
+                if let Some(snapshot) = snapshot {
+                    snapshots.push(snapshot);
+                }
+            }
+            Err(error) => errors.push(error),
+        }
+    }
+
+    let plan = IndexSyncPlan {
+        current_files,
+        changed_snapshots: snapshots,
+    };
+
+    let db_progress = progress_bar(0, "steps", "green/blue", "Persisting index data");
+    let update_result =
+        IndexSynchronizer::sync(&db_path, &real_path, language, &plan, &db_progress);
+    db_progress.finish_and_clear();
+
+    if let Err(error) = update_result {
+        return error_response(error);
+    }
+
+    let index = IndexInfo {
+        database: db_path.to_string_lossy().to_string(),
+        discovered_files: total_files,
+        indexed_files: plan.current_files.len(),
+        reparsed_files: plan.changed_snapshots.len(),
+        failed_files: errors.len(),
+        errors,
+    };
+
+    success_response(
+        &real_path,
+        total_files,
+        [(
+            "index",
+            serde_json::to_value(index).expect("index info should serialize"),
+        )],
+    )
 }
 
 pub(crate) fn functions(path: &str, language: Option<&str>, query: &str) -> Value {
@@ -19,7 +137,7 @@ pub(crate) fn functions(path: &str, language: Option<&str>, query: &str) -> Valu
         Err(error) => return error_response(error),
     };
     let functions = match &context.backend {
-        AnalyzerBackend::Indexed(indexed_backend) => match indexed_backend.find_functions(query) {
+        AnalyzerBackend::Store(store_backend) => match store_backend.find_functions(query) {
             Ok(functions) => functions,
             Err(error) => return error_response(error),
         },
@@ -41,7 +159,7 @@ pub(crate) fn classes(path: &str, language: Option<&str>, query: &str) -> Value 
         Err(error) => return error_response(error),
     };
     let classes = match &context.backend {
-        AnalyzerBackend::Indexed(indexed_backend) => match indexed_backend.find_classes(query) {
+        AnalyzerBackend::Store(store_backend) => match store_backend.find_classes(query) {
             Ok(classes) => classes,
             Err(error) => return error_response(error),
         },
@@ -60,12 +178,10 @@ pub(crate) fn fields(path: &str, language: Option<&str>, class_name: &str) -> Va
         Err(error) => return error_response(error),
     };
     let fields = match &context.backend {
-        AnalyzerBackend::Indexed(indexed_backend) => {
-            match indexed_backend.find_fields(class_name) {
-                Ok(fields) => fields,
-                Err(error) => return error_response(error),
-            }
-        }
+        AnalyzerBackend::Store(store_backend) => match store_backend.find_fields(class_name) {
+            Ok(fields) => fields,
+            Err(error) => return error_response(error),
+        },
         AnalyzerBackend::Source(source_backend) => source_backend.find_fields(class_name),
     };
     success_response(
@@ -84,7 +200,7 @@ pub(crate) fn imports(path: &str, language: Option<&str>, query: &str) -> Value 
         Err(error) => return error_response(error),
     };
     let imports = match &context.backend {
-        AnalyzerBackend::Indexed(indexed_backend) => match indexed_backend.find_imports(query) {
+        AnalyzerBackend::Store(store_backend) => match store_backend.find_imports(query) {
             Ok(imports) => imports,
             Err(error) => return error_response(error),
         },
@@ -103,12 +219,10 @@ pub(crate) fn annotations(path: &str, language: Option<&str>, query: &str) -> Va
         Err(error) => return error_response(error),
     };
     let annotations = match &context.backend {
-        AnalyzerBackend::Indexed(indexed_backend) => {
-            match indexed_backend.find_annotations(query) {
-                Ok(annotations) => annotations,
-                Err(error) => return error_response(error),
-            }
-        }
+        AnalyzerBackend::Store(store_backend) => match store_backend.find_annotations(query) {
+            Ok(annotations) => annotations,
+            Err(error) => return error_response(error),
+        },
         AnalyzerBackend::Source(source_backend) => source_backend.find_annotations(query),
     };
     success_response(
@@ -129,8 +243,8 @@ pub(crate) fn callers(
         Err(error) => return error_response(error),
     };
     let callers = match &context.backend {
-        AnalyzerBackend::Indexed(indexed_backend) => {
-            match indexed_backend.find_callers(function_name, class_name) {
+        AnalyzerBackend::Store(store_backend) => {
+            match store_backend.find_callers(function_name, class_name) {
                 Ok(callers) => callers,
                 Err(error) => return error_response(error),
             }
@@ -161,8 +275,8 @@ pub(crate) fn callees(
         Err(error) => return error_response(error),
     };
     let callees = match &context.backend {
-        AnalyzerBackend::Indexed(indexed_backend) => {
-            match indexed_backend.find_callees(function_name, class_name) {
+        AnalyzerBackend::Store(store_backend) => {
+            match store_backend.find_callees(function_name, class_name) {
                 Ok(callees) => callees,
                 Err(error) => return error_response(error),
             }
@@ -195,8 +309,8 @@ pub(crate) fn graph(
         Err(error) => return error_response(error),
     };
     let graphs = match &context.backend {
-        AnalyzerBackend::Indexed(indexed_backend) => {
-            match indexed_backend.find_graphs(function_name, class_name, direction, max_depth) {
+        AnalyzerBackend::Store(store_backend) => {
+            match store_backend.find_graphs(function_name, class_name, direction, max_depth) {
                 Ok(graphs) => graphs,
                 Err(error) => return error_response(error),
             }
@@ -227,7 +341,7 @@ pub(crate) fn symbols(path: &str, language: Option<&str>, name: &str) -> Value {
         Err(error) => return error_response(error),
     };
     match &context.backend {
-        AnalyzerBackend::Indexed(indexed_backend) => match indexed_backend.find_symbols(name) {
+        AnalyzerBackend::Store(store_backend) => match store_backend.find_symbols(name) {
             Ok(refs) if refs.is_empty() => success_response(
                 &context.real_path,
                 context.searched_files(),
@@ -277,8 +391,8 @@ pub(crate) fn definition(
         Err(error) => return error_response(error),
     };
     match &context.backend {
-        AnalyzerBackend::Indexed(indexed_backend) => {
-            match indexed_backend.find_functions(function_name) {
+        AnalyzerBackend::Store(store_backend) => {
+            match store_backend.find_functions(function_name) {
                 Ok(functions) => {
                     let functions: Vec<_> = functions
                         .into_iter()
@@ -293,7 +407,11 @@ pub(crate) fn definition(
                     }
                     match SourceAnalyzer::new_with_language(&context.real_path, language) {
                         Ok(source_backend) => {
-                            let searched_files = unique_function_file_count(&functions);
+                            let searched_files = functions
+                                .iter()
+                                .map(|function| function.location.file.as_str())
+                                .collect::<std::collections::HashSet<_>>()
+                                .len();
                             let functions = source_backend.hydrate_function_bodies(functions);
                             success_response(
                                 &context.real_path,
@@ -339,8 +457,8 @@ pub(crate) fn super_classes(path: &str, language: Option<&str>, class_name: &str
         Err(error) => return error_response(error),
     };
     let super_classes = match &context.backend {
-        AnalyzerBackend::Indexed(indexed_backend) => {
-            match indexed_backend.find_super_classes(class_name) {
+        AnalyzerBackend::Store(store_backend) => {
+            match store_backend.find_super_classes(class_name) {
                 Ok(super_classes) => super_classes,
                 Err(error) => return error_response(error),
             }
@@ -363,12 +481,10 @@ pub(crate) fn sub_classes(path: &str, language: Option<&str>, class_name: &str) 
         Err(error) => return error_response(error),
     };
     let sub_classes = match &context.backend {
-        AnalyzerBackend::Indexed(indexed_backend) => {
-            match indexed_backend.find_sub_classes(class_name) {
-                Ok(sub_classes) => sub_classes,
-                Err(error) => return error_response(error),
-            }
-        }
+        AnalyzerBackend::Store(store_backend) => match store_backend.find_sub_classes(class_name) {
+            Ok(sub_classes) => sub_classes,
+            Err(error) => return error_response(error),
+        },
         AnalyzerBackend::Source(source_backend) => source_backend.find_sub_classes(class_name),
     };
     success_response(
@@ -379,31 +495,6 @@ pub(crate) fn sub_classes(path: &str, language: Option<&str>, class_name: &str) 
             ("sub_classes", output::classes(&sub_classes)),
         ],
     )
-}
-
-struct CommandContext {
-    real_path: String,
-    backend: AnalyzerBackend,
-}
-
-impl CommandContext {
-    fn load(path: &str, language: Option<&str>) -> anyhow::Result<Self> {
-        let real_path = resolve_path(path);
-        let backend = with_analyzer_backend(&real_path, language)?;
-        Ok(Self { real_path, backend })
-    }
-
-    fn searched_files(&self) -> usize {
-        match &self.backend {
-            AnalyzerBackend::Indexed(indexed_backend) => indexed_backend.file_count(),
-            AnalyzerBackend::Source(source_backend) => source_backend.file_count(),
-        }
-    }
-}
-
-enum AnalyzerBackend {
-    Indexed(IndexedAnalyzer),
-    Source(SourceAnalyzer),
 }
 
 fn resolve_path(path: &str) -> String {
@@ -452,18 +543,30 @@ fn error_response(error: impl std::fmt::Display) -> Value {
     json!({ "error": error.to_string() })
 }
 
-fn unique_function_file_count(functions: &[FunctionInfo]) -> usize {
-    functions
-        .iter()
-        .map(|function| function.location.file.as_str())
-        .collect::<HashSet<_>>()
-        .len()
-}
-
-fn with_analyzer_backend(path: &str, language: Option<&str>) -> anyhow::Result<AnalyzerBackend> {
-    if let Some(indexed_backend) = IndexedAnalyzer::from_current_dir_if_compatible(path, language)?
-    {
-        return Ok(AnalyzerBackend::Indexed(indexed_backend));
+fn build_file_index(
+    file: &str,
+    existing: Option<&IndexedFileRecord>,
+) -> anyhow::Result<(IndexedFileRecord, Option<FileIndexData>)> {
+    let language = detect_language(Path::new(file))
+        .ok_or_else(|| anyhow::anyhow!("Could not detect language for: {}", file))?
+        .to_string();
+    let record_without_hash = file_record_metadata(file, &language)?;
+    if let Some(record) = existing.filter(|record| {
+        record.language == record_without_hash.language
+            && record.mtime_nanos == record_without_hash.mtime_nanos
+            && record.size_bytes == record_without_hash.size_bytes
+    }) {
+        return Ok((record.clone(), None));
     }
-    SourceAnalyzer::new_with_language(path, language).map(AnalyzerBackend::Source)
+    let file_record = file_record_with_hash(file, &language)?;
+
+    let mut extractor = CodeExtractor::new(file)?;
+    let snapshot = extractor.snapshot_for_index();
+    Ok((
+        file_record.clone(),
+        Some(FileIndexData {
+            file: file_record,
+            snapshot,
+        }),
+    ))
 }

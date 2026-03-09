@@ -1,13 +1,14 @@
 use std::collections::{HashMap, HashSet};
+use std::convert::Infallible;
 
-use crate::analyzer::call_targets::{
-    matches_call_target, resolve_forward_targets, type_matches_class, ForwardTargetContext,
-};
 use crate::models::{
     CallGraphPath, CallInfo, FieldInfo, FunctionInfo, FunctionKey, GraphDirection, GraphPathNode,
     PythonPropertyInfo,
 };
-use crate::traversal::dfs::{collect_paths, PathStep};
+use crate::parser::call_targets::{
+    matches_call_target, resolve_forward_targets, type_matches_class, ForwardTargetContext,
+};
+use crate::traversal::{collect_paths_dfs, TraversalPathStep};
 
 #[derive(Debug, Clone)]
 pub(crate) struct RawPropertyCaller {
@@ -210,7 +211,7 @@ impl CallGraph {
         direction: GraphDirection,
         max_depth: usize,
     ) -> Vec<CallGraphPath> {
-        let mut paths = collect_paths(
+        let mut paths = collect_paths_dfs(
             start_nodes,
             direction,
             max_depth,
@@ -220,15 +221,18 @@ impl CallGraph {
                     GraphDirection::Backward => self.backward_edges.get(current),
                     GraphDirection::Forward => self.forward_edges.get(current),
                 };
-                neighbors
-                    .into_iter()
-                    .flatten()
-                    .cloned()
-                    .map(|neighbor| (neighbor.key, neighbor.call_site))
-                    .collect()
+                Ok::<Vec<(FunctionKey, CallSite)>, Infallible>(
+                    neighbors
+                        .into_iter()
+                        .flatten()
+                        .cloned()
+                        .map(|neighbor| (neighbor.key, neighbor.call_site))
+                        .collect(),
+                )
             },
             |direction, steps| self.materialize_graph(direction, steps),
-        );
+        )
+        .unwrap_or_else(|never| match never {});
         paths.sort_by(compare_graphs);
         paths
     }
@@ -236,7 +240,7 @@ impl CallGraph {
     fn materialize_graph(
         &self,
         direction: GraphDirection,
-        steps: &[PathStep<FunctionKey, CallSite>],
+        steps: &[TraversalPathStep<FunctionKey, CallSite>],
     ) -> CallGraphPath {
         let path: Vec<GraphPathNode> = steps
             .iter()

@@ -1,11 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
-use super::cache::AnalyzerCache;
-use crate::analyzer::call_targets::{
-    matches_call_target, split_function_target, type_matches_class,
-};
+use crate::cache::AnalyzerCache;
 use crate::models::*;
-use crate::parser::query;
+use crate::parser::call_targets::{matches_call_target, split_function_target, type_matches_class};
+use crate::parser::capture;
 use crate::parser::{languages::python, ParseContext};
 
 pub struct CodeExtractor {
@@ -168,7 +166,7 @@ impl CodeExtractor {
     }
 
     pub fn has_function_named(&self, name: &str, class_name: Option<&str>) -> bool {
-        query::has_function_capture_named(&self.parser, name, class_name)
+        capture::has_function_capture_named(&self.parser, name, class_name)
     }
 
     pub fn find_function_definitions(

@@ -6,7 +6,7 @@ use super::call_edges::IndexedFunction;
 use super::call_resolver::{CallTargetResolver, FieldTypeCache, ParamTypeCache};
 use super::{CallEdgeQuery, QueryContext};
 use crate::models::{CallGraphPath, FunctionKey, GraphDirection, GraphPathNode};
-use crate::traversal::dfs::{try_collect_paths, PathStep};
+use crate::traversal::{collect_paths_dfs, TraversalPathStep};
 
 #[derive(Clone)]
 struct CallSite {
@@ -64,7 +64,7 @@ impl<'a> CallGraphQuery<'a> {
         let param_type_cache = &mut state.param_type_cache;
         let is_property_cache = &mut state.is_property_cache;
 
-        let mut results = try_collect_paths(
+        let mut results = collect_paths_dfs(
             &start_nodes,
             direction,
             max_depth,
@@ -107,7 +107,7 @@ impl<'a> CallGraphQuery<'a> {
 
     fn materialize_graph(
         direction: GraphDirection,
-        steps: &[PathStep<IndexedFunction, CallSite>],
+        steps: &[TraversalPathStep<IndexedFunction, CallSite>],
     ) -> CallGraphPath {
         let path: Vec<GraphPathNode> = steps
             .iter()

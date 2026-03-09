@@ -4,7 +4,7 @@ use rusqlite::{params, OptionalExtension};
 
 use super::call_edges::IndexedFunction;
 use super::QueryContext;
-use crate::analyzer::call_targets::{
+use crate::parser::call_targets::{
     matches_call_target, resolve_forward_targets, type_matches_class, ForwardTargetContext,
 };
 

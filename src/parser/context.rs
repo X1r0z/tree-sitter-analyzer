@@ -1,17 +1,29 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
+use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
 use tree_sitter::{Node, Parser, Tree};
 
-use crate::languages::{detect_language, find_language, find_language_info};
-use crate::models::{Location, PythonPropertyCallerInfo};
+use super::capture::{self, CallCaptureMatch};
+use super::languages::{go, java, javascript, python};
+use crate::languages::{detect_language, find_language, find_language_info, QueryKind};
+use crate::models::{
+    AnnotationInfo, CallInfo, ClassInfo, FieldInfo, FunctionInfo, FunctionParamInfo, ImportInfo,
+    Location, PythonPropertyCallerInfo, SymbolRefInfo, SymbolRefKey,
+};
 
 pub(crate) type PythonPropertyKey = (String, Option<String>);
 pub(crate) type PythonPropertyDefinitions = HashSet<PythonPropertyKey>;
 pub(crate) type PythonPropertyCallers = HashMap<String, Vec<PythonPropertyCallerInfo>>;
+
+pub(crate) struct EnclosingContext<'a> {
+    pub(crate) function_name: Option<String>,
+    pub(crate) class_name: Option<String>,
+    pub(crate) function_node: Option<Node<'a>>,
+}
 
 pub(crate) struct ParseContext {
     pub(crate) file_path: String,
@@ -95,4 +107,821 @@ impl ParseContext {
     pub(crate) fn source_text(&self, start_byte: usize, end_byte: usize) -> String {
         String::from_utf8_lossy(&self.source[start_byte..end_byte]).into_owned()
     }
+
+    pub(crate) fn find_enclosing_context<'a>(&self, node: Node<'a>) -> EnclosingContext<'a> {
+        if let Some(class_name) = find_language_specific_enclosing_class_name(self, node) {
+            return EnclosingContext {
+                function_name: self.cached_function_name(node),
+                class_name: Some(class_name),
+                function_node: Some(node),
+            };
+        }
+
+        let mut current = node.parent();
+        let mut function_name: Option<String> = None;
+        let mut class_name: Option<String> = None;
+        let mut function_node: Option<Node<'a>> = None;
+
+        while let Some(current_node) = current {
+            if function_name.is_none() && is_function_like(current_node.kind()) {
+                function_name = self.cached_function_name(current_node);
+                function_node = Some(current_node);
+            }
+
+            if class_name.is_none() {
+                class_name = find_language_specific_enclosing_class_name(self, current_node);
+            }
+
+            if class_name.is_none()
+                && matches!(
+                    current_node.kind(),
+                    "class_definition"
+                        | "class_declaration"
+                        | "class_body"
+                        | "interface_declaration"
+                        | "enum_declaration"
+                        | "record_declaration"
+                        | "annotation_type_declaration"
+                )
+            {
+                class_name = self.cached_class_name(current_node);
+                current = current_node.parent();
+                continue;
+            }
+
+            current = current_node.parent();
+        }
+
+        EnclosingContext {
+            function_name,
+            class_name,
+            function_node,
+        }
+    }
+
+    pub(crate) fn cached_function_name(&self, node: Node) -> Option<String> {
+        let node_id = node.id();
+        if let Some(name) = self.function_names_by_node.borrow().get(&node_id) {
+            return name.clone();
+        }
+        let name = function_name_from_node(self, node);
+        self.function_names_by_node
+            .borrow_mut()
+            .insert(node_id, name.clone());
+        name
+    }
+
+    pub(crate) fn cached_class_name(&self, node: Node) -> Option<String> {
+        let node_id = node.id();
+        if let Some(name) = self.class_names_by_node.borrow().get(&node_id) {
+            return name.clone();
+        }
+        let name = class_name_from_node(self, node);
+        self.class_names_by_node
+            .borrow_mut()
+            .insert(node_id, name.clone());
+        name
+    }
+
+    pub(crate) fn collect_functions(&self, include_body: bool) -> Vec<FunctionInfo> {
+        let mut func_pairs: Vec<(Node<'_>, Node<'_>)> =
+            capture::collect_capture_pairs(self, QueryKind::Function, "function", "name");
+        func_pairs.sort_by_key(|(f, _)| (f.start_byte(), Reverse(f.end_byte())));
+
+        let mut functions = Vec::new();
+        let mut active_ranges: Vec<usize> = Vec::new();
+
+        for (func_node, name_node) in func_pairs {
+            let name = self.node_text(name_node);
+            if name.is_empty() {
+                continue;
+            }
+            let start = func_node.start_byte();
+            let end = func_node.end_byte();
+            while let Some(&active_end) = active_ranges.last() {
+                if start >= active_end {
+                    active_ranges.pop();
+                } else {
+                    break;
+                }
+            }
+            if !active_ranges.is_empty() {
+                continue;
+            }
+            active_ranges.push(end);
+            let class_name = self.find_enclosing_context(func_node).class_name;
+            functions.push(FunctionInfo {
+                name,
+                location: self.node_location(func_node),
+                body: if include_body {
+                    self.node_text(func_node)
+                } else {
+                    String::new()
+                },
+                class_name,
+                params: self.collect_function_params(func_node),
+            });
+        }
+
+        functions
+    }
+
+    pub(crate) fn collect_function_params(&self, function_node: Node) -> Vec<FunctionParamInfo> {
+        let target = unwrap_callable_node(function_node);
+        match self.language.as_str() {
+            "python" => python::function_params(self, target),
+            "javascript" | "typescript" | "tsx" => javascript::function_params(self, target),
+            "java" => java::function_params(self, target),
+            "go" => go::function_params(self, target),
+            _ => Vec::new(),
+        }
+    }
+
+    pub(crate) fn collect_classes(&self) -> Vec<ClassInfo> {
+        let mut methods_by_class = std::collections::HashMap::new();
+        if self.language == "go" {
+            for function in self.collect_functions(false) {
+                if let Some(class_name) = function.class_name {
+                    methods_by_class
+                        .entry(class_name)
+                        .or_insert_with(Vec::new)
+                        .push(function.name);
+                }
+            }
+            for methods in methods_by_class.values_mut() {
+                methods.sort_unstable();
+                methods.dedup();
+            }
+        }
+
+        let mut class_pairs: Vec<(Node<'_>, Node<'_>)> =
+            capture::collect_capture_pairs(self, QueryKind::Class, "class", "name");
+        class_pairs.sort_by_key(|(class_node, _)| {
+            (class_node.start_byte(), Reverse(class_node.end_byte()))
+        });
+
+        let mut classes = Vec::new();
+        let mut active_ranges: Vec<usize> = Vec::new();
+
+        for (class_node, name_node) in class_pairs {
+            let name = self.node_text(name_node);
+            if name.is_empty() {
+                continue;
+            }
+            let start = class_node.start_byte();
+            let end = class_node.end_byte();
+            while let Some(&active_end) = active_ranges.last() {
+                if start >= active_end {
+                    active_ranges.pop();
+                } else {
+                    break;
+                }
+            }
+            let is_nested = !active_ranges.is_empty();
+            if is_nested && self.language != "java" {
+                continue;
+            }
+            active_ranges.push(end);
+
+            let mut method_names = class_method_names(self, class_node);
+            if self.language == "go" {
+                if let Some(go_methods) = methods_by_class.get(&name) {
+                    method_names.extend(go_methods.iter().cloned());
+                    method_names.sort_unstable();
+                    method_names.dedup();
+                }
+            }
+            let field_names = class_field_names(self, class_node);
+            let super_class_names = self.collect_super_class_names(class_node);
+
+            classes.push(ClassInfo {
+                name,
+                location: self.node_location(class_node),
+                methods: method_names,
+                fields: field_names,
+                super_classes: super_class_names,
+            });
+        }
+
+        classes
+    }
+
+    pub(crate) fn collect_class_field_infos(
+        &self,
+        class_node: Node,
+        class_name: &str,
+    ) -> Vec<FieldInfo> {
+        match self.language.as_str() {
+            "python" => python::field_infos(self, class_node, class_name),
+            "javascript" | "typescript" | "tsx" => {
+                javascript::field_infos(self, class_node, class_name)
+            }
+            "java" => java::field_infos(self, class_node, class_name),
+            "go" => go::field_infos(self, class_node, class_name),
+            _ => Vec::new(),
+        }
+    }
+
+    pub(crate) fn collect_super_class_names(&self, class_node: Node) -> Vec<String> {
+        match self.language.as_str() {
+            "python" => python::super_class_names(self, class_node),
+            "javascript" | "typescript" | "tsx" => javascript::super_class_names(self, class_node),
+            "java" => java::super_class_names(self, class_node),
+            "go" => go::embedded_type_names(self, class_node),
+            _ => Vec::new(),
+        }
+    }
+
+    pub(crate) fn collect_field_infos_for_class(&self, class_name: &str) -> Vec<FieldInfo> {
+        let mut candidates: Vec<Node<'_>> = Vec::new();
+        for (class_node, name_node) in
+            capture::collect_capture_pairs(self, QueryKind::Class, "class", "name")
+        {
+            if self.node_text_eq(name_node, class_name) {
+                candidates.push(class_node);
+            }
+        }
+        if candidates.is_empty() {
+            return Vec::new();
+        }
+
+        candidates.sort_by_key(|node| {
+            let size = node.end_byte() - node.start_byte();
+            (size, node.start_byte())
+        });
+        self.collect_class_field_infos(candidates[0], class_name)
+    }
+
+    pub(crate) fn collect_calls(&self) -> Vec<CallInfo> {
+        let mut matched_calls: Vec<CallCaptureMatch<'_>> =
+            capture::collect_call_capture_matches(self, QueryKind::Call);
+        let is_js_family = matches!(self.language.as_str(), "javascript" | "typescript" | "tsx");
+        if is_js_family {
+            matched_calls.sort_by_key(|m| m.call.start_byte());
+        }
+
+        let mut calls = Vec::new();
+        for matched in &matched_calls {
+            let call_node = matched.call;
+            let enclosing = self.find_enclosing_context(call_node);
+            let (callee, is_method, obj_name, callee_function_node) = if self.language == "java" {
+                let (callee_name, resolved_is_method, object_name) =
+                    java::resolve_java_call_parts(self, call_node);
+                (callee_name, resolved_is_method, object_name, None)
+            } else {
+                resolve_non_java_call_parts(self, matched)
+            };
+
+            if callee.is_empty() {
+                continue;
+            }
+
+            let call_location = self.node_location(call_node);
+            let mut used_resolved_calls = false;
+            if is_js_family
+                && !is_method
+                && callee_function_node
+                    .map(|node| node.kind() == "identifier")
+                    .unwrap_or(false)
+                && enclosing.function_node.is_some()
+            {
+                let resolved = self.resolve_js_call_targets_for_identifier(call_node, &callee);
+                if !resolved.is_empty() {
+                    for resolved_callee in resolved {
+                        calls.push(CallInfo {
+                            callee: resolved_callee,
+                            location: call_location.clone(),
+                            caller: enclosing.function_name.clone(),
+                            caller_class_name: enclosing.class_name.clone(),
+                            object_name: obj_name.clone(),
+                        });
+                    }
+                    used_resolved_calls = true;
+                }
+            }
+
+            if !used_resolved_calls {
+                calls.push(CallInfo {
+                    callee,
+                    location: call_location,
+                    caller: enclosing.function_name.clone(),
+                    caller_class_name: enclosing.class_name.clone(),
+                    object_name: obj_name,
+                });
+            }
+        }
+
+        calls
+    }
+
+    pub(crate) fn collect_imports(&self) -> Vec<ImportInfo> {
+        capture::collect_capture_nodes(self, QueryKind::Import, "module")
+            .into_iter()
+            .map(|node| ImportInfo {
+                module: self.node_text_unquoted(node).into_owned(),
+                location: self.node_location(node),
+            })
+            .collect()
+    }
+
+    pub(crate) fn collect_annotations(&self) -> Vec<AnnotationInfo> {
+        match self.language.as_str() {
+            "java" => java::extract_java_annotations(self),
+            "python" => python::extract_python_decorators(self),
+            _ => Vec::new(),
+        }
+    }
+
+    pub(crate) fn collect_symbols(&self) -> Vec<SymbolRefInfo> {
+        scan_symbols(self, |node| {
+            let name = self.node_text(node);
+            (!name.is_empty()).then(|| SymbolRefInfo {
+                name,
+                node_type: node.kind().to_string(),
+                location: self.node_location(node),
+                start_column: node.start_position().column,
+                end_column: node.end_position().column,
+                context: String::new(),
+            })
+        })
+    }
+
+    pub(crate) fn find_symbols(&self, name: &str, with_context: bool) -> Vec<SymbolRefInfo> {
+        let name_bytes = name.as_bytes();
+        if name_bytes.is_empty()
+            || !self
+                .source
+                .windows(name_bytes.len())
+                .any(|window| window == name_bytes)
+        {
+            return Vec::new();
+        }
+
+        scan_symbols(self, |node| {
+            (self.node_bytes(node) == name_bytes).then(|| SymbolRefInfo {
+                name: name.to_string(),
+                node_type: node.kind().to_string(),
+                location: self.node_location(node),
+                start_column: node.start_position().column,
+                end_column: node.end_position().column,
+                context: if with_context {
+                    node.parent()
+                        .map(|parent| self.node_text(parent))
+                        .unwrap_or_default()
+                } else {
+                    String::new()
+                },
+            })
+        })
+    }
+
+    pub(crate) fn hydrate_symbols(&self, candidates: &[SymbolRefInfo]) -> Vec<SymbolRefInfo> {
+        if candidates.is_empty() {
+            return Vec::new();
+        }
+
+        let expected: std::collections::HashSet<SymbolRefKey> =
+            candidates.iter().map(SymbolRefKey::from).collect();
+        scan_symbols(self, |node| {
+            let symbol = SymbolRefInfo {
+                name: self.node_text(node),
+                node_type: node.kind().to_string(),
+                location: self.node_location(node),
+                start_column: node.start_position().column,
+                end_column: node.end_position().column,
+                context: String::new(),
+            };
+            expected
+                .contains(&SymbolRefKey::from(&symbol))
+                .then(|| SymbolRefInfo {
+                    context: node
+                        .parent()
+                        .map(|parent| self.node_text(parent))
+                        .unwrap_or_default(),
+                    ..symbol
+                })
+        })
+    }
+}
+
+fn unwrap_callable_node<'a>(node: Node<'a>) -> Node<'a> {
+    if node.kind() == "decorated_definition" {
+        if let Some(definition) = node.child_by_field_name("definition") {
+            return definition;
+        }
+    }
+    node
+}
+
+fn find_language_specific_enclosing_class_name(
+    context: &ParseContext,
+    node: Node<'_>,
+) -> Option<String> {
+    match context.language.as_str() {
+        "go" if node.kind() == "method_declaration" => go::receiver_type_name(context, node),
+        _ => None,
+    }
+}
+
+fn is_function_like(node_kind: &str) -> bool {
+    matches!(
+        node_kind,
+        "function_definition"
+            | "async_function_definition"
+            | "function_declaration"
+            | "method_definition"
+            | "arrow_function"
+            | "method_declaration"
+            | "constructor_declaration"
+            | "function_expression"
+            | "func_literal"
+    )
+}
+
+fn anonymous_function_name(context: &ParseContext, function_node: Node<'_>) -> Option<String> {
+    let parent = function_node.parent()?;
+    match parent.kind() {
+        "variable_declarator" => {
+            let name_node = parent.child_by_field_name("name")?;
+            if name_node.kind() == "identifier" {
+                return Some(context.node_text(name_node));
+            }
+        }
+        "assignment_expression" | "assignment" => {
+            let left_node = parent.child_by_field_name("left")?;
+            if left_node.kind() == "identifier" {
+                return Some(context.node_text(left_node));
+            }
+        }
+        "pair" | "property" => {
+            let key_node = parent.child_by_field_name("key")?;
+            if matches!(
+                key_node.kind(),
+                "identifier" | "property_identifier" | "string"
+            ) {
+                let text = context.node_text_lossy(key_node);
+                return Some(text.trim_matches(|c| c == '"' || c == '\'').to_string());
+            }
+        }
+        "export_statement" => {
+            for i in 0..parent.child_count() {
+                let child = parent.child(i as u32).unwrap();
+                if context.node_text_eq(child, "default") {
+                    return Some("<default_export>".to_string());
+                }
+            }
+        }
+        _ => {}
+    }
+    None
+}
+
+fn function_name_from_node(context: &ParseContext, node: Node<'_>) -> Option<String> {
+    let anonymous_types = ["arrow_function", "func_literal"];
+    if let Some(name_node) = node.child_by_field_name("name") {
+        return Some(context.node_text(name_node));
+    }
+    if anonymous_types.contains(&node.kind()) || node.kind() == "function_expression" {
+        return anonymous_function_name(context, node);
+    }
+    for i in 0..node.child_count() {
+        let child = node.child(i as u32).unwrap();
+        if matches!(
+            child.kind(),
+            "identifier" | "property_identifier" | "field_identifier"
+        ) {
+            return Some(context.node_text(child));
+        }
+    }
+    None
+}
+
+fn class_name_from_node(context: &ParseContext, node: Node<'_>) -> Option<String> {
+    if let Some(name_node) = node.child_by_field_name("name") {
+        let class_name = context.node_text(name_node);
+        if !class_name.is_empty() {
+            return Some(class_name);
+        }
+    }
+    for i in 0..node.child_count() {
+        let child = node.child(i as u32).unwrap();
+        if matches!(child.kind(), "identifier" | "type_identifier" | "name") {
+            let class_name = context.node_text(child);
+            if !class_name.is_empty() {
+                return Some(class_name);
+            }
+        }
+    }
+    None
+}
+
+pub(crate) fn collect_field_infos_from_declarations(
+    parser: &ParseContext,
+    class_node: Node<'_>,
+    class_name: &str,
+    include_embedded_type_names: bool,
+) -> Vec<FieldInfo> {
+    let mut fields = Vec::new();
+    let mut seen = HashSet::new();
+    let mut stack = vec![class_node];
+
+    while let Some(node) = stack.pop() {
+        if node.id() != class_node.id()
+            && matches!(
+                node.kind(),
+                "class_definition"
+                    | "class_declaration"
+                    | "class"
+                    | "interface_declaration"
+                    | "enum_declaration"
+                    | "record_declaration"
+                    | "annotation_type_declaration"
+            )
+        {
+            let nested_name = node
+                .child_by_field_name("name")
+                .map(|child| parser.node_text(child))
+                .unwrap_or_default();
+            if !nested_name.is_empty() && nested_name != class_name {
+                continue;
+            }
+        }
+
+        if matches!(
+            node.kind(),
+            "function_definition"
+                | "method_definition"
+                | "method_declaration"
+                | "constructor_declaration"
+        ) {
+            continue;
+        }
+
+        if matches!(node.kind(), "field_definition" | "field_declaration") {
+            let mut names = Vec::new();
+            let mut field_type = node
+                .child_by_field_name("type")
+                .map(|child| parser.node_text(child));
+
+            for i in 0..node.child_count() {
+                let child = node.child(i as u32).unwrap();
+                if matches!(
+                    child.kind(),
+                    "identifier" | "property_identifier" | "field_identifier"
+                ) {
+                    names.push(parser.node_text(child));
+                } else if child.kind() == "variable_declarator" {
+                    for j in 0..child.child_count() {
+                        let sub = child.child(j as u32).unwrap();
+                        if sub.kind() == "identifier" {
+                            names.push(parser.node_text(sub));
+                            break;
+                        }
+                    }
+                } else if field_type.is_none()
+                    && matches!(
+                        child.kind(),
+                        "type_annotation"
+                            | "type"
+                            | "type_identifier"
+                            | "integral_type"
+                            | "floating_point_type"
+                            | "boolean_type"
+                            | "generic_type"
+                            | "array_type"
+                            | "scoped_type_identifier"
+                    )
+                {
+                    field_type = Some(parser.node_text(child));
+                }
+            }
+
+            if include_embedded_type_names && names.is_empty() {
+                if let Some(field_type_text) = field_type.as_ref() {
+                    let type_str = field_type_text.trim_start_matches('*');
+                    let embedded_type_name = if type_str.contains('.') {
+                        type_str.rsplit('.').next().unwrap_or(type_str)
+                    } else {
+                        type_str
+                    };
+                    names.push(embedded_type_name.to_string());
+                }
+            }
+
+            for name in names {
+                if !name.is_empty() && seen.insert(name.clone()) {
+                    fields.push(FieldInfo {
+                        name,
+                        location: parser.node_location(node),
+                        field_type: field_type.clone(),
+                        class_name: Some(class_name.to_string()),
+                    });
+                }
+            }
+            continue;
+        }
+
+        for i in (0..node.child_count()).rev() {
+            if let Some(child) = node.child(i as u32) {
+                stack.push(child);
+            }
+        }
+    }
+
+    fields
+}
+
+fn class_method_names(parser: &ParseContext, class_node: Node<'_>) -> Vec<String> {
+    let mut methods = Vec::new();
+    let mut stack = vec![class_node];
+    while let Some(node) = stack.pop() {
+        if matches!(
+            node.kind(),
+            "function_definition"
+                | "method_definition"
+                | "method_declaration"
+                | "constructor_declaration"
+                | "method_elem"
+                | "method_spec"
+        ) {
+            for i in 0..node.child_count() {
+                let child = node.child(i as u32).unwrap();
+                if matches!(
+                    child.kind(),
+                    "identifier" | "property_identifier" | "field_identifier" | "name"
+                ) {
+                    methods.push(parser.node_text(child));
+                    break;
+                }
+            }
+            continue;
+        }
+        for i in (0..node.child_count()).rev() {
+            if let Some(child) = node.child(i as u32) {
+                stack.push(child);
+            }
+        }
+    }
+    methods
+}
+
+fn class_field_names(parser: &ParseContext, class_node: Node<'_>) -> Vec<String> {
+    let class_name = class_node
+        .child_by_field_name("name")
+        .map(|child| parser.node_text(child))
+        .unwrap_or_default();
+    parser
+        .collect_class_field_infos(class_node, &class_name)
+        .into_iter()
+        .map(|field| field.name)
+        .collect()
+}
+
+fn split_attribute_parts(parser: &ParseContext, node: Node<'_>) -> (String, Option<String>) {
+    let mut callee = String::new();
+    let mut obj_name: Option<String> = None;
+
+    match node.kind() {
+        "attribute" => {
+            if let Some(attr_node) = node.child_by_field_name("attribute") {
+                callee = parser.node_text(attr_node);
+            }
+            if let Some(obj_node) = node.child_by_field_name("object") {
+                obj_name = Some(parser.node_text(obj_node));
+            }
+        }
+        "member_expression" => {
+            if let Some(prop_node) = node.child_by_field_name("property") {
+                callee = parser.node_text(prop_node);
+            }
+            if let Some(obj_node) = node.child_by_field_name("object") {
+                obj_name = Some(parser.node_text(obj_node));
+            }
+        }
+        "selector_expression" => {
+            if let Some(field_node) = node.child_by_field_name("field") {
+                callee = parser.node_text(field_node);
+            }
+            if let Some(operand_node) = node.child_by_field_name("operand") {
+                obj_name = Some(parser.node_text(operand_node));
+            }
+        }
+        _ => {
+            let mut ids = Vec::new();
+            for i in 0..node.named_child_count() {
+                let child = node.named_child(i as u32).unwrap();
+                if matches!(
+                    child.kind(),
+                    "identifier"
+                        | "property_identifier"
+                        | "private_property_identifier"
+                        | "field_identifier"
+                ) {
+                    ids.push(parser.node_text(child));
+                } else if matches!(
+                    child.kind(),
+                    "attribute" | "member_expression" | "selector_expression"
+                ) {
+                    obj_name = Some(parser.node_text(child));
+                }
+            }
+            if let Some(last) = ids.last() {
+                callee = last.clone();
+                if ids.len() > 1 && obj_name.is_none() {
+                    obj_name = Some(ids[0].clone());
+                }
+            }
+        }
+    }
+
+    (callee, obj_name)
+}
+
+fn resolve_non_java_call_parts<'a>(
+    parser: &ParseContext,
+    matched: &CallCaptureMatch<'a>,
+) -> (String, bool, Option<String>, Option<Node<'a>>) {
+    let call_node = matched.call;
+    let mut callee = String::new();
+    let mut is_method = false;
+    let mut obj_name: Option<String> = None;
+    let mut callee_function_node: Option<Node<'_>> = None;
+
+    if let Some(func_node) = call_node.child_by_field_name("function") {
+        callee_function_node = Some(func_node);
+        if func_node.kind() == "identifier" {
+            callee = parser.node_text(func_node);
+        } else if matches!(
+            func_node.kind(),
+            "attribute" | "member_expression" | "selector_expression"
+        ) {
+            is_method = true;
+            let (callee_name, object_name) = split_attribute_parts(parser, func_node);
+            callee = callee_name;
+            obj_name = object_name;
+        }
+    }
+    if callee.is_empty() {
+        if let Some(callee_cap) = matched.callee {
+            callee = parser.node_text(callee_cap);
+        }
+        if let Some(method_cap) = matched.method {
+            callee = parser.node_text(method_cap);
+            is_method = true;
+            if let Some(obj_cap) = matched.object {
+                obj_name = Some(parser.node_text(obj_cap));
+            }
+        }
+    }
+
+    (callee, is_method, obj_name, callee_function_node)
+}
+
+fn is_symbol_ref_node(parser: &ParseContext, node: Node<'_>) -> bool {
+    match parser.language.as_str() {
+        "python" => matches!(
+            node.kind(),
+            "identifier" | "dotted_name" | "relative_import"
+        ),
+        "javascript" | "typescript" | "tsx" => matches!(
+            node.kind(),
+            "identifier"
+                | "property_identifier"
+                | "private_property_identifier"
+                | "field_identifier"
+                | "type_identifier"
+        ),
+        "java" => matches!(
+            node.kind(),
+            "identifier" | "type_identifier" | "scoped_identifier" | "scoped_type_identifier"
+        ),
+        "go" => matches!(
+            node.kind(),
+            "identifier" | "field_identifier" | "type_identifier" | "qualified_type"
+        ),
+        _ => false,
+    }
+}
+
+fn scan_symbols(
+    parser: &ParseContext,
+    mut map_node: impl FnMut(Node<'_>) -> Option<SymbolRefInfo>,
+) -> Vec<SymbolRefInfo> {
+    let mut refs = Vec::new();
+    let mut stack = vec![parser.tree.root_node()];
+    while let Some(node) = stack.pop() {
+        if node.is_named() {
+            if is_symbol_ref_node(parser, node) {
+                if let Some(symbol) = map_node(node) {
+                    refs.push(symbol);
+                }
+            }
+            for i in (0..node.named_child_count()).rev() {
+                if let Some(child) = node.named_child(i as u32) {
+                    stack.push(child);
+                }
+            }
+        }
+    }
+    refs
 }

@@ -21,7 +21,7 @@ fn split_attribute_parts(parser: &ParseContext, node: Node<'_>) -> (String, Opti
     (callee, obj_name)
 }
 
-pub(crate) fn python_function_params(
+pub(crate) fn function_params(
     parser: &ParseContext,
     function_node: Node<'_>,
 ) -> Vec<FunctionParamInfo> {
@@ -276,7 +276,7 @@ pub(crate) fn collect_python_property_indexes(
     (properties, callers_by_property)
 }
 
-pub(crate) fn python_field_infos(
+pub(crate) fn field_infos(
     parser: &ParseContext,
     class_node: Node<'_>,
     class_name: &str,
@@ -388,7 +388,7 @@ pub(crate) fn python_field_infos(
     ctx.fields
 }
 
-pub(crate) fn python_super_class_names(parser: &ParseContext, class_node: Node<'_>) -> Vec<String> {
+pub(crate) fn super_class_names(parser: &ParseContext, class_node: Node<'_>) -> Vec<String> {
     let mut super_classes = Vec::new();
     for i in 0..class_node.child_count() {
         let child = class_node.child(i as u32).unwrap();

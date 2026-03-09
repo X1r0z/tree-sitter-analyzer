@@ -11,6 +11,16 @@ use crate::models::{
 const SQLITE_BATCH_SIZE: usize = 256;
 
 #[derive(Debug)]
+struct FunctionRow {
+    function_id: i64,
+    file: String,
+    name: String,
+    class_name: Option<String>,
+    start_line: i64,
+    end_line: i64,
+}
+
+#[derive(Debug)]
 struct ClassRow {
     class_id: i64,
     file_id: i64,
@@ -48,7 +58,7 @@ impl<'a> LookupQuery<'a> {
         let prefilter = RegexPrefilter::new(query);
         let mut sql = String::from(
             "
-            SELECT f.path, fn.name, fn.class_name, fn.start_line, fn.end_line
+            SELECT fn.id, f.path, fn.name, fn.class_name, fn.start_line, fn.end_line
             FROM functions fn
             JOIN files f ON f.id = fn.file_id
             ",
@@ -73,19 +83,36 @@ impl<'a> LookupQuery<'a> {
 
         let mut stmt = self.ctx.conn.prepare(&sql)?;
         let rows = stmt.query_map(params_from_iter(params), |row| {
-            Ok(FunctionInfo {
-                name: row.get(1)?,
-                location: Location {
-                    file: row.get(0)?,
-                    start_line: row.get::<_, i64>(3)? as usize,
-                    end_line: row.get::<_, i64>(4)? as usize,
-                },
-                body: String::new(),
-                class_name: row.get(2)?,
-                params: Vec::new(),
+            Ok(FunctionRow {
+                function_id: row.get(0)?,
+                file: row.get(1)?,
+                name: row.get(2)?,
+                class_name: row.get(3)?,
+                start_line: row.get(4)?,
+                end_line: row.get(5)?,
             })
         })?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+        let function_rows = rows.collect::<Result<Vec<_>, _>>()?;
+        let function_ids: Vec<_> = function_rows.iter().map(|row| row.function_id).collect();
+        let params_by_function = self.load_params_by_function_id(&function_ids)?;
+
+        Ok(function_rows
+            .into_iter()
+            .map(|row| FunctionInfo {
+                name: row.name,
+                location: Location {
+                    file: row.file,
+                    start_line: row.start_line as usize,
+                    end_line: row.end_line as usize,
+                },
+                body: String::new(),
+                class_name: row.class_name,
+                params: params_by_function
+                    .get(&row.function_id)
+                    .cloned()
+                    .unwrap_or_default(),
+            })
+            .collect())
     }
 
     pub(crate) fn find_classes(&self, query: &str) -> anyhow::Result<Vec<ClassInfo>> {
@@ -335,6 +362,39 @@ impl<'a> LookupQuery<'a> {
             for row in rows {
                 let (class_id, method_name) = row?;
                 map.entry(class_id).or_default().push(method_name);
+            }
+        }
+        Ok(map)
+    }
+
+    pub(super) fn load_params_by_function_id(
+        &self,
+        function_ids: &[i64],
+    ) -> anyhow::Result<HashMap<i64, Vec<crate::models::FunctionParamInfo>>> {
+        if function_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut map: HashMap<i64, Vec<crate::models::FunctionParamInfo>> = HashMap::new();
+        for chunk in function_ids.chunks(SQLITE_BATCH_SIZE) {
+            let placeholders = repeat_placeholders(chunk.len());
+            let sql = format!(
+                "SELECT function_id, name, param_type FROM function_params WHERE function_id IN ({placeholders}) ORDER BY function_id, position"
+            );
+            let mut stmt = self.ctx.conn.prepare(&sql)?;
+            let rows = stmt.query_map(params_from_iter(chunk.iter()), |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    crate::models::FunctionParamInfo {
+                        name: row.get::<_, String>(1)?,
+                        param_type: row.get(2)?,
+                    },
+                ))
+            })?;
+
+            for row in rows {
+                let (function_id, param) = row?;
+                map.entry(function_id).or_default().push(param);
             }
         }
         Ok(map)

@@ -1,8 +1,5 @@
-mod backend;
-mod cache;
+mod analyzer;
 mod commands;
-mod extractor;
-mod graph;
 mod index;
 mod languages;
 mod models;
@@ -11,16 +8,10 @@ mod parser;
 mod traversal;
 mod utils;
 
-use std::path::Path;
 use std::process;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
-use crate::commands::{
-    cmd_annotations, cmd_callees, cmd_callers, cmd_classes, cmd_definition, cmd_fields,
-    cmd_functions, cmd_graph, cmd_imports, cmd_index, cmd_sub_classes, cmd_super_classes,
-    cmd_symbols,
-};
 use crate::models::GraphDirection;
 use crate::utils::relativize_json_file_paths;
 
@@ -232,22 +223,6 @@ enum Commands {
     },
 }
 
-pub fn resolve_path(path: &str) -> String {
-    match std::fs::canonicalize(path) {
-        Ok(path) => path.to_string_lossy().to_string(),
-        Err(_) => {
-            let path_ref = Path::new(path);
-            if path_ref.is_absolute() {
-                path.to_string()
-            } else {
-                std::env::current_dir()
-                    .map(|cwd| cwd.join(path).to_string_lossy().to_string())
-                    .unwrap_or_else(|_| path.to_string())
-            }
-        }
-    }
-}
-
 fn parse_positive_depth(value: &str) -> Result<usize, String> {
     let depth: usize = value
         .parse()
@@ -261,11 +236,14 @@ fn parse_positive_depth(value: &str) -> Result<usize, String> {
 fn run() -> i32 {
     let cli = Cli::parse();
     let mut result = match cli.command {
+        Commands::Index { path, language } => {
+            commands::index(&path, language.map(LanguageFilter::as_str))
+        }
         Commands::Functions {
             path,
             language,
             query,
-        } => cmd_functions(
+        } => commands::functions(
             &path,
             language.map(LanguageFilter::as_str),
             query.as_deref().unwrap_or(""),
@@ -274,7 +252,7 @@ fn run() -> i32 {
             path,
             language,
             query,
-        } => cmd_classes(
+        } => commands::classes(
             &path,
             language.map(LanguageFilter::as_str),
             query.as_deref().unwrap_or(""),
@@ -283,12 +261,21 @@ fn run() -> i32 {
             path,
             language,
             class_name,
-        } => cmd_fields(&path, language.map(LanguageFilter::as_str), &class_name),
+        } => commands::fields(&path, language.map(LanguageFilter::as_str), &class_name),
         Commands::Imports {
             path,
             language,
             query,
-        } => cmd_imports(
+        } => commands::imports(
+            &path,
+            language.map(LanguageFilter::as_str),
+            query.as_deref().unwrap_or(""),
+        ),
+        Commands::Annotations {
+            path,
+            language,
+            query,
+        } => commands::annotations(
             &path,
             language.map(LanguageFilter::as_str),
             query.as_deref().unwrap_or(""),
@@ -298,7 +285,7 @@ fn run() -> i32 {
             language,
             function,
             class_name,
-        } => cmd_callers(
+        } => commands::callers(
             &path,
             language.map(LanguageFilter::as_str),
             &function,
@@ -309,7 +296,7 @@ fn run() -> i32 {
             language,
             function,
             class_name,
-        } => cmd_callees(
+        } => commands::callees(
             &path,
             language.map(LanguageFilter::as_str),
             &function,
@@ -323,7 +310,7 @@ fn run() -> i32 {
             depth,
             backward,
             forward: _,
-        } => cmd_graph(
+        } => commands::graph(
             &path,
             language.map(LanguageFilter::as_str),
             &function,
@@ -339,13 +326,13 @@ fn run() -> i32 {
             path,
             language,
             name,
-        } => cmd_symbols(&path, language.map(LanguageFilter::as_str), &name),
+        } => commands::symbols(&path, language.map(LanguageFilter::as_str), &name),
         Commands::Definition {
             path,
             language,
             function,
             class_name,
-        } => cmd_definition(
+        } => commands::definition(
             &path,
             language.map(LanguageFilter::as_str),
             &function,
@@ -355,24 +342,12 @@ fn run() -> i32 {
             path,
             language,
             class_name,
-        } => cmd_super_classes(&path, language.map(LanguageFilter::as_str), &class_name),
+        } => commands::super_classes(&path, language.map(LanguageFilter::as_str), &class_name),
         Commands::SubClasses {
             path,
             language,
             class_name,
-        } => cmd_sub_classes(&path, language.map(LanguageFilter::as_str), &class_name),
-        Commands::Annotations {
-            path,
-            language,
-            query,
-        } => cmd_annotations(
-            &path,
-            language.map(LanguageFilter::as_str),
-            query.as_deref().unwrap_or(""),
-        ),
-        Commands::Index { path, language } => {
-            cmd_index(&path, language.map(LanguageFilter::as_str))
-        }
+        } => commands::sub_classes(&path, language.map(LanguageFilter::as_str), &class_name),
     };
 
     if result.get("error").is_none() {

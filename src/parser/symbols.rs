@@ -3,6 +3,79 @@ use tree_sitter::Node;
 use crate::models::{SymbolRefInfo, SymbolRefKey};
 use crate::parser::ParseContext;
 
+impl ParseContext {
+    pub(crate) fn collect_symbols(&self) -> Vec<SymbolRefInfo> {
+        scan_symbols(self, |node| {
+            let name = self.node_text(node);
+            (!name.is_empty()).then(|| SymbolRefInfo {
+                name,
+                node_type: node.kind().to_string(),
+                location: self.node_location(node),
+                start_column: node.start_position().column,
+                end_column: node.end_position().column,
+                context: String::new(),
+            })
+        })
+    }
+
+    pub(crate) fn find_symbols(&self, name: &str, with_context: bool) -> Vec<SymbolRefInfo> {
+        let name_bytes = name.as_bytes();
+        if name_bytes.is_empty()
+            || !self
+                .source
+                .windows(name_bytes.len())
+                .any(|window| window == name_bytes)
+        {
+            return Vec::new();
+        }
+
+        scan_symbols(self, |node| {
+            (self.node_bytes(node) == name_bytes).then(|| SymbolRefInfo {
+                name: name.to_string(),
+                node_type: node.kind().to_string(),
+                location: self.node_location(node),
+                start_column: node.start_position().column,
+                end_column: node.end_position().column,
+                context: if with_context {
+                    node.parent()
+                        .map(|parent| self.node_text(parent))
+                        .unwrap_or_default()
+                } else {
+                    String::new()
+                },
+            })
+        })
+    }
+
+    pub(crate) fn hydrate_symbols(&self, candidates: &[SymbolRefInfo]) -> Vec<SymbolRefInfo> {
+        if candidates.is_empty() {
+            return Vec::new();
+        }
+
+        let expected: std::collections::HashSet<SymbolRefKey> =
+            candidates.iter().map(SymbolRefKey::from).collect();
+        scan_symbols(self, |node| {
+            let symbol = SymbolRefInfo {
+                name: self.node_text(node),
+                node_type: node.kind().to_string(),
+                location: self.node_location(node),
+                start_column: node.start_position().column,
+                end_column: node.end_position().column,
+                context: String::new(),
+            };
+            expected
+                .contains(&SymbolRefKey::from(&symbol))
+                .then(|| SymbolRefInfo {
+                    context: node
+                        .parent()
+                        .map(|parent| self.node_text(parent))
+                        .unwrap_or_default(),
+                    ..symbol
+                })
+        })
+    }
+}
+
 fn is_symbol_ref_node(parser: &ParseContext, node: Node<'_>) -> bool {
     match parser.language.as_str() {
         "python" => matches!(
@@ -50,75 +123,4 @@ fn scan_symbols(
         }
     }
     refs
-}
-
-pub(crate) fn collect_all(parser: &ParseContext) -> Vec<SymbolRefInfo> {
-    scan_symbols(parser, |node| {
-        let name = parser.node_text(node);
-        (!name.is_empty()).then(|| SymbolRefInfo {
-            name,
-            node_type: node.kind().to_string(),
-            location: parser.node_location(node),
-            start_column: node.start_position().column,
-            end_column: node.end_position().column,
-            context: String::new(),
-        })
-    })
-}
-
-pub(crate) fn find(parser: &ParseContext, name: &str, with_context: bool) -> Vec<SymbolRefInfo> {
-    let name_bytes = name.as_bytes();
-    if name_bytes.is_empty()
-        || !parser
-            .source
-            .windows(name_bytes.len())
-            .any(|window| window == name_bytes)
-    {
-        return Vec::new();
-    }
-
-    scan_symbols(parser, |node| {
-        (parser.node_bytes(node) == name_bytes).then(|| SymbolRefInfo {
-            name: name.to_string(),
-            node_type: node.kind().to_string(),
-            location: parser.node_location(node),
-            start_column: node.start_position().column,
-            end_column: node.end_position().column,
-            context: if with_context {
-                node.parent()
-                    .map(|parent| parser.node_text(parent))
-                    .unwrap_or_default()
-            } else {
-                String::new()
-            },
-        })
-    })
-}
-
-pub(crate) fn hydrate(parser: &ParseContext, candidates: &[SymbolRefInfo]) -> Vec<SymbolRefInfo> {
-    if candidates.is_empty() {
-        return Vec::new();
-    }
-
-    let expected: std::collections::HashSet<SymbolRefKey> =
-        candidates.iter().map(SymbolRefKey::from).collect();
-    scan_symbols(parser, |node| {
-        let symbol = SymbolRefInfo {
-            name: parser.node_text(node),
-            node_type: node.kind().to_string(),
-            location: parser.node_location(node),
-            start_column: node.start_position().column,
-            end_column: node.end_position().column,
-            context: String::new(),
-        };
-        expected
-            .contains(&SymbolRefKey::from(&symbol))
-            .then(|| SymbolRefInfo {
-                context: node
-                    .parent()
-                    .map(|parent| parser.node_text(parent))
-                    .unwrap_or_default(),
-                ..symbol
-            })
-    })
 }

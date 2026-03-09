@@ -4,20 +4,17 @@ use std::path::Path;
 
 use rayon::prelude::*;
 
-use crate::cache::TextFilterCache;
-use crate::extractor::CodeExtractor;
-use crate::graph::{CallGraph, RawPropertyCaller};
+use super::extractor::CodeExtractor;
+use super::graph::{CallGraph, RawPropertyCaller};
+use super::search::{FileSearch, QueryMatcher};
 use crate::models::*;
 use crate::traversal::bfs::collect_reachable;
 use crate::utils::{
-    find_files, is_simple_query, progress_bar, search_files_with_rg, sort_callees_by_file_line,
-    sort_callers_by_file_line, QueryMatcher,
+    find_files, progress_bar, sort_callees_by_file_line, sort_callers_by_file_line,
 };
 
 pub struct SourceAnalyzer {
-    files: Vec<String>,
-    path: String,
-    text_filter_cache: TextFilterCache,
+    search: FileSearch,
 }
 
 impl SourceAnalyzer {
@@ -31,9 +28,7 @@ impl SourceAnalyzer {
         }
         let files = find_files(path, language);
         Ok(Self {
-            files,
-            path: path.to_string(),
-            text_filter_cache: TextFilterCache::new(),
+            search: FileSearch::new(path, files),
         })
     }
 
@@ -70,11 +65,11 @@ impl SourceAnalyzer {
     }
 
     pub fn file_count(&self) -> usize {
-        self.files.len()
+        self.search.files().len()
     }
 
     pub fn files(&self) -> &[String] {
-        &self.files
+        self.search.files()
     }
 
     fn hydrate_candidates<K, Candidate, KeyOf, FileOf, Resolve>(
@@ -133,7 +128,7 @@ impl SourceAnalyzer {
             |candidate| candidate.location.file.as_str(),
             |extractor, expected| {
                 extractor
-                    .functions_with_bodies()
+                    .collect_functions_with_bodies()
                     .into_iter()
                     .filter(|function| expected.contains(&FunctionKey::from(function)))
                     .collect()
@@ -142,14 +137,14 @@ impl SourceAnalyzer {
     }
 
     fn collect_functions(&self, query: &str) -> Vec<FunctionInfo> {
-        let candidate_files = self.filter_candidates(query);
+        let candidate_files = self.search.filter_candidates(query);
         if candidate_files.is_empty() {
             return Vec::new();
         }
         let matcher = QueryMatcher::new(query);
         self.analyze_files_with_progress(&candidate_files, |f| {
             let funcs = self
-                .analyze_file(f, |extractor| extractor.functions())
+                .analyze_file(f, |extractor| extractor.collect_functions())
                 .unwrap_or_default();
             if matcher.matches_all() {
                 funcs
@@ -163,14 +158,14 @@ impl SourceAnalyzer {
     }
 
     pub fn find_classes(&self, query: &str) -> Vec<ClassInfo> {
-        let candidate_files = self.filter_candidates(query);
+        let candidate_files = self.search.filter_candidates(query);
         if candidate_files.is_empty() {
             return Vec::new();
         }
         let matcher = QueryMatcher::new(query);
         self.analyze_files_with_progress(&candidate_files, |f| {
             let classes = self
-                .analyze_file(f, |extractor| extractor.classes())
+                .analyze_file(f, |extractor| extractor.collect_classes())
                 .unwrap_or_default();
             if matcher.matches_all() {
                 classes
@@ -184,26 +179,26 @@ impl SourceAnalyzer {
     }
 
     pub fn find_fields(&self, class_name: &str) -> Vec<FieldInfo> {
-        let candidate_files = self.filter_by_text(class_name);
+        let candidate_files = self.search.filter_by_text(class_name);
         if candidate_files.is_empty() {
             return Vec::new();
         }
         let cn = class_name.to_string();
         self.analyze_files_with_progress(&candidate_files, |f| {
-            self.analyze_file(f, |extractor| extractor.fields(&cn))
+            self.analyze_file(f, |extractor| extractor.collect_fields(&cn))
                 .unwrap_or_default()
         })
     }
 
     pub fn find_imports(&self, query: &str) -> Vec<ImportInfo> {
-        let candidate_files = self.filter_candidates(query);
+        let candidate_files = self.search.filter_candidates(query);
         if candidate_files.is_empty() {
             return Vec::new();
         }
         let matcher = QueryMatcher::new(query);
         self.analyze_files_with_progress(&candidate_files, |f| {
             let imports = self
-                .analyze_file(f, |extractor| extractor.imports())
+                .analyze_file(f, |extractor| extractor.collect_imports())
                 .unwrap_or_default();
             if matcher.matches_all() {
                 imports
@@ -216,14 +211,14 @@ impl SourceAnalyzer {
         })
     }
     pub fn find_annotations(&self, query: &str) -> Vec<AnnotationInfo> {
-        let candidate_files = self.filter_candidates(query);
+        let candidate_files = self.search.filter_candidates(query);
         if candidate_files.is_empty() {
             return Vec::new();
         }
         let matcher = QueryMatcher::new(query);
         self.analyze_files_with_progress(&candidate_files, |f| {
             let annotations = self
-                .analyze_file(f, |extractor| extractor.annotations())
+                .analyze_file(f, |extractor| extractor.collect_annotations())
                 .unwrap_or_default();
             if matcher.matches_all() {
                 annotations
@@ -237,7 +232,7 @@ impl SourceAnalyzer {
     }
 
     pub fn find_callers(&self, function_name: &str, class_name: Option<&str>) -> Vec<CallerInfo> {
-        let candidate_files = self.filter_by_text(function_name);
+        let candidate_files = self.search.filter_by_text(function_name);
         if candidate_files.is_empty() {
             return Vec::new();
         }
@@ -262,7 +257,7 @@ impl SourceAnalyzer {
     }
 
     pub fn find_callees(&self, function_name: &str, class_name: Option<&str>) -> Vec<CalleeInfo> {
-        let candidate_files = self.filter_by_text(function_name);
+        let candidate_files = self.search.filter_by_text(function_name);
         if candidate_files.is_empty() {
             return Vec::new();
         }
@@ -306,7 +301,7 @@ impl SourceAnalyzer {
         name: &str,
         class_name: Option<&str>,
     ) -> Vec<FunctionInfo> {
-        let candidate_files = self.filter_by_text(name);
+        let candidate_files = self.search.filter_by_text(name);
         if candidate_files.is_empty() {
             return Vec::new();
         }
@@ -327,7 +322,7 @@ impl SourceAnalyzer {
         direction: GraphDirection,
         max_depth: usize,
     ) -> anyhow::Result<Vec<CallGraphPath>> {
-        let snapshots = self.analyze_files_with_progress(&self.files, |file| {
+        let snapshots = self.analyze_files_with_progress(self.search.files(), |file| {
             vec![match CodeExtractor::new(file) {
                 Ok(mut extractor) => anyhow::Ok(extractor.snapshot_for_index()),
                 Err(error) => Err(error),
@@ -374,7 +369,7 @@ impl SourceAnalyzer {
     }
 
     pub fn find_symbols(&self, name: &str) -> Vec<SymbolRefInfo> {
-        let candidate_files = self.filter_by_text(name);
+        let candidate_files = self.search.filter_by_text(name);
         if candidate_files.is_empty() {
             return Vec::new();
         }
@@ -427,7 +422,7 @@ impl SourceAnalyzer {
                     .super_classes
                     .iter()
                     .filter_map(|parent_name| {
-                        let candidate_files = self.filter_by_text(parent_name);
+                        let candidate_files = self.search.filter_by_text(parent_name);
                         let parent_name = parent_name.clone();
                         self.analyze_files_with_progress(&candidate_files, |file| {
                             self.analyze_file(file, |extractor| extractor.find_class(&parent_name))
@@ -450,10 +445,10 @@ impl SourceAnalyzer {
             [class_name.to_string()],
             [class_name.to_string()],
             |current_parent| {
-                let candidate_files = self.filter_by_text(current_parent);
+                let candidate_files = self.search.filter_by_text(current_parent);
                 let current_parent = current_parent.clone();
                 self.analyze_files_with_progress(&candidate_files, |file| {
-                    self.analyze_file(file, |extractor| extractor.classes())
+                    self.analyze_file(file, |extractor| extractor.collect_classes())
                         .unwrap_or_default()
                         .into_iter()
                         .filter(|class| class.super_classes.contains(&current_parent))
@@ -466,7 +461,7 @@ impl SourceAnalyzer {
     }
 
     fn find_class_by_name(&self, class_name: &str) -> Option<ClassInfo> {
-        let candidate_files = self.filter_by_text(class_name);
+        let candidate_files = self.search.filter_by_text(class_name);
         self.analyze_files_with_progress(&candidate_files, |f| {
             self.analyze_file(f, |extractor| extractor.find_class(class_name))
                 .flatten()
@@ -475,57 +470,5 @@ impl SourceAnalyzer {
         })
         .into_iter()
         .next()
-    }
-
-    fn filter_candidates(&self, query: &str) -> Vec<String> {
-        if !query.is_empty() && is_simple_query(query) {
-            self.filter_by_text(query)
-        } else {
-            self.files.clone()
-        }
-    }
-
-    fn filter_by_text(&self, text: &str) -> Vec<String> {
-        if text.is_empty() {
-            return self.files.clone();
-        }
-        if let Some(cached) = self.text_filter_cache.get(text) {
-            return cached;
-        }
-        let matched_files: Vec<String> = if let Some(rg_files) =
-            search_files_with_rg(text, &self.path, None)
-        {
-            let mut rg_files = rg_files;
-            rg_files.sort();
-            rg_files.dedup();
-
-            let mut matched = Vec::new();
-            let mut files_idx = 0usize;
-            let mut rg_idx = 0usize;
-            while files_idx < self.files.len() && rg_idx < rg_files.len() {
-                match self.files[files_idx].cmp(&rg_files[rg_idx]) {
-                    std::cmp::Ordering::Less => files_idx += 1,
-                    std::cmp::Ordering::Greater => rg_idx += 1,
-                    std::cmp::Ordering::Equal => {
-                        matched.push(self.files[files_idx].clone());
-                        files_idx += 1;
-                        rg_idx += 1;
-                    }
-                }
-            }
-            matched
-        } else {
-            self.files
-                .par_iter()
-                .filter(|f| {
-                    std::fs::read(f)
-                        .map(|content| content.windows(text.len()).any(|w| w == text.as_bytes()))
-                        .unwrap_or(false)
-                })
-                .cloned()
-                .collect()
-        };
-        self.text_filter_cache.insert(text, matched_files.clone());
-        matched_files
     }
 }

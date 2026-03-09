@@ -4,7 +4,6 @@ use std::path::Path;
 use crate::languages::{language_extensions, supported_extensions};
 use crate::models::{CalleeInfo, CallerInfo};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressState, ProgressStyle};
-use regex::Regex;
 use serde_json::Value;
 
 pub fn find_files(path: &str, language: Option<&str>) -> Vec<String> {
@@ -88,38 +87,6 @@ pub fn progress_bar(total: usize, unit: &str, bar_style: &str, message: &str) ->
     progress
 }
 
-pub fn search_files_with_rg(text: &str, path: &str, language: Option<&str>) -> Option<Vec<String>> {
-    let rg = which::which("rg").ok()?;
-    let extensions = language
-        .and_then(language_extensions)
-        .unwrap_or_else(supported_extensions);
-
-    let mut cmd = std::process::Command::new(rg);
-    cmd.args(["--files-with-matches", "--fixed-strings", "--no-ignore"]);
-    for ext in extensions {
-        cmd.args(["--glob", &format!("*{}", ext)]);
-    }
-    cmd.args(["--", text, path]);
-
-    let output = cmd.output().ok()?;
-    if !output.status.success() && output.status.code() != Some(1) {
-        return None;
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let files: Vec<String> = stdout
-        .lines()
-        .filter(|l| !l.is_empty())
-        .filter_map(|l| {
-            Path::new(l)
-                .canonicalize()
-                .ok()
-                .map(|p| p.to_string_lossy().to_string())
-        })
-        .collect();
-    Some(files)
-}
-
 pub fn sort_callers_by_file_line(results: &mut [CallerInfo]) {
     results.sort_by(|left, right| {
         left.file
@@ -137,36 +104,6 @@ pub fn sort_callees_by_file_line(results: &mut [CalleeInfo]) {
             .then(left.callee.cmp(&right.callee))
             .then(left.class_name.cmp(&right.class_name))
     });
-}
-
-pub fn split_function_target(function_name: &str) -> (&str, Option<&str>) {
-    if function_name.contains('.') {
-        let parts: Vec<&str> = function_name.rsplitn(2, '.').collect();
-        (parts[0], Some(parts[1]))
-    } else {
-        (function_name, None)
-    }
-}
-
-pub fn extract_instance_attr(object_name: &str) -> Option<&str> {
-    for prefix in ["self.", "this.", "cls."] {
-        if let Some(rest) = object_name.strip_prefix(prefix) {
-            if !rest.is_empty() {
-                return rest.split('.').next();
-            }
-        }
-    }
-    let candidate = object_name.split('.').next().unwrap_or(object_name);
-    (!candidate.is_empty()).then_some(candidate)
-}
-
-pub fn type_matches_class(field_type: Option<&str>, class_name: &str) -> bool {
-    let Some(field_type) = field_type else {
-        return false;
-    };
-    field_type
-        .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
-        .any(|token| !token.is_empty() && token == class_name)
 }
 
 pub fn relative_path(path: &str, root: &str) -> String {
@@ -196,39 +133,5 @@ pub fn relativize_json_file_paths(value: &mut Value, root: &str) {
             }
         }
         _ => {}
-    }
-}
-
-pub fn is_simple_query(query: &str) -> bool {
-    !query.is_empty() && !query.contains(|c: char| ".^$*+?{}[]|()\\".contains(c))
-}
-
-pub enum QueryMatcher {
-    MatchAll,
-    Regex(Regex),
-    Contains(String),
-}
-
-impl QueryMatcher {
-    pub fn new(query: &str) -> Self {
-        if query.is_empty() {
-            return Self::MatchAll;
-        }
-        match Regex::new(query) {
-            Ok(re) => Self::Regex(re),
-            Err(_) => Self::Contains(query.to_string()),
-        }
-    }
-
-    pub fn is_match(&self, name: &str) -> bool {
-        match self {
-            Self::MatchAll => true,
-            Self::Regex(re) => re.is_match(name),
-            Self::Contains(text) => name.contains(text),
-        }
-    }
-
-    pub fn matches_all(&self) -> bool {
-        matches!(self, Self::MatchAll)
     }
 }

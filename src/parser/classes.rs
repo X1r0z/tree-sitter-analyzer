@@ -10,10 +10,10 @@ use crate::languages::QueryKind;
 use crate::models::{ClassInfo, FieldInfo};
 
 impl ParseContext {
-    pub(crate) fn classes(&self) -> Vec<ClassInfo> {
+    pub(crate) fn collect_classes(&self) -> Vec<ClassInfo> {
         let mut methods_by_class = std::collections::HashMap::new();
         if self.language == "go" {
-            for function in self.functions(false) {
+            for function in self.collect_functions(false) {
                 if let Some(class_name) = function.class_name {
                     methods_by_class
                         .entry(class_name)
@@ -65,7 +65,7 @@ impl ParseContext {
                 }
             }
             let field_names = class_field_names(self, class_node);
-            let super_class_names = self.super_class_names(class_node);
+            let super_class_names = self.collect_super_class_names(class_node);
 
             classes.push(ClassInfo {
                 name,
@@ -79,7 +79,11 @@ impl ParseContext {
         classes
     }
 
-    pub(crate) fn class_field_infos(&self, class_node: Node, class_name: &str) -> Vec<FieldInfo> {
+    pub(crate) fn collect_class_field_infos(
+        &self,
+        class_node: Node,
+        class_name: &str,
+    ) -> Vec<FieldInfo> {
         match self.language.as_str() {
             "python" => python::python_field_infos(self, class_node, class_name),
             "javascript" | "typescript" | "tsx" => {
@@ -91,7 +95,7 @@ impl ParseContext {
         }
     }
 
-    pub(crate) fn super_class_names(&self, class_node: Node) -> Vec<String> {
+    pub(crate) fn collect_super_class_names(&self, class_node: Node) -> Vec<String> {
         match self.language.as_str() {
             "python" => python::python_super_class_names(self, class_node),
             "javascript" | "typescript" | "tsx" => {
@@ -103,7 +107,7 @@ impl ParseContext {
         }
     }
 
-    pub(crate) fn field_infos_for_class(&self, class_name: &str) -> Vec<FieldInfo> {
+    pub(crate) fn collect_field_infos_for_class(&self, class_name: &str) -> Vec<FieldInfo> {
         let mut candidates: Vec<Node<'_>> = Vec::new();
         for (class_node, name_node) in
             query::query_capture_pairs(self, QueryKind::Class, "class", "name")
@@ -120,7 +124,7 @@ impl ParseContext {
             let size = node.end_byte() - node.start_byte();
             (size, node.start_byte())
         });
-        self.class_field_infos(candidates[0], class_name)
+        self.collect_class_field_infos(candidates[0], class_name)
     }
 }
 
@@ -296,7 +300,7 @@ fn class_field_names(parser: &ParseContext, class_node: Node<'_>) -> Vec<String>
         .map(|child| parser.node_text(child))
         .unwrap_or_default();
     parser
-        .class_field_infos(class_node, &class_name)
+        .collect_class_field_infos(class_node, &class_name)
         .into_iter()
         .map(|field| field.name)
         .collect()

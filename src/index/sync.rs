@@ -421,11 +421,11 @@ pub(crate) fn db_path_in_current_dir() -> anyhow::Result<std::path::PathBuf> {
     Ok(std::env::current_dir()?.join("tsa.db"))
 }
 
-pub(crate) fn file_record_from_path(
+pub(crate) fn file_record_with_hash(
     path: &str,
     language: &str,
 ) -> anyhow::Result<IndexedFileRecord> {
-    let mut record = file_record_from_path_without_hash(path, language)?;
+    let mut record = file_record_metadata(path, language)?;
     record.content_hash =
         blake3::hash(&std::fs::read(path).with_context(|| format!("Failed to read {}", path))?)
             .to_hex()
@@ -433,7 +433,7 @@ pub(crate) fn file_record_from_path(
     Ok(record)
 }
 
-pub(crate) fn file_record_from_path_without_hash(
+pub(crate) fn file_record_metadata(
     path: &str,
     language: &str,
 ) -> anyhow::Result<IndexedFileRecord> {

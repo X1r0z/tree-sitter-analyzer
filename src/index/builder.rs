@@ -1,11 +1,11 @@
 use rayon::prelude::*;
 use serde_json::{json, Value};
 
-use crate::backend::SourceAnalyzer;
-use crate::extractor::CodeExtractor;
+use crate::analyzer::extractor::CodeExtractor;
+use crate::analyzer::SourceAnalyzer;
 use crate::index::{
-    db_path_in_current_dir, file_record_from_path, file_record_from_path_without_hash,
-    FileIndexData, IndexStore, IndexSyncPlan, IndexSynchronizer,
+    db_path_in_current_dir, file_record_metadata, file_record_with_hash, FileIndexData, IndexStore,
+    IndexSyncPlan, IndexSynchronizer,
 };
 use crate::languages::detect_language;
 use crate::utils::progress_bar;
@@ -91,7 +91,7 @@ fn build_file_index(
     let language = detect_language(std::path::Path::new(file))
         .ok_or_else(|| anyhow::anyhow!("Could not detect language for: {}", file))?
         .to_string();
-    let record_without_hash = file_record_from_path_without_hash(file, &language)?;
+    let record_without_hash = file_record_metadata(file, &language)?;
     if let Some(record) = existing.filter(|record| {
         record.language == record_without_hash.language
             && record.mtime_nanos == record_without_hash.mtime_nanos
@@ -99,7 +99,7 @@ fn build_file_index(
     }) {
         return Ok((record.clone(), None));
     }
-    let file_record = file_record_from_path(file, &language)?;
+    let file_record = file_record_with_hash(file, &language)?;
 
     let mut extractor = CodeExtractor::new(file)?;
     let snapshot = extractor.snapshot_for_index();

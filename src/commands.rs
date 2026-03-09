@@ -1,13 +1,19 @@
 use std::collections::HashSet;
+use std::path::Path;
 
 use serde_json::{json, Value};
 
-use crate::backend::{IndexedAnalyzer, SourceAnalyzer};
+use crate::analyzer::{IndexedAnalyzer, SourceAnalyzer};
 use crate::index::build_index;
 use crate::models::{FunctionInfo, GraphDirection};
 use crate::output::{self, FunctionView};
 
-pub fn cmd_functions(path: &str, language: Option<&str>, query: &str) -> Value {
+pub(crate) fn index(path: &str, language: Option<&str>) -> Value {
+    let real_path = resolve_path(path);
+    build_index(&real_path, language)
+}
+
+pub(crate) fn functions(path: &str, language: Option<&str>, query: &str) -> Value {
     let context = match CommandContext::load(path, language) {
         Ok(context) => context,
         Err(error) => return error_response(error),
@@ -29,7 +35,7 @@ pub fn cmd_functions(path: &str, language: Option<&str>, query: &str) -> Value {
     )
 }
 
-pub fn cmd_classes(path: &str, language: Option<&str>, query: &str) -> Value {
+pub(crate) fn classes(path: &str, language: Option<&str>, query: &str) -> Value {
     let context = match CommandContext::load(path, language) {
         Ok(context) => context,
         Err(error) => return error_response(error),
@@ -48,7 +54,7 @@ pub fn cmd_classes(path: &str, language: Option<&str>, query: &str) -> Value {
     )
 }
 
-pub fn cmd_fields(path: &str, language: Option<&str>, class_name: &str) -> Value {
+pub(crate) fn fields(path: &str, language: Option<&str>, class_name: &str) -> Value {
     let context = match CommandContext::load(path, language) {
         Ok(context) => context,
         Err(error) => return error_response(error),
@@ -72,7 +78,7 @@ pub fn cmd_fields(path: &str, language: Option<&str>, class_name: &str) -> Value
     )
 }
 
-pub fn cmd_imports(path: &str, language: Option<&str>, query: &str) -> Value {
+pub(crate) fn imports(path: &str, language: Option<&str>, query: &str) -> Value {
     let context = match CommandContext::load(path, language) {
         Ok(context) => context,
         Err(error) => return error_response(error),
@@ -91,7 +97,7 @@ pub fn cmd_imports(path: &str, language: Option<&str>, query: &str) -> Value {
     )
 }
 
-pub fn cmd_annotations(path: &str, language: Option<&str>, query: &str) -> Value {
+pub(crate) fn annotations(path: &str, language: Option<&str>, query: &str) -> Value {
     let context = match CommandContext::load(path, language) {
         Ok(context) => context,
         Err(error) => return error_response(error),
@@ -112,7 +118,7 @@ pub fn cmd_annotations(path: &str, language: Option<&str>, query: &str) -> Value
     )
 }
 
-pub fn cmd_callers(
+pub(crate) fn callers(
     path: &str,
     language: Option<&str>,
     function_name: &str,
@@ -144,7 +150,7 @@ pub fn cmd_callers(
     )
 }
 
-pub fn cmd_callees(
+pub(crate) fn callees(
     path: &str,
     language: Option<&str>,
     function_name: &str,
@@ -176,7 +182,7 @@ pub fn cmd_callees(
     )
 }
 
-pub fn cmd_graph(
+pub(crate) fn graph(
     path: &str,
     language: Option<&str>,
     function_name: &str,
@@ -215,7 +221,7 @@ pub fn cmd_graph(
     )
 }
 
-pub fn cmd_symbols(path: &str, language: Option<&str>, name: &str) -> Value {
+pub(crate) fn symbols(path: &str, language: Option<&str>, name: &str) -> Value {
     let context = match CommandContext::load(path, language) {
         Ok(context) => context,
         Err(error) => return error_response(error),
@@ -260,7 +266,7 @@ pub fn cmd_symbols(path: &str, language: Option<&str>, name: &str) -> Value {
     }
 }
 
-pub fn cmd_definition(
+pub(crate) fn definition(
     path: &str,
     language: Option<&str>,
     function_name: &str,
@@ -327,7 +333,7 @@ pub fn cmd_definition(
     }
 }
 
-pub fn cmd_super_classes(path: &str, language: Option<&str>, class_name: &str) -> Value {
+pub(crate) fn super_classes(path: &str, language: Option<&str>, class_name: &str) -> Value {
     let context = match CommandContext::load(path, language) {
         Ok(context) => context,
         Err(error) => return error_response(error),
@@ -351,7 +357,7 @@ pub fn cmd_super_classes(path: &str, language: Option<&str>, class_name: &str) -
     )
 }
 
-pub fn cmd_sub_classes(path: &str, language: Option<&str>, class_name: &str) -> Value {
+pub(crate) fn sub_classes(path: &str, language: Option<&str>, class_name: &str) -> Value {
     let context = match CommandContext::load(path, language) {
         Ok(context) => context,
         Err(error) => return error_response(error),
@@ -375,11 +381,6 @@ pub fn cmd_sub_classes(path: &str, language: Option<&str>, class_name: &str) -> 
     )
 }
 
-pub fn cmd_index(path: &str, language: Option<&str>) -> Value {
-    let real_path = crate::resolve_path(path);
-    build_index(&real_path, language)
-}
-
 struct CommandContext {
     real_path: String,
     backend: AnalyzerBackend,
@@ -387,7 +388,7 @@ struct CommandContext {
 
 impl CommandContext {
     fn load(path: &str, language: Option<&str>) -> anyhow::Result<Self> {
-        let real_path = crate::resolve_path(path);
+        let real_path = resolve_path(path);
         let backend = with_analyzer_backend(&real_path, language)?;
         Ok(Self { real_path, backend })
     }
@@ -405,12 +406,20 @@ enum AnalyzerBackend {
     Source(SourceAnalyzer),
 }
 
-fn with_analyzer_backend(path: &str, language: Option<&str>) -> anyhow::Result<AnalyzerBackend> {
-    if let Some(indexed_backend) = IndexedAnalyzer::from_current_dir_if_compatible(path, language)?
-    {
-        return Ok(AnalyzerBackend::Indexed(indexed_backend));
+fn resolve_path(path: &str) -> String {
+    match std::fs::canonicalize(path) {
+        Ok(path) => path.to_string_lossy().to_string(),
+        Err(_) => {
+            let path_ref = Path::new(path);
+            if path_ref.is_absolute() {
+                path.to_string()
+            } else {
+                std::env::current_dir()
+                    .map(|cwd| cwd.join(path).to_string_lossy().to_string())
+                    .unwrap_or_else(|_| path.to_string())
+            }
+        }
     }
-    SourceAnalyzer::new_with_language(path, language).map(AnalyzerBackend::Source)
 }
 
 fn success_response<const N: usize>(
@@ -449,4 +458,12 @@ fn unique_function_file_count(functions: &[FunctionInfo]) -> usize {
         .map(|function| function.location.file.as_str())
         .collect::<HashSet<_>>()
         .len()
+}
+
+fn with_analyzer_backend(path: &str, language: Option<&str>) -> anyhow::Result<AnalyzerBackend> {
+    if let Some(indexed_backend) = IndexedAnalyzer::from_current_dir_if_compatible(path, language)?
+    {
+        return Ok(AnalyzerBackend::Indexed(indexed_backend));
+    }
+    SourceAnalyzer::new_with_language(path, language).map(AnalyzerBackend::Source)
 }

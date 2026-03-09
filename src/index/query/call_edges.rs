@@ -4,8 +4,9 @@ use rusqlite::{params, params_from_iter, ToSql};
 
 use super::call_resolver::CallTargetResolver;
 use super::QueryContext;
+use crate::analyzer::call_targets::split_function_target;
 use crate::models::{CalleeInfo, CallerInfo, FunctionInfo, FunctionKey, Location};
-use crate::utils::{sort_callees_by_file_line, sort_callers_by_file_line, split_function_target};
+use crate::utils::{sort_callees_by_file_line, sort_callers_by_file_line};
 
 #[derive(Debug)]
 pub(super) struct CallerRow {

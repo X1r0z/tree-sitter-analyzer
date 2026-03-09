@@ -1,8 +1,6 @@
-use std::collections::HashMap;
-use std::sync::Mutex;
-
 use crate::models::{CallInfo, ClassInfo, FieldInfo, FunctionInfo, ImportInfo};
 use crate::parser::{PythonPropertyCallers, PythonPropertyDefinitions};
+use std::collections::HashMap;
 
 pub(crate) struct AnalyzerCache {
     functions: Option<Vec<FunctionInfo>>,
@@ -116,30 +114,5 @@ impl AnalyzerCache {
 
     pub(crate) fn insert_fields(&mut self, class_name: String, fields: Vec<FieldInfo>) {
         self.fields_by_class.insert(class_name, fields);
-    }
-}
-
-pub(crate) struct TextFilterCache {
-    matches_by_text: Mutex<HashMap<String, Vec<String>>>,
-}
-
-impl TextFilterCache {
-    pub(crate) fn new() -> Self {
-        Self {
-            matches_by_text: Mutex::new(HashMap::new()),
-        }
-    }
-
-    pub(crate) fn get(&self, text: &str) -> Option<Vec<String>> {
-        self.matches_by_text
-            .lock()
-            .ok()
-            .and_then(|cache| cache.get(text).cloned())
-    }
-
-    pub(crate) fn insert(&self, text: &str, matched_files: Vec<String>) {
-        if let Ok(mut cache) = self.matches_by_text.lock() {
-            cache.insert(text.to_string(), matched_files);
-        }
     }
 }

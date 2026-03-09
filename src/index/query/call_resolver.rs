@@ -4,7 +4,9 @@ use rusqlite::{params, OptionalExtension};
 
 use super::call_edges::IndexedFunction;
 use super::QueryContext;
-use crate::utils::{extract_instance_attr, type_matches_class};
+use crate::analyzer::call_targets::{
+    matches_call_target, resolve_forward_targets, type_matches_class, ForwardTargetContext,
+};
 
 pub(super) type FieldTypesByName = HashMap<String, Vec<Option<String>>>;
 pub(super) type FieldTypeCache = HashMap<(i64, String), FieldTypesByName>;
@@ -68,17 +70,6 @@ impl<'a> CallTargetResolver<'a> {
         field_type_cache: &mut FieldTypeCache,
         param_type_cache: &mut ParamTypeCache,
     ) -> anyhow::Result<bool> {
-        if object_name == Some(class_name) {
-            return Ok(true);
-        }
-        if object_name
-            .and_then(|object_name| object_name.split('(').next())
-            .and_then(|head| head.rsplit('.').next())
-            .is_some_and(|name| name == class_name)
-        {
-            return Ok(true);
-        }
-
         let Some(caller) = caller else {
             return Ok(false);
         };
@@ -99,46 +90,40 @@ impl<'a> CallTargetResolver<'a> {
         field_type_cache: &mut FieldTypeCache,
         param_type_cache: &mut ParamTypeCache,
     ) -> anyhow::Result<bool> {
-        if object_name == Some(class_name) {
-            return Ok(true);
-        }
-        if object_name.is_none() {
-            return Ok(caller.function.class_name.as_deref() == Some(class_name));
-        }
-        if matches!(object_name, Some("self") | Some("this") | Some("cls")) {
-            return Ok(caller.function.class_name.as_deref() == Some(class_name));
-        }
-
-        let Some(object_name) = object_name else {
-            return Ok(false);
-        };
-
-        let Some(attr_name) = extract_instance_attr(object_name) else {
-            return Ok(false);
-        };
-
-        if let Some(caller_class_name) = caller.function.class_name.as_deref() {
-            let field_types = self.load_field_types_by_file_class(
-                caller.file_id,
-                caller_class_name,
-                field_type_cache,
-            )?;
-            for field_type in field_types.get(attr_name).into_iter().flatten() {
-                if type_matches_class(field_type.as_deref(), class_name) {
-                    return Ok(true);
-                }
-            }
-        }
-
+        let field_types = caller
+            .function
+            .class_name
+            .as_deref()
+            .map(|caller_class_name| {
+                self.load_field_types_by_file_class(
+                    caller.file_id,
+                    caller_class_name,
+                    field_type_cache,
+                )
+            })
+            .transpose()?
+            .unwrap_or_default();
         let param_types =
             self.load_param_types_by_function(caller.function_id, param_type_cache)?;
-        for param_type in param_types.get(attr_name).into_iter().flatten() {
-            if type_matches_class(param_type.as_deref(), class_name) {
-                return Ok(true);
-            }
-        }
-
-        Ok(false)
+        Ok(matches_call_target(
+            caller.function.class_name.as_deref(),
+            object_name,
+            class_name,
+            |attr_name, target_class_name| {
+                field_types
+                    .get(attr_name)
+                    .into_iter()
+                    .flatten()
+                    .any(|field_type| type_matches_class(field_type.as_deref(), target_class_name))
+            },
+            |attr_name, target_class_name| {
+                param_types
+                    .get(attr_name)
+                    .into_iter()
+                    .flatten()
+                    .any(|param_type| type_matches_class(param_type.as_deref(), target_class_name))
+            },
+        ))
     }
 
     pub(super) fn resolve_forward_targets(
@@ -149,105 +134,46 @@ impl<'a> CallTargetResolver<'a> {
         field_type_cache: &mut FieldTypeCache,
         param_type_cache: &mut ParamTypeCache,
     ) -> anyhow::Result<Vec<IndexedFunction>> {
-        let mut results = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-
-        match object_name {
-            Some("self") | Some("this") | Some("cls") => {
-                if let Some(class_name) = caller.function.class_name.as_deref() {
-                    for candidate in candidates {
-                        if candidate.function.class_name.as_deref() == Some(class_name)
-                            && seen.insert(candidate.key())
-                        {
-                            results.push(candidate.clone());
-                        }
-                    }
-                }
-            }
-            Some(object_name) => {
-                for candidate in candidates {
-                    if candidate.function.class_name.as_deref() == Some(object_name)
-                        && seen.insert(candidate.key())
-                    {
-                        results.push(candidate.clone());
-                    }
-                }
-
-                if let (Some(class_name), Some(attr_name)) = (
-                    caller.function.class_name.as_deref(),
-                    extract_instance_attr(object_name),
-                ) {
-                    let field_types = self.load_field_types_by_file_class(
-                        caller.file_id,
-                        class_name,
-                        field_type_cache,
-                    )?;
-                    for candidate in candidates {
-                        for field_type in field_types.get(attr_name).into_iter().flatten() {
-                            if type_matches_class(
-                                field_type.as_deref(),
-                                candidate.function.class_name.as_deref().unwrap_or_default(),
-                            ) && seen.insert(candidate.key())
-                            {
-                                results.push(candidate.clone());
-                            }
-                        }
-                    }
-                }
-
-                if let Some(param_name) = extract_instance_attr(object_name) {
-                    let param_types =
-                        self.load_param_types_by_function(caller.function_id, param_type_cache)?;
-                    for candidate in candidates {
-                        for param_type in param_types.get(param_name).into_iter().flatten() {
-                            if type_matches_class(
-                                param_type.as_deref(),
-                                candidate.function.class_name.as_deref().unwrap_or_default(),
-                            ) && seen.insert(candidate.key())
-                            {
-                                results.push(candidate.clone());
-                            }
-                        }
-                    }
-                }
-            }
-            None => {
-                if let Some(class_name) = caller.function.class_name.as_deref() {
-                    for candidate in candidates {
-                        if candidate.function.class_name.as_deref() == Some(class_name)
-                            && seen.insert(candidate.key())
-                        {
-                            results.push(candidate.clone());
-                        }
-                    }
-                }
-
-                let same_file_globals: Vec<_> = candidates
-                    .iter()
-                    .filter(|candidate| {
-                        candidate.function.class_name.is_none()
-                            && candidate.function.location.file == caller.function.location.file
+        let field_types = caller
+            .function
+            .class_name
+            .as_deref()
+            .map(|class_name| {
+                self.load_field_types_by_file_class(caller.file_id, class_name, field_type_cache)
+            })
+            .transpose()?
+            .unwrap_or_default();
+        let param_types =
+            self.load_param_types_by_function(caller.function_id, param_type_cache)?;
+        Ok(resolve_forward_targets(
+            ForwardTargetContext {
+                caller_class_name: caller.function.class_name.as_deref(),
+                caller_file: &caller.function.location.file,
+                object_name,
+            },
+            candidates,
+            IndexedFunction::key,
+            |candidate| candidate.function.class_name.as_deref(),
+            |candidate| candidate.function.location.file.as_str(),
+            |attr_name, candidate_class_name| {
+                field_types
+                    .get(attr_name)
+                    .into_iter()
+                    .flatten()
+                    .any(|field_type| {
+                        type_matches_class(field_type.as_deref(), candidate_class_name)
                     })
-                    .cloned()
-                    .collect();
-
-                if same_file_globals.is_empty() {
-                    for candidate in candidates {
-                        if candidate.function.class_name.is_none() && seen.insert(candidate.key()) {
-                            results.push(candidate.clone());
-                        }
-                    }
-                } else {
-                    for candidate in same_file_globals {
-                        if seen.insert(candidate.key()) {
-                            results.push(candidate);
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(results)
+            },
+            |attr_name, candidate_class_name| {
+                param_types
+                    .get(attr_name)
+                    .into_iter()
+                    .flatten()
+                    .any(|param_type| {
+                        type_matches_class(param_type.as_deref(), candidate_class_name)
+                    })
+            },
+        ))
     }
 
     fn load_field_types_by_file_class(

@@ -1,6 +1,6 @@
 use tree_sitter::Node;
 
-use super::super::class;
+use super::super::classes as class;
 use super::super::ParseContext;
 use crate::models::{AnnotationInfo, FieldInfo, FunctionParamInfo};
 

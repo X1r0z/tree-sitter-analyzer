@@ -1,10 +1,12 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::cache::AnalyzerCache;
+use super::cache::AnalyzerCache;
+use crate::analyzer::call_targets::{
+    matches_call_target, split_function_target, type_matches_class,
+};
 use crate::models::*;
 use crate::parser::query;
 use crate::parser::{languages::python, ParseContext};
-use crate::utils::{extract_instance_attr, split_function_target, type_matches_class};
 
 pub struct CodeExtractor {
     parser: ParseContext,
@@ -22,7 +24,8 @@ impl CodeExtractor {
 
     fn cached_functions(&mut self) -> &[FunctionInfo] {
         if self.cache.functions().is_none() {
-            self.cache.set_functions(self.parser.functions(false));
+            self.cache
+                .set_functions(self.parser.collect_functions(false));
         }
         self.cache.functions().unwrap_or(&[])
     }
@@ -30,21 +33,21 @@ impl CodeExtractor {
     fn cached_functions_with_bodies(&mut self) -> &[FunctionInfo] {
         if self.cache.functions_with_bodies().is_none() {
             self.cache
-                .set_functions_with_bodies(self.parser.functions(true));
+                .set_functions_with_bodies(self.parser.collect_functions(true));
         }
         self.cache.functions_with_bodies().unwrap_or(&[])
     }
 
     fn cached_classes(&mut self) -> &[ClassInfo] {
         if self.cache.classes().is_none() {
-            self.cache.set_classes(self.parser.classes());
+            self.cache.set_classes(self.parser.collect_classes());
         }
         self.cache.classes().unwrap_or(&[])
     }
 
     fn cached_imports(&mut self) -> &[ImportInfo] {
         if self.cache.imports().is_none() {
-            self.cache.set_imports(self.parser.imports());
+            self.cache.set_imports(self.parser.collect_imports());
         }
         self.cache.imports().unwrap_or(&[])
     }
@@ -53,7 +56,7 @@ impl CodeExtractor {
         if self.cache.has_calls() {
             return;
         }
-        self.cache.set_calls(self.parser.calls());
+        self.cache.set_calls(self.parser.collect_calls());
     }
 
     fn ensure_calls_by_callee(&mut self) {
@@ -118,56 +121,32 @@ impl CodeExtractor {
         line: usize,
         class_name: &str,
     ) -> bool {
-        if object_name == Some(class_name) {
-            return true;
-        }
-        if object_name.is_none() {
-            return caller_class_name == Some(class_name);
-        }
-        if matches!(object_name, Some("self") | Some("this") | Some("cls")) {
-            return caller_class_name == Some(class_name);
-        }
-
-        let Some(object_name) = object_name else {
-            return false;
-        };
-
-        if object_name
-            .split('(')
-            .next()
-            .and_then(|head| head.rsplit('.').next())
-            .is_some_and(|name| name == class_name)
-        {
-            return true;
-        }
-
-        let Some(attr_name) = extract_instance_attr(object_name) else {
-            return false;
-        };
-
-        if let Some(caller_class_name) = caller_class_name {
-            for field in self.fields(caller_class_name) {
-                if field.name != attr_name {
-                    continue;
-                }
-                if type_matches_class(field.field_type.as_deref(), class_name) {
-                    return true;
-                }
-            }
-        }
-
-        let Some(caller_name) = caller_name else {
-            return false;
-        };
-        let Some(caller) =
-            self.enclosing_function_info_at_line(caller_name, caller_class_name, line)
-        else {
-            return false;
-        };
-
-        caller.params.iter().any(|param| {
-            param.name == attr_name && type_matches_class(param.param_type.as_deref(), class_name)
-        })
+        let field_infos = caller_class_name
+            .map(|caller_class_name| self.collect_fields(caller_class_name))
+            .unwrap_or_default();
+        let caller_params = caller_name
+            .and_then(|caller_name| {
+                self.enclosing_function_info_at_line(caller_name, caller_class_name, line)
+            })
+            .map(|caller| caller.params)
+            .unwrap_or_default();
+        matches_call_target(
+            caller_class_name,
+            object_name,
+            class_name,
+            |attr_name, target_class_name| {
+                field_infos.iter().any(|field| {
+                    field.name == attr_name
+                        && type_matches_class(field.field_type.as_deref(), target_class_name)
+                })
+            },
+            |attr_name, target_class_name| {
+                caller_params.iter().any(|param| {
+                    param.name == attr_name
+                        && type_matches_class(param.param_type.as_deref(), target_class_name)
+                })
+            },
+        )
     }
 
     fn call_matches_class_target(&mut self, call: &CallInfo, class_name: &str) -> bool {
@@ -180,11 +159,11 @@ impl CodeExtractor {
         )
     }
 
-    pub fn functions(&mut self) -> Vec<FunctionInfo> {
+    pub fn collect_functions(&mut self) -> Vec<FunctionInfo> {
         self.cached_functions().to_vec()
     }
 
-    pub fn functions_with_bodies(&mut self) -> Vec<FunctionInfo> {
+    pub fn collect_functions_with_bodies(&mut self) -> Vec<FunctionInfo> {
         self.cached_functions_with_bodies().to_vec()
     }
 
@@ -206,11 +185,11 @@ impl CodeExtractor {
             .collect()
     }
 
-    pub fn classes(&mut self) -> Vec<ClassInfo> {
+    pub fn collect_classes(&mut self) -> Vec<ClassInfo> {
         self.cached_classes().to_vec()
     }
 
-    pub fn fields(&mut self, class_name: &str) -> Vec<FieldInfo> {
+    pub fn collect_fields(&mut self, class_name: &str) -> Vec<FieldInfo> {
         if let Some(cached) = self.cache.fields(class_name) {
             return cached.clone();
         }
@@ -221,35 +200,35 @@ impl CodeExtractor {
             .iter()
             .any(|cls| cls.name == class_name)
         {
-            fields.extend(self.parser.field_infos_for_class(class_name));
+            fields.extend(self.parser.collect_field_infos_for_class(class_name));
         }
         self.cache
             .insert_fields(class_name.to_string(), fields.clone());
         fields
     }
 
-    pub fn calls(&mut self) -> Vec<CallInfo> {
+    pub fn collect_calls(&mut self) -> Vec<CallInfo> {
         self.ensure_calls();
         self.cache.calls().unwrap_or(&[]).to_vec()
     }
 
-    pub fn imports(&mut self) -> Vec<ImportInfo> {
+    pub fn collect_imports(&mut self) -> Vec<ImportInfo> {
         self.cached_imports().to_vec()
     }
 
     pub fn snapshot_for_index(&mut self) -> AnalyzerSnapshot {
-        let functions = self.functions();
-        let classes = self.classes();
+        let functions = self.collect_functions();
+        let classes = self.collect_classes();
 
         let mut fields = Vec::new();
         for class in &classes {
-            fields.extend(self.fields(&class.name));
+            fields.extend(self.collect_fields(&class.name));
         }
 
-        let calls = self.calls();
-        let imports = self.imports();
-        let annotations = self.annotations();
-        let symbols = self.parser.symbols();
+        let calls = self.collect_calls();
+        let imports = self.collect_imports();
+        let annotations = self.collect_annotations();
+        let symbols = self.parser.collect_symbols();
 
         let mut python_properties = Vec::new();
         let mut python_property_callers = Vec::new();
@@ -410,8 +389,8 @@ impl CodeExtractor {
         callees
     }
 
-    pub fn annotations(&self) -> Vec<AnnotationInfo> {
-        self.parser.annotations()
+    pub fn collect_annotations(&self) -> Vec<AnnotationInfo> {
+        self.parser.collect_annotations()
     }
 
     pub fn find_symbols(&mut self, name: &str) -> Vec<SymbolRefInfo> {

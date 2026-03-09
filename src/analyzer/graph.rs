@@ -1,11 +1,13 @@
 use std::collections::{HashMap, HashSet};
 
+use crate::analyzer::call_targets::{
+    matches_call_target, resolve_forward_targets, type_matches_class, ForwardTargetContext,
+};
 use crate::models::{
     CallGraphPath, CallInfo, FieldInfo, FunctionInfo, FunctionKey, GraphDirection, GraphPathNode,
     PythonPropertyInfo,
 };
 use crate::traversal::dfs::{collect_paths, PathStep};
-use crate::utils::{extract_instance_attr, type_matches_class};
 
 #[derive(Debug, Clone)]
 pub(crate) struct RawPropertyCaller {
@@ -272,50 +274,32 @@ fn matches_property_target(
         return false;
     };
 
-    if object_name == Some(class_name) {
-        return true;
-    }
-    if object_name.is_none() {
-        return caller.class_name.as_deref() == Some(class_name);
-    }
-    if matches!(object_name, Some("self") | Some("this") | Some("cls")) {
-        return caller.class_name.as_deref() == Some(class_name);
-    }
-
-    let Some(object_name) = object_name else {
-        return false;
-    };
-    if object_name
-        .split('(')
-        .next()
-        .and_then(|head| head.rsplit('.').next())
-        .is_some_and(|name| name == class_name)
-    {
-        return true;
-    }
-
-    let Some(attr_name) = extract_instance_attr(object_name) else {
-        return false;
-    };
-
-    if let Some(caller_class_name) = caller.class_name.as_deref() {
-        if let Some(fields) =
-            fields_by_file_class.get(&(caller.location.file.clone(), caller_class_name.to_string()))
-        {
-            for field in fields {
-                if field.name != attr_name {
-                    continue;
-                }
-                if type_matches_class(field.field_type.as_deref(), class_name) {
-                    return true;
-                }
-            }
-        }
-    }
-
-    caller.params.iter().any(|param| {
-        param.name == attr_name && type_matches_class(param.param_type.as_deref(), class_name)
-    })
+    matches_call_target(
+        caller.class_name.as_deref(),
+        object_name,
+        class_name,
+        |attr_name, target_class_name| {
+            caller
+                .class_name
+                .as_deref()
+                .and_then(|caller_class_name| {
+                    fields_by_file_class
+                        .get(&(caller.location.file.clone(), caller_class_name.to_string()))
+                })
+                .into_iter()
+                .flatten()
+                .any(|field| {
+                    field.name == attr_name
+                        && type_matches_class(field.field_type.as_deref(), target_class_name)
+                })
+        },
+        |attr_name, target_class_name| {
+            caller.params.iter().any(|param| {
+                param.name == attr_name
+                    && type_matches_class(param.param_type.as_deref(), target_class_name)
+            })
+        },
+    )
 }
 
 fn freeze_edges(
@@ -379,86 +363,46 @@ fn resolve_call_targets(
     let Some(candidates) = defs_by_name.get(&call.callee) else {
         return Vec::new();
     };
-
-    let mut matched = HashSet::new();
-    if let Some(object_name) = call.object_name.as_deref() {
-        if matches!(object_name, "self" | "this" | "cls") {
-            if let Some(class_name) = caller.class_name.as_deref() {
-                matched.extend(filter_by_class_name(candidates, class_name));
-            }
-        } else {
-            matched.extend(filter_by_class_name(candidates, object_name));
-            if let Some(class_name) = caller.class_name.as_deref() {
-                if let Some(attr_name) = extract_instance_attr(object_name) {
-                    if let Some(fields) = fields_by_file_class
+    let mut matched: Vec<_> = resolve_forward_targets(
+        ForwardTargetContext {
+            caller_class_name: caller.class_name.as_deref(),
+            caller_file: &caller.location.file,
+            object_name: call.object_name.as_deref(),
+        },
+        candidates,
+        |candidate: &FunctionInfo| FunctionKey::from(candidate),
+        |candidate| candidate.class_name.as_deref(),
+        |candidate| candidate.location.file.as_str(),
+        |attr_name, candidate_class_name| {
+            caller
+                .class_name
+                .as_deref()
+                .and_then(|class_name| {
+                    fields_by_file_class
                         .get(&(caller.location.file.clone(), class_name.to_string()))
-                    {
-                        for candidate in candidates {
-                            for field in fields.iter().filter(|field| field.name == attr_name) {
-                                if candidate.class_name.as_deref().is_some_and(|class_name| {
-                                    type_matches_class(field.field_type.as_deref(), class_name)
-                                }) {
-                                    matched.insert(FunctionKey::from(candidate));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            if let Some(param_name) = extract_instance_attr(object_name) {
-                for candidate in candidates {
-                    for param in caller
-                        .params
-                        .iter()
-                        .filter(|param| param.name == param_name)
-                    {
-                        if candidate.class_name.as_deref().is_some_and(|class_name| {
-                            type_matches_class(param.param_type.as_deref(), class_name)
-                        }) {
-                            matched.insert(FunctionKey::from(candidate));
-                        }
-                    }
-                }
-            }
-        }
-    } else {
-        if let Some(class_name) = caller.class_name.as_deref() {
-            matched.extend(filter_by_class_name(candidates, class_name));
-        }
-        let same_file_candidates: Vec<_> = candidates
-            .iter()
-            .filter(|candidate| {
-                candidate.class_name.is_none() && candidate.location.file == caller.location.file
+                })
+                .into_iter()
+                .flatten()
+                .any(|field| {
+                    field.name == attr_name
+                        && type_matches_class(field.field_type.as_deref(), candidate_class_name)
+                })
+        },
+        |attr_name, candidate_class_name| {
+            caller.params.iter().any(|param| {
+                param.name == attr_name
+                    && type_matches_class(param.param_type.as_deref(), candidate_class_name)
             })
-            .collect();
-        let classless_candidates: Vec<_> = if same_file_candidates.is_empty() {
-            candidates
-                .iter()
-                .filter(|candidate| candidate.class_name.is_none())
-                .collect()
-        } else {
-            same_file_candidates
-        };
-        for candidate in classless_candidates {
-            matched.insert(FunctionKey::from(candidate));
-        }
-    }
-
+        },
+    )
+    .into_iter()
+    .map(|candidate| FunctionKey::from(&candidate))
+    .collect();
     if matched.is_empty() && call.object_name.is_none() {
         matched.extend(candidates.iter().map(FunctionKey::from));
     }
-
-    let mut matched: Vec<_> = matched.into_iter().collect();
     matched.sort_by(compare_keys);
     matched
-}
-
-fn filter_by_class_name(candidates: &[FunctionInfo], class_name: &str) -> Vec<FunctionKey> {
-    candidates
-        .iter()
-        .filter(|candidate| candidate.class_name.as_deref() == Some(class_name))
-        .map(FunctionKey::from)
-        .collect()
 }
 
 fn compare_keys(left: &FunctionKey, right: &FunctionKey) -> std::cmp::Ordering {

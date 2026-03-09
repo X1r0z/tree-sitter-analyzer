@@ -127,6 +127,21 @@ impl<'a> CallTargetResolver<'a> {
         ))
     }
 
+    pub(super) fn matches_call_target_without_enclosing_function(
+        &self,
+        caller_class_name: Option<&str>,
+        object_name: Option<&str>,
+        class_name: &str,
+    ) -> bool {
+        matches_call_target(
+            caller_class_name,
+            object_name,
+            class_name,
+            |_attr_name, _target_class_name| false,
+            |_attr_name, _target_class_name| false,
+        )
+    }
+
     pub(super) fn resolve_forward_targets_with_fallback(
         &self,
         caller: &IndexedFunction,

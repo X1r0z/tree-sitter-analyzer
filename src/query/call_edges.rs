@@ -101,27 +101,34 @@ impl<'a> CallEdgeQuery<'a> {
                 }
             }
             if let Some(class_name) = class_name {
-                let Some(caller_name) = row.caller.as_deref() else {
-                    continue;
-                };
-                let Some(caller) = self.resolve_enclosing_function(
-                    row.file_id,
-                    &row.file,
-                    caller_name,
+                if let Some(caller_name) = row.caller.as_deref() {
+                    let Some(caller) = self.resolve_enclosing_function(
+                        row.file_id,
+                        &row.file,
+                        caller_name,
+                        row.caller_class_name.as_deref(),
+                        row.line,
+                        &mut node_cache,
+                    )?
+                    else {
+                        continue;
+                    };
+                    if !(resolver.matches_call_target(
+                        &caller,
+                        row.object_name.as_deref(),
+                        class_name,
+                        &mut field_type_cache,
+                        &mut param_type_cache,
+                    )? || unique_method_target
+                        && has_non_self_object_target(row.object_name.as_deref()))
+                    {
+                        continue;
+                    }
+                } else if !(resolver.matches_call_target_without_enclosing_function(
                     row.caller_class_name.as_deref(),
-                    row.line,
-                    &mut node_cache,
-                )?
-                else {
-                    continue;
-                };
-                if !(resolver.matches_call_target(
-                    &caller,
                     row.object_name.as_deref(),
                     class_name,
-                    &mut field_type_cache,
-                    &mut param_type_cache,
-                )? || unique_method_target
+                ) || unique_method_target
                     && has_non_self_object_target(row.object_name.as_deref()))
                 {
                     continue;

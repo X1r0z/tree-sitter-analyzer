@@ -98,17 +98,20 @@ impl CodeExtractor {
         class_name: Option<&str>,
         line: usize,
     ) -> Option<FunctionInfo> {
+        let matches_target = |function: &FunctionInfo| {
+            function.name == function_name
+                && match class_name {
+                    Some(class_name) => function.class_name.as_deref() == Some(class_name),
+                    None => true,
+                }
+        };
         select_most_specific_by_line(self.collect_functions(), line, |function| {
             (function.location.start_line, function.location.end_line)
         })
-        .filter(|function| {
-            function.name == function_name && function.class_name.as_deref() == class_name
-        })
+        .filter(&matches_target)
         .or_else(|| {
             select_most_specific_by_line(
-                self.collect_functions().into_iter().filter(|function| {
-                    function.name == function_name && function.class_name.as_deref() == class_name
-                }),
+                self.collect_functions().into_iter().filter(matches_target),
                 line,
                 |function| (function.location.start_line, function.location.end_line),
             )

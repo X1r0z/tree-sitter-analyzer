@@ -451,7 +451,7 @@ Each `params` item contains:
 
 ## `refs`
 
-Array key: `references`
+Array key: `refs`
 
 | Field | Type | Description |
 |-------|------|-------------|

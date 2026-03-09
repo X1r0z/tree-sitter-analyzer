@@ -1,6 +1,5 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
@@ -12,7 +11,7 @@ use super::languages::{go, java, javascript, python};
 use crate::languages::{detect_language, find_language, find_language_info, QueryKind};
 use crate::models::{
     AnnotationInfo, CallInfo, ClassInfo, FieldInfo, FunctionInfo, FunctionParamInfo, ImportInfo,
-    Location, PythonPropertyCallerInfo, SymbolRefInfo, SymbolRefKey,
+    Location, PythonPropertyCallerInfo, PythonPropertyInfo, SymbolRefInfo, SymbolRefKey,
 };
 
 pub(crate) type PythonPropertyKey = (String, Option<String>);
@@ -197,44 +196,65 @@ impl ParseContext {
     pub(crate) fn collect_functions(&self, include_body: bool) -> Vec<FunctionInfo> {
         let mut func_pairs: Vec<(Node<'_>, Node<'_>)> =
             capture::collect_capture_pairs(self, QueryKind::Function, "function", "name");
-        func_pairs.sort_by_key(|(f, _)| (f.start_byte(), Reverse(f.end_byte())));
+        func_pairs.sort_by_key(|(f, _)| (f.start_byte(), std::cmp::Reverse(f.end_byte())));
 
         let mut functions = Vec::new();
-        let mut active_ranges: Vec<usize> = Vec::new();
+        let mut seen = HashSet::new();
 
         for (func_node, name_node) in func_pairs {
-            let name = self.node_text(name_node);
+            let function_node = match self.language.as_str() {
+                "python" => python::unwrap_callable_node(func_node),
+                _ => func_node,
+            };
+            let name = self
+                .cached_function_name(function_node)
+                .unwrap_or_else(|| self.node_text(name_node));
             if name.is_empty() {
                 continue;
             }
-            let start = func_node.start_byte();
-            let end = func_node.end_byte();
-            while let Some(&active_end) = active_ranges.last() {
-                if start >= active_end {
-                    active_ranges.pop();
-                } else {
-                    break;
-                }
-            }
-            if !active_ranges.is_empty() {
+            let class_name = self.find_enclosing_context(function_node).class_name;
+            let key = (
+                function_node.start_byte(),
+                function_node.end_byte(),
+                name.clone(),
+                class_name.clone(),
+            );
+            if !seen.insert(key) {
                 continue;
             }
-            active_ranges.push(end);
-            let class_name = self.find_enclosing_context(func_node).class_name;
             functions.push(FunctionInfo {
                 name,
-                location: self.node_location(func_node),
+                location: self.node_location(function_node),
                 body: if include_body {
-                    self.node_text(func_node)
+                    self.node_text(function_node)
                 } else {
                     String::new()
                 },
                 class_name,
-                params: self.collect_function_params(func_node),
+                params: self.collect_function_params(function_node),
             });
         }
 
         functions
+    }
+
+    pub(crate) fn collect_python_properties(&self) -> Vec<PythonPropertyInfo> {
+        python::collect_property_infos(self)
+    }
+
+    pub(crate) fn collect_python_property_callers(
+        &self,
+        property_name: Option<&str>,
+    ) -> Vec<PythonPropertyCallerInfo> {
+        python::collect_property_callers(self, property_name)
+    }
+
+    pub(crate) fn has_python_property_definition(
+        &self,
+        property_name: &str,
+        class_name: Option<&str>,
+    ) -> bool {
+        python::has_property_definition(self, property_name, class_name)
     }
 
     pub(crate) fn collect_function_params(&self, function_node: Node) -> Vec<FunctionParamInfo> {
@@ -271,7 +291,10 @@ impl ParseContext {
         let mut class_pairs: Vec<(Node<'_>, Node<'_>)> =
             capture::collect_capture_pairs(self, QueryKind::Class, "class", "name");
         class_pairs.sort_by_key(|(class_node, _)| {
-            (class_node.start_byte(), Reverse(class_node.end_byte()))
+            (
+                class_node.start_byte(),
+                std::cmp::Reverse(class_node.end_byte()),
+            )
         });
 
         let mut classes = Vec::new();

@@ -106,6 +106,34 @@ pub fn sort_callees_by_file_line(results: &mut [CalleeInfo]) {
     });
 }
 
+pub fn select_most_specific_by_line<C, I, Bounds>(
+    candidates: I,
+    line: usize,
+    bounds: Bounds,
+) -> Option<C>
+where
+    I: IntoIterator<Item = C>,
+    Bounds: Fn(&C) -> (usize, usize),
+{
+    candidates
+        .into_iter()
+        .filter(|candidate| {
+            let (start_line, end_line) = bounds(candidate);
+            start_line <= line && line <= end_line
+        })
+        .max_by(|left, right| {
+            let (left_start, left_end) = bounds(left);
+            let (right_start, right_end) = bounds(right);
+            let left_span = left_end.saturating_sub(left_start);
+            let right_span = right_end.saturating_sub(right_start);
+
+            left_start
+                .cmp(&right_start)
+                .then_with(|| right_span.cmp(&left_span))
+                .then_with(|| right_end.cmp(&left_end))
+        })
+}
+
 pub fn relative_path(path: &str, root: &str) -> String {
     let path = Path::new(path);
     let root = Path::new(root);

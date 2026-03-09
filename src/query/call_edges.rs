@@ -5,7 +5,8 @@ use rusqlite::{params, params_from_iter, ToSql};
 use super::call_resolver::CallTargetResolver;
 use super::QueryContext;
 use crate::models::{CalleeInfo, CallerInfo, FunctionInfo, FunctionKey, Location};
-use crate::parser::call_targets::split_function_target;
+use crate::parser::call_targets::{has_non_self_object_target, split_function_target};
+use crate::utils::select_most_specific_by_line;
 use crate::utils::{sort_callees_by_file_line, sort_callers_by_file_line};
 
 #[derive(Debug)]
@@ -24,7 +25,6 @@ pub(super) struct CalleeRow {
     file: String,
     callee: String,
     object_name: Option<String>,
-    caller_class_name: Option<String>,
     line: usize,
 }
 
@@ -89,6 +89,10 @@ impl<'a> CallEdgeQuery<'a> {
         let mut field_type_cache = HashMap::new();
         let mut param_type_cache = HashMap::new();
         let mut node_cache = HashMap::new();
+        let unique_method_target = match class_name {
+            Some(class_name) => resolver.has_unique_method_target(target_function, class_name)?,
+            None => false,
+        };
         for row in rows {
             let row = row?;
             if let Some(target_object) = target_object {
@@ -111,13 +115,15 @@ impl<'a> CallEdgeQuery<'a> {
                 else {
                     continue;
                 };
-                if !resolver.matches_call_target(
+                if !(resolver.matches_call_target(
                     &caller,
                     row.object_name.as_deref(),
                     class_name,
                     &mut field_type_cache,
                     &mut param_type_cache,
-                )? {
+                )? || unique_method_target
+                    && has_non_self_object_target(row.object_name.as_deref()))
+                {
                     continue;
                 }
             }
@@ -232,7 +238,6 @@ impl<'a> CallEdgeQuery<'a> {
                         file: row.get(1)?,
                         callee: row.get(2)?,
                         object_name: row.get(3)?,
-                        caller_class_name: row.get(4)?,
                         line: row.get::<_, i64>(5)? as usize,
                     })
                 })?
@@ -244,7 +249,6 @@ impl<'a> CallEdgeQuery<'a> {
                         file: row.get(1)?,
                         callee: row.get(2)?,
                         object_name: row.get(3)?,
-                        caller_class_name: row.get(4)?,
                         line: row.get::<_, i64>(5)? as usize,
                     })
                 })?
@@ -256,7 +260,6 @@ impl<'a> CallEdgeQuery<'a> {
                         file: row.get(1)?,
                         callee: row.get(2)?,
                         object_name: row.get(3)?,
-                        caller_class_name: row.get(4)?,
                         line: row.get::<_, i64>(5)? as usize,
                     })
                 })?
@@ -268,7 +271,6 @@ impl<'a> CallEdgeQuery<'a> {
                         file: row.get(1)?,
                         callee: row.get(2)?,
                         object_name: row.get(3)?,
-                        caller_class_name: row.get(4)?,
                         line: row.get::<_, i64>(5)? as usize,
                     })
                 })?
@@ -277,10 +279,22 @@ impl<'a> CallEdgeQuery<'a> {
 
         let mut results = Vec::new();
         let mut seen = HashSet::new();
+        let mut node_cache = HashMap::new();
         for row in rows {
             if !relevant_files.is_empty() && !relevant_files.contains(&row.file_id) {
                 continue;
             }
+            let Some(caller) = self.resolve_enclosing_function(
+                row.file_id,
+                &row.file,
+                function_name,
+                class_name,
+                row.line,
+                &mut node_cache,
+            )?
+            else {
+                continue;
+            };
             let mut callee_name = row.callee.clone();
             if let Some(object_name) = &row.object_name {
                 callee_name = format!("{}.{}", object_name, callee_name);
@@ -288,14 +302,15 @@ impl<'a> CallEdgeQuery<'a> {
             let key = (
                 row.file.clone(),
                 callee_name.clone(),
-                row.caller_class_name.clone(),
+                row.line,
+                caller.function.class_name.clone(),
             );
             if seen.insert(key) {
                 results.push(CalleeInfo {
                     callee: callee_name,
                     line: row.line,
                     file: row.file,
-                    class_name: row.caller_class_name,
+                    class_name: caller.function.class_name,
                 });
             }
         }
@@ -386,12 +401,18 @@ impl<'a> CallEdgeQuery<'a> {
             loaded
         };
 
-        Ok(candidates.into_iter().find(|candidate| {
-            candidate.file_id == file_id
-                && candidate.function.location.file == file
-                && candidate.function.location.start_line <= line
-                && line <= candidate.function.location.end_line
-        }))
+        Ok(select_most_specific_by_line(
+            candidates.into_iter().filter(|candidate| {
+                candidate.file_id == file_id && candidate.function.location.file == file
+            }),
+            line,
+            |candidate| {
+                (
+                    candidate.function.location.start_line,
+                    candidate.function.location.end_line,
+                )
+            },
+        ))
     }
 
     fn matching_function_file_ids(

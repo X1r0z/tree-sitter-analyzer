@@ -5,7 +5,9 @@ use rusqlite::{params, params_from_iter, ToSql};
 use super::call_edges::IndexedFunction;
 use super::call_resolver::{CallTargetResolver, FieldTypeCache, ParamTypeCache};
 use super::{CallEdgeQuery, QueryContext};
-use crate::models::{CallGraphPath, FunctionKey, GraphDirection, GraphPathNode};
+use crate::models::{
+    CallGraphPath, FunctionInfo, FunctionKey, GraphDirection, GraphPathNode, Location,
+};
 use crate::traversal::{collect_paths_dfs, TraversalPathStep};
 
 #[derive(Clone)]
@@ -142,10 +144,17 @@ impl<'a> CallGraphQuery<'a> {
         param_type_cache: &mut ParamTypeCache,
         is_property_cache: &mut HashMap<(String, Option<String>), bool>,
     ) -> anyhow::Result<Vec<GraphNeighbor>> {
+        if node.function_id < 0 {
+            return Ok(Vec::new());
+        }
         match direction {
-            GraphDirection::Forward => {
-                self.load_forward_neighbors(node, node_cache, field_type_cache, param_type_cache)
-            }
+            GraphDirection::Forward => self.load_forward_neighbors(
+                node,
+                node_cache,
+                field_type_cache,
+                param_type_cache,
+                is_property_cache,
+            ),
             GraphDirection::Backward => self.load_backward_neighbors(
                 node,
                 node_cache,
@@ -162,6 +171,7 @@ impl<'a> CallGraphQuery<'a> {
         node_cache: &mut HashMap<(String, Option<String>), Vec<IndexedFunction>>,
         field_type_cache: &mut FieldTypeCache,
         param_type_cache: &mut ParamTypeCache,
+        is_property_cache: &mut HashMap<(String, Option<String>), bool>,
     ) -> anyhow::Result<Vec<GraphNeighbor>> {
         let edge_query = CallEdgeQuery::new(self.ctx);
         let resolver = CallTargetResolver::new(self.ctx);
@@ -220,13 +230,23 @@ impl<'a> CallGraphQuery<'a> {
         let mut results = Vec::new();
         for (callee_name, object_name, line) in rows {
             let candidates = edge_query.load_functions_by_name(&callee_name, node_cache)?;
-            for candidate in resolver.resolve_forward_targets(
+            let mut resolved = resolver.resolve_forward_targets_with_fallback(
                 node,
                 object_name.as_deref(),
                 &candidates,
                 field_type_cache,
                 param_type_cache,
-            )? {
+            )?;
+            if resolved.is_empty() {
+                resolved.push(unresolved_indexed_function(
+                    node.file_id,
+                    &node.function.location.file,
+                    &callee_name,
+                    object_name.as_deref(),
+                    line,
+                ));
+            }
+            for candidate in resolved {
                 let key = candidate.key();
                 if seen.insert(key) {
                     results.push(GraphNeighbor {
@@ -239,7 +259,124 @@ impl<'a> CallGraphQuery<'a> {
                 }
             }
         }
+
+        let property_rows = self.load_forward_property_rows(node)?;
+        for (property_name, object_name, line) in property_rows {
+            let candidates = edge_query.load_functions_by_name(&property_name, node_cache)?;
+            let mut matched = Vec::new();
+            for candidate in candidates {
+                let property_key = (
+                    candidate.function.name.clone(),
+                    candidate.function.class_name.clone(),
+                );
+                let is_property = if let Some(value) = is_property_cache.get(&property_key) {
+                    *value
+                } else {
+                    let value = resolver.is_python_property(
+                        &candidate.function.name,
+                        candidate.function.class_name.as_deref(),
+                    )?;
+                    is_property_cache.insert(property_key.clone(), value);
+                    value
+                };
+                if !is_property {
+                    continue;
+                }
+                if !resolver.matches_property_target(
+                    Some(node),
+                    object_name.as_deref(),
+                    candidate.function.class_name.as_deref().unwrap_or_default(),
+                    field_type_cache,
+                    param_type_cache,
+                )? {
+                    continue;
+                }
+                matched.push(candidate);
+            }
+
+            if matched.is_empty() {
+                matched.push(unresolved_indexed_function(
+                    node.file_id,
+                    &node.function.location.file,
+                    &property_name,
+                    object_name.as_deref(),
+                    line,
+                ));
+            }
+
+            for candidate in matched {
+                let key = candidate.key();
+                if seen.insert(key) {
+                    results.push(GraphNeighbor {
+                        node: candidate,
+                        call_site: CallSite {
+                            file: node.function.location.file.clone(),
+                            line,
+                        },
+                    });
+                }
+            }
+        }
+
         Ok(results)
+    }
+
+    fn load_forward_property_rows(
+        &self,
+        node: &IndexedFunction,
+    ) -> anyhow::Result<Vec<(String, Option<String>, usize)>> {
+        let start_line = node.function.location.start_line as i64;
+        let end_line = node.function.location.end_line as i64;
+        let mut sql = String::from(
+            "
+            SELECT property_name, object_name, line
+            FROM python_property_callers
+            WHERE file_id = ?1 AND caller = ?2 AND line >= ?3 AND line <= ?4
+            ",
+        );
+
+        let rows = match node.function.class_name.as_deref() {
+            Some(class_name) => {
+                sql.push_str(" AND caller_class_name = ?5");
+                sql.push_str(" ORDER BY line");
+                let mut stmt = self.ctx.conn.prepare(&sql)?;
+                let rows = stmt.query_map(
+                    params![
+                        node.file_id,
+                        node.function.name,
+                        start_line,
+                        end_line,
+                        class_name
+                    ],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, i64>(2)? as usize,
+                        ))
+                    },
+                )?;
+                rows.collect::<Result<Vec<_>, _>>()?
+            }
+            None => {
+                sql.push_str(" AND caller_class_name IS NULL");
+                sql.push_str(" ORDER BY line");
+                let mut stmt = self.ctx.conn.prepare(&sql)?;
+                let rows = stmt.query_map(
+                    params![node.file_id, node.function.name, start_line, end_line],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, i64>(2)? as usize,
+                        ))
+                    },
+                )?;
+                rows.collect::<Result<Vec<_>, _>>()?
+            }
+        };
+
+        Ok(rows)
     }
 
     fn load_backward_neighbors(
@@ -389,5 +526,33 @@ impl<'a> CallGraphQuery<'a> {
         }
 
         Ok(results)
+    }
+}
+
+fn unresolved_indexed_function(
+    file_id: i64,
+    file: &str,
+    callee_name: &str,
+    object_name: Option<&str>,
+    line: usize,
+) -> IndexedFunction {
+    let name = match object_name {
+        Some(object_name) => format!("{}.{}", object_name, callee_name),
+        None => callee_name.to_string(),
+    };
+    IndexedFunction {
+        function_id: -1,
+        file_id,
+        function: FunctionInfo {
+            name,
+            location: Location {
+                file: file.to_string(),
+                start_line: line,
+                end_line: line,
+            },
+            body: String::new(),
+            class_name: None,
+            params: Vec::new(),
+        },
     }
 }

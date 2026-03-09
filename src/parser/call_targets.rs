@@ -1,10 +1,57 @@
 use std::collections::HashSet;
 use std::hash::Hash;
 
+#[derive(Clone, Copy)]
 pub(crate) struct ForwardTargetContext<'a> {
     pub(crate) caller_class_name: Option<&'a str>,
     pub(crate) caller_file: &'a str,
     pub(crate) object_name: Option<&'a str>,
+}
+
+pub(crate) fn resolve_forward_targets_with_fallback<
+    C,
+    K,
+    KeyOf,
+    ClassNameOf,
+    FileOf,
+    FieldMatches,
+    ParamMatches,
+>(
+    context: ForwardTargetContext<'_>,
+    candidates: &[C],
+    key_of: KeyOf,
+    class_name_of: ClassNameOf,
+    file_of: FileOf,
+    field_matches: FieldMatches,
+    param_matches: ParamMatches,
+) -> Vec<C>
+where
+    C: Clone,
+    K: Eq + Hash,
+    KeyOf: Fn(&C) -> K,
+    ClassNameOf: Fn(&C) -> Option<&str>,
+    FileOf: Fn(&C) -> &str,
+    FieldMatches: FnMut(&str, &str) -> bool,
+    ParamMatches: FnMut(&str, &str) -> bool,
+{
+    let mut results = resolve_forward_targets(
+        context,
+        candidates,
+        &key_of,
+        &class_name_of,
+        &file_of,
+        field_matches,
+        param_matches,
+    );
+
+    if results.is_empty() && context.object_name.is_none() {
+        let mut seen = HashSet::new();
+        for candidate in candidates {
+            push_unique(&mut results, &mut seen, candidate, &key_of);
+        }
+    }
+
+    results
 }
 
 pub(crate) fn resolve_forward_targets<
@@ -95,6 +142,10 @@ where
         }
     }
 
+    if results.is_empty() && has_non_self_object_target(context.object_name) {
+        push_unique_method_fallback(&mut results, &mut seen, candidates, &key_of, &class_name_of);
+    }
+
     results
 }
 
@@ -117,6 +168,10 @@ pub(crate) fn extract_instance_attr(object_name: &str) -> Option<&str> {
     }
     let candidate = object_name.split('.').next().unwrap_or(object_name);
     (!candidate.is_empty()).then_some(candidate)
+}
+
+pub(crate) fn has_non_self_object_target(object_name: Option<&str>) -> bool {
+    matches!(object_name, Some(name) if !matches!(name, "self" | "this" | "cls"))
 }
 
 pub(crate) fn type_matches_class(field_type: Option<&str>, class_name: &str) -> bool {
@@ -167,6 +222,60 @@ where
     };
 
     field_matches(attr_name, target_class_name) || param_matches(attr_name, target_class_name)
+}
+
+pub(crate) fn has_unique_class_method_target<C, ClassNameOf>(
+    candidates: &[C],
+    target_class_name: &str,
+    class_name_of: ClassNameOf,
+) -> bool
+where
+    ClassNameOf: Fn(&C) -> Option<&str>,
+{
+    let mut class_names = HashSet::new();
+    let mut matched_target = false;
+
+    for candidate in candidates {
+        let Some(class_name) = class_name_of(candidate) else {
+            continue;
+        };
+        class_names.insert(class_name);
+        if class_name == target_class_name {
+            matched_target = true;
+        }
+    }
+
+    matched_target && class_names.len() == 1
+}
+
+fn push_unique_method_fallback<C, K, KeyOf, ClassNameOf>(
+    results: &mut Vec<C>,
+    seen: &mut HashSet<K>,
+    candidates: &[C],
+    key_of: &KeyOf,
+    class_name_of: &ClassNameOf,
+) where
+    C: Clone,
+    K: Eq + Hash,
+    KeyOf: Fn(&C) -> K,
+    ClassNameOf: Fn(&C) -> Option<&str>,
+{
+    let mut class_names = HashSet::new();
+    let mut method_candidates = Vec::new();
+
+    for candidate in candidates {
+        let Some(class_name) = class_name_of(candidate) else {
+            continue;
+        };
+        class_names.insert(class_name);
+        method_candidates.push(candidate);
+    }
+
+    if !method_candidates.is_empty() && class_names.len() == 1 {
+        for candidate in method_candidates {
+            push_unique(results, seen, candidate, key_of);
+        }
+    }
 }
 
 fn push_unique<C, K, KeyOf>(

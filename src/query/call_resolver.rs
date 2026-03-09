@@ -5,7 +5,8 @@ use rusqlite::{params, OptionalExtension};
 use super::call_edges::IndexedFunction;
 use super::QueryContext;
 use crate::parser::call_targets::{
-    matches_call_target, resolve_forward_targets, type_matches_class, ForwardTargetContext,
+    has_unique_class_method_target, matches_call_target, resolve_forward_targets_with_fallback,
+    type_matches_class, ForwardTargetContext,
 };
 
 pub(super) type FieldTypesByName = HashMap<String, Vec<Option<String>>>;
@@ -126,7 +127,7 @@ impl<'a> CallTargetResolver<'a> {
         ))
     }
 
-    pub(super) fn resolve_forward_targets(
+    pub(super) fn resolve_forward_targets_with_fallback(
         &self,
         caller: &IndexedFunction,
         object_name: Option<&str>,
@@ -145,7 +146,7 @@ impl<'a> CallTargetResolver<'a> {
             .unwrap_or_default();
         let param_types =
             self.load_param_types_by_function(caller.function_id, param_type_cache)?;
-        Ok(resolve_forward_targets(
+        Ok(resolve_forward_targets_with_fallback(
             ForwardTargetContext {
                 caller_class_name: caller.function.class_name.as_deref(),
                 caller_file: &caller.function.location.file,
@@ -173,6 +174,39 @@ impl<'a> CallTargetResolver<'a> {
                         type_matches_class(param_type.as_deref(), candidate_class_name)
                     })
             },
+        ))
+    }
+
+    pub(super) fn has_unique_method_target(
+        &self,
+        function_name: &str,
+        class_name: &str,
+    ) -> anyhow::Result<bool> {
+        let mut sql = String::from(
+            "
+            SELECT DISTINCT fn.class_name
+            FROM functions fn
+            JOIN files f ON f.id = fn.file_id
+            WHERE fn.name = ?1 AND fn.class_name IS NOT NULL
+            ",
+        );
+        let mut params: Vec<&dyn rusqlite::ToSql> = vec![&function_name];
+        if let Some(language) = self.ctx.language.as_ref() {
+            sql.push_str(" AND f.language = ?2");
+            params.push(language);
+        }
+
+        let mut stmt = self.ctx.conn.prepare(&sql)?;
+        let classes = stmt
+            .query_map(rusqlite::params_from_iter(params), |row| {
+                row.get::<_, String>(0)
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(has_unique_class_method_target(
+            &classes,
+            class_name,
+            |candidate| Some(candidate.as_str()),
         ))
     }
 

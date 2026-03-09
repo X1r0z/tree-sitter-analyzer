@@ -3,12 +3,14 @@ use std::convert::Infallible;
 
 use crate::models::{
     CallGraphPath, CallInfo, FieldInfo, FunctionInfo, FunctionKey, GraphDirection, GraphPathNode,
-    PythonPropertyInfo,
+    Location, PythonPropertyInfo,
 };
 use crate::parser::call_targets::{
-    matches_call_target, resolve_forward_targets, type_matches_class, ForwardTargetContext,
+    matches_call_target, resolve_forward_targets_with_fallback, type_matches_class,
+    ForwardTargetContext,
 };
 use crate::traversal::{collect_paths_dfs, TraversalPathStep};
+use crate::utils::select_most_specific_by_line;
 
 #[derive(Debug, Clone)]
 pub(crate) struct RawPropertyCaller {
@@ -108,8 +110,17 @@ impl CallGraph {
                 continue;
             };
 
-            for callee in resolve_call_targets(&call, &caller, &defs_by_name, &fields_by_file_class)
-            {
+            let mut callees =
+                resolve_call_targets(&call, &caller, &defs_by_name, &fields_by_file_class);
+            if callees.is_empty() {
+                let unresolved = unresolved_call_key(&call);
+                functions_by_key
+                    .entry(unresolved.clone())
+                    .or_insert_with(|| unresolved_call_function(&call));
+                callees.push(unresolved);
+            }
+
+            for callee in callees {
                 let caller_key = FunctionKey::from(&caller);
                 let call_site = CallSite {
                     file: call.location.file.clone(),
@@ -138,6 +149,7 @@ impl CallGraph {
                 .get(&property_caller.property_name)
                 .cloned()
                 .unwrap_or_default();
+            let mut matched = false;
             for property in candidate_defs {
                 if !property_keys.contains(&(property.name.clone(), property.class_name.clone())) {
                     continue;
@@ -160,6 +172,24 @@ impl CallGraph {
                     .entry(caller_key)
                     .or_default()
                     .entry(property_key)
+                    .or_insert(call_site);
+                matched = true;
+            }
+
+            if !matched {
+                let unresolved = unresolved_property_key(&property_caller);
+                functions_by_key
+                    .entry(unresolved.clone())
+                    .or_insert_with(|| unresolved_property_function(&property_caller));
+                let caller_key = FunctionKey::from(&caller);
+                let call_site = CallSite {
+                    file: property_caller.file.clone(),
+                    line: property_caller.line,
+                };
+                forward_edge_sets
+                    .entry(caller_key)
+                    .or_default()
+                    .entry(unresolved)
                     .or_insert(call_site);
             }
         }
@@ -353,9 +383,9 @@ fn resolve_enclosing_function(
         );
     }
 
-    candidates
-        .into_iter()
-        .find(|function| function.location.start_line <= line && line <= function.location.end_line)
+    select_most_specific_by_line(candidates, line, |function| {
+        (function.location.start_line, function.location.end_line)
+    })
 }
 
 fn resolve_call_targets(
@@ -367,7 +397,7 @@ fn resolve_call_targets(
     let Some(candidates) = defs_by_name.get(&call.callee) else {
         return Vec::new();
     };
-    let mut matched: Vec<_> = resolve_forward_targets(
+    let matched: Vec<_> = resolve_forward_targets_with_fallback(
         ForwardTargetContext {
             caller_class_name: caller.class_name.as_deref(),
             caller_file: &caller.location.file,
@@ -402,9 +432,7 @@ fn resolve_call_targets(
     .into_iter()
     .map(|candidate| FunctionKey::from(&candidate))
     .collect();
-    if matched.is_empty() && call.object_name.is_none() {
-        matched.extend(candidates.iter().map(FunctionKey::from));
-    }
+    let mut matched = matched;
     matched.sort_by(compare_keys);
     matched
 }
@@ -423,4 +451,71 @@ fn compare_graphs(left: &CallGraphPath, right: &CallGraphPath) -> std::cmp::Orde
         .cmp(&right.stacktrace)
         .then(left.depth.cmp(&right.depth))
         .then(left.path.len().cmp(&right.path.len()))
+}
+
+fn unresolved_call_key(call: &CallInfo) -> FunctionKey {
+    let name = unresolved_call_name(call);
+    FunctionKey {
+        file: call.location.file.clone(),
+        name: name.clone(),
+        class_name: None,
+        start_line: call.location.start_line,
+        end_line: call.location.start_line,
+    }
+}
+
+fn unresolved_call_function(call: &CallInfo) -> FunctionInfo {
+    FunctionInfo {
+        name: unresolved_call_name(call),
+        location: Location {
+            file: call.location.file.clone(),
+            start_line: call.location.start_line,
+            end_line: call.location.start_line,
+        },
+        body: String::new(),
+        class_name: None,
+        params: Vec::new(),
+    }
+}
+
+fn unresolved_call_name(call: &CallInfo) -> String {
+    unresolved_name(call.object_name.as_deref(), &call.callee)
+}
+
+fn unresolved_property_key(property_caller: &RawPropertyCaller) -> FunctionKey {
+    let name = unresolved_name(
+        property_caller.object_name.as_deref(),
+        &property_caller.property_name,
+    );
+    FunctionKey {
+        file: property_caller.file.clone(),
+        name: name.clone(),
+        class_name: None,
+        start_line: property_caller.line,
+        end_line: property_caller.line,
+    }
+}
+
+fn unresolved_property_function(property_caller: &RawPropertyCaller) -> FunctionInfo {
+    FunctionInfo {
+        name: unresolved_name(
+            property_caller.object_name.as_deref(),
+            &property_caller.property_name,
+        ),
+        location: Location {
+            file: property_caller.file.clone(),
+            start_line: property_caller.line,
+            end_line: property_caller.line,
+        },
+        body: String::new(),
+        class_name: None,
+        params: Vec::new(),
+    }
+}
+
+fn unresolved_name(object_name: Option<&str>, callee_name: &str) -> String {
+    match object_name {
+        Some(object_name) => format!("{}.{}", object_name, callee_name),
+        None => callee_name.to_string(),
+    }
 }

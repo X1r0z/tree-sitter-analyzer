@@ -4,7 +4,9 @@ use tree_sitter::Node;
 
 use super::super::capture::CallCaptureMatch;
 use super::super::{ParseContext, PythonPropertyCallers, PythonPropertyDefinitions};
-use crate::models::{AnnotationInfo, FieldInfo, FunctionParamInfo, PythonPropertyCallerInfo};
+use crate::models::{
+    AnnotationInfo, FieldInfo, FunctionParamInfo, PythonPropertyCallerInfo, PythonPropertyInfo,
+};
 
 type PythonPropertyCallerKey = (String, String, Option<String>, Option<String>, usize);
 
@@ -347,6 +349,56 @@ pub(crate) fn collect_property_indexes(
     }
 
     (properties, callers_by_property)
+}
+
+pub(crate) fn collect_property_infos(parser: &ParseContext) -> Vec<PythonPropertyInfo> {
+    let (properties, _) = collect_property_indexes(parser);
+    let mut values: Vec<_> = properties
+        .into_iter()
+        .map(|(name, class_name)| PythonPropertyInfo { name, class_name })
+        .collect();
+    values.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.class_name.cmp(&right.class_name))
+    });
+    values
+}
+
+pub(crate) fn collect_property_callers(
+    parser: &ParseContext,
+    property_name: Option<&str>,
+) -> Vec<PythonPropertyCallerInfo> {
+    let (_, callers) = collect_property_indexes(parser);
+    let mut values = Vec::new();
+
+    match property_name {
+        Some(property_name) => {
+            values.extend(callers.get(property_name).cloned().unwrap_or_default());
+        }
+        None => {
+            for entries in callers.into_values() {
+                values.extend(entries);
+            }
+        }
+    }
+
+    values.sort_by(|left, right| {
+        left.property_name
+            .cmp(&right.property_name)
+            .then_with(|| left.caller.cmp(&right.caller))
+            .then_with(|| left.line.cmp(&right.line))
+    });
+    values
+}
+
+pub(crate) fn has_property_definition(
+    parser: &ParseContext,
+    property_name: &str,
+    class_name: Option<&str>,
+) -> bool {
+    let (properties, _) = collect_property_indexes(parser);
+    properties.contains(&(property_name.to_string(), class_name.map(str::to_string)))
 }
 
 pub(crate) fn field_infos(

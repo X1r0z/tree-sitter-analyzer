@@ -13,6 +13,16 @@ pub(crate) struct FileSearch {
     text_filter_cache: TextFilterCache,
 }
 
+pub(crate) enum QueryMatcher {
+    MatchAll,
+    Regex(Regex),
+    Contains(String),
+}
+
+struct TextFilterCache {
+    matches_by_text: Mutex<HashMap<String, Vec<String>>>,
+}
+
 impl FileSearch {
     pub(crate) fn new(path: &str, files: Vec<String>) -> Self {
         Self {
@@ -79,6 +89,51 @@ impl FileSearch {
     }
 }
 
+impl QueryMatcher {
+    pub(crate) fn new(query: &str) -> Self {
+        if query.is_empty() {
+            return Self::MatchAll;
+        }
+        match Regex::new(query) {
+            Ok(re) => Self::Regex(re),
+            Err(_) => Self::Contains(query.to_string()),
+        }
+    }
+
+    pub(crate) fn is_match(&self, name: &str) -> bool {
+        match self {
+            Self::MatchAll => true,
+            Self::Regex(re) => re.is_match(name),
+            Self::Contains(text) => name.contains(text),
+        }
+    }
+
+    pub(crate) fn matches_all(&self) -> bool {
+        matches!(self, Self::MatchAll)
+    }
+}
+
+impl TextFilterCache {
+    fn new() -> Self {
+        Self {
+            matches_by_text: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn get(&self, text: &str) -> Option<Vec<String>> {
+        self.matches_by_text
+            .lock()
+            .ok()
+            .and_then(|cache| cache.get(text).cloned())
+    }
+
+    fn insert(&self, text: &str, matched_files: Vec<String>) {
+        if let Ok(mut cache) = self.matches_by_text.lock() {
+            cache.insert(text.to_string(), matched_files);
+        }
+    }
+}
+
 fn search_files_with_rg(text: &str, path: &str, language: Option<&str>) -> Option<Vec<String>> {
     let rg = which::which("rg").ok()?;
     let extensions = language
@@ -113,59 +168,4 @@ fn search_files_with_rg(text: &str, path: &str, language: Option<&str>) -> Optio
 
 pub(crate) fn is_simple_query(query: &str) -> bool {
     !query.is_empty() && !query.contains(|c: char| ".^$*+?{}[]|()\\".contains(c))
-}
-
-pub(crate) enum QueryMatcher {
-    MatchAll,
-    Regex(Regex),
-    Contains(String),
-}
-
-impl QueryMatcher {
-    pub(crate) fn new(query: &str) -> Self {
-        if query.is_empty() {
-            return Self::MatchAll;
-        }
-        match Regex::new(query) {
-            Ok(re) => Self::Regex(re),
-            Err(_) => Self::Contains(query.to_string()),
-        }
-    }
-
-    pub(crate) fn is_match(&self, name: &str) -> bool {
-        match self {
-            Self::MatchAll => true,
-            Self::Regex(re) => re.is_match(name),
-            Self::Contains(text) => name.contains(text),
-        }
-    }
-
-    pub(crate) fn matches_all(&self) -> bool {
-        matches!(self, Self::MatchAll)
-    }
-}
-
-struct TextFilterCache {
-    matches_by_text: Mutex<HashMap<String, Vec<String>>>,
-}
-
-impl TextFilterCache {
-    fn new() -> Self {
-        Self {
-            matches_by_text: Mutex::new(HashMap::new()),
-        }
-    }
-
-    fn get(&self, text: &str) -> Option<Vec<String>> {
-        self.matches_by_text
-            .lock()
-            .ok()
-            .and_then(|cache| cache.get(text).cloned())
-    }
-
-    fn insert(&self, text: &str, matched_files: Vec<String>) {
-        if let Ok(mut cache) = self.matches_by_text.lock() {
-            cache.insert(text.to_string(), matched_files);
-        }
-    }
 }

@@ -109,12 +109,14 @@ impl ParseContext {
     }
 
     pub(crate) fn find_enclosing_context<'a>(&self, node: Node<'a>) -> EnclosingContext<'a> {
-        if let Some(class_name) = find_language_specific_enclosing_class_name(self, node) {
-            return EnclosingContext {
-                function_name: self.cached_function_name(node),
-                class_name: Some(class_name),
-                function_node: Some(node),
-            };
+        if self.language == "go" && node.kind() == "method_declaration" {
+            if let Some(class_name) = go::receiver_type_name(self, node) {
+                return EnclosingContext {
+                    function_name: self.cached_function_name(node),
+                    class_name: Some(class_name),
+                    function_node: Some(node),
+                };
+            }
         }
 
         let mut current = node.parent();
@@ -128,8 +130,11 @@ impl ParseContext {
                 function_node = Some(current_node);
             }
 
-            if class_name.is_none() {
-                class_name = find_language_specific_enclosing_class_name(self, current_node);
+            if class_name.is_none()
+                && self.language == "go"
+                && current_node.kind() == "method_declaration"
+            {
+                class_name = go::receiver_type_name(self, current_node);
             }
 
             if class_name.is_none()
@@ -164,7 +169,13 @@ impl ParseContext {
         if let Some(name) = self.function_names_by_node.borrow().get(&node_id) {
             return name.clone();
         }
-        let name = function_name_from_node(self, node);
+        let name = match self.language.as_str() {
+            "python" => python::function_name_from_node(self, node),
+            "javascript" | "typescript" | "tsx" => javascript::function_name_from_node(self, node),
+            "java" => java::function_name_from_node(self, node),
+            "go" => go::function_name_from_node(self, node),
+            _ => None,
+        };
         self.function_names_by_node
             .borrow_mut()
             .insert(node_id, name.clone());
@@ -227,7 +238,10 @@ impl ParseContext {
     }
 
     pub(crate) fn collect_function_params(&self, function_node: Node) -> Vec<FunctionParamInfo> {
-        let target = unwrap_callable_node(function_node);
+        let target = match self.language.as_str() {
+            "python" => python::unwrap_callable_node(function_node),
+            _ => function_node,
+        };
         match self.language.as_str() {
             "python" => python::function_params(self, target),
             "javascript" | "typescript" | "tsx" => javascript::function_params(self, target),
@@ -366,10 +380,17 @@ impl ParseContext {
             let enclosing = self.find_enclosing_context(call_node);
             let (callee, is_method, obj_name, callee_function_node) = if self.language == "java" {
                 let (callee_name, resolved_is_method, object_name) =
-                    java::resolve_java_call_parts(self, call_node);
+                    java::resolve_call_parts(self, call_node);
                 (callee_name, resolved_is_method, object_name, None)
             } else {
-                resolve_non_java_call_parts(self, matched)
+                match self.language.as_str() {
+                    "python" => python::resolve_call_parts(self, matched),
+                    "javascript" | "typescript" | "tsx" => {
+                        javascript::resolve_call_parts(self, matched)
+                    }
+                    "go" => go::resolve_call_parts(self, matched),
+                    _ => (String::new(), false, None, None),
+                }
             };
 
             if callee.is_empty() {
@@ -385,7 +406,7 @@ impl ParseContext {
                     .unwrap_or(false)
                 && enclosing.function_node.is_some()
             {
-                let resolved = self.resolve_js_call_targets_for_identifier(call_node, &callee);
+                let resolved = self.resolve_call_targets_for_identifier(call_node, &callee);
                 if !resolved.is_empty() {
                     for resolved_callee in resolved {
                         calls.push(CallInfo {
@@ -426,14 +447,14 @@ impl ParseContext {
 
     pub(crate) fn collect_annotations(&self) -> Vec<AnnotationInfo> {
         match self.language.as_str() {
-            "java" => java::extract_java_annotations(self),
-            "python" => python::extract_python_decorators(self),
+            "java" => java::extract_annotations(self),
+            "python" => python::extract_decorators(self),
             _ => Vec::new(),
         }
     }
 
     pub(crate) fn collect_symbols(&self) -> Vec<SymbolRefInfo> {
-        scan_symbols(self, |node| {
+        self.scan_symbols(|node| {
             let name = self.node_text(node);
             (!name.is_empty()).then(|| SymbolRefInfo {
                 name,
@@ -457,7 +478,7 @@ impl ParseContext {
             return Vec::new();
         }
 
-        scan_symbols(self, |node| {
+        self.scan_symbols(|node| {
             (self.node_bytes(node) == name_bytes).then(|| SymbolRefInfo {
                 name: name.to_string(),
                 node_type: node.kind().to_string(),
@@ -482,7 +503,7 @@ impl ParseContext {
 
         let expected: std::collections::HashSet<SymbolRefKey> =
             candidates.iter().map(SymbolRefKey::from).collect();
-        scan_symbols(self, |node| {
+        self.scan_symbols(|node| {
             let symbol = SymbolRefInfo {
                 name: self.node_text(node),
                 node_type: node.kind().to_string(),
@@ -502,24 +523,35 @@ impl ParseContext {
                 })
         })
     }
-}
 
-fn unwrap_callable_node<'a>(node: Node<'a>) -> Node<'a> {
-    if node.kind() == "decorated_definition" {
-        if let Some(definition) = node.child_by_field_name("definition") {
-            return definition;
+    fn scan_symbols(
+        &self,
+        mut map_node: impl FnMut(Node<'_>) -> Option<SymbolRefInfo>,
+    ) -> Vec<SymbolRefInfo> {
+        let mut refs = Vec::new();
+        let mut stack = vec![self.tree.root_node()];
+        while let Some(node) = stack.pop() {
+            if node.is_named() {
+                let is_symbol_ref = match self.language.as_str() {
+                    "python" => python::is_symbol_ref_node(node),
+                    "javascript" | "typescript" | "tsx" => javascript::is_symbol_ref_node(node),
+                    "java" => java::is_symbol_ref_node(node),
+                    "go" => go::is_symbol_ref_node(node),
+                    _ => false,
+                };
+                if is_symbol_ref {
+                    if let Some(symbol) = map_node(node) {
+                        refs.push(symbol);
+                    }
+                }
+                for i in (0..node.named_child_count()).rev() {
+                    if let Some(child) = node.named_child(i as u32) {
+                        stack.push(child);
+                    }
+                }
+            }
         }
-    }
-    node
-}
-
-fn find_language_specific_enclosing_class_name(
-    context: &ParseContext,
-    node: Node<'_>,
-) -> Option<String> {
-    match context.language.as_str() {
-        "go" if node.kind() == "method_declaration" => go::receiver_type_name(context, node),
-        _ => None,
+        refs
     }
 }
 
@@ -536,64 +568,6 @@ fn is_function_like(node_kind: &str) -> bool {
             | "function_expression"
             | "func_literal"
     )
-}
-
-fn anonymous_function_name(context: &ParseContext, function_node: Node<'_>) -> Option<String> {
-    let parent = function_node.parent()?;
-    match parent.kind() {
-        "variable_declarator" => {
-            let name_node = parent.child_by_field_name("name")?;
-            if name_node.kind() == "identifier" {
-                return Some(context.node_text(name_node));
-            }
-        }
-        "assignment_expression" | "assignment" => {
-            let left_node = parent.child_by_field_name("left")?;
-            if left_node.kind() == "identifier" {
-                return Some(context.node_text(left_node));
-            }
-        }
-        "pair" | "property" => {
-            let key_node = parent.child_by_field_name("key")?;
-            if matches!(
-                key_node.kind(),
-                "identifier" | "property_identifier" | "string"
-            ) {
-                let text = context.node_text_lossy(key_node);
-                return Some(text.trim_matches(|c| c == '"' || c == '\'').to_string());
-            }
-        }
-        "export_statement" => {
-            for i in 0..parent.child_count() {
-                let child = parent.child(i as u32).unwrap();
-                if context.node_text_eq(child, "default") {
-                    return Some("<default_export>".to_string());
-                }
-            }
-        }
-        _ => {}
-    }
-    None
-}
-
-fn function_name_from_node(context: &ParseContext, node: Node<'_>) -> Option<String> {
-    let anonymous_types = ["arrow_function", "func_literal"];
-    if let Some(name_node) = node.child_by_field_name("name") {
-        return Some(context.node_text(name_node));
-    }
-    if anonymous_types.contains(&node.kind()) || node.kind() == "function_expression" {
-        return anonymous_function_name(context, node);
-    }
-    for i in 0..node.child_count() {
-        let child = node.child(i as u32).unwrap();
-        if matches!(
-            child.kind(),
-            "identifier" | "property_identifier" | "field_identifier"
-        ) {
-            return Some(context.node_text(child));
-        }
-    }
-    None
 }
 
 fn class_name_from_node(context: &ParseContext, node: Node<'_>) -> Option<String> {
@@ -775,153 +749,4 @@ fn class_field_names(parser: &ParseContext, class_node: Node<'_>) -> Vec<String>
         .into_iter()
         .map(|field| field.name)
         .collect()
-}
-
-fn split_attribute_parts(parser: &ParseContext, node: Node<'_>) -> (String, Option<String>) {
-    let mut callee = String::new();
-    let mut obj_name: Option<String> = None;
-
-    match node.kind() {
-        "attribute" => {
-            if let Some(attr_node) = node.child_by_field_name("attribute") {
-                callee = parser.node_text(attr_node);
-            }
-            if let Some(obj_node) = node.child_by_field_name("object") {
-                obj_name = Some(parser.node_text(obj_node));
-            }
-        }
-        "member_expression" => {
-            if let Some(prop_node) = node.child_by_field_name("property") {
-                callee = parser.node_text(prop_node);
-            }
-            if let Some(obj_node) = node.child_by_field_name("object") {
-                obj_name = Some(parser.node_text(obj_node));
-            }
-        }
-        "selector_expression" => {
-            if let Some(field_node) = node.child_by_field_name("field") {
-                callee = parser.node_text(field_node);
-            }
-            if let Some(operand_node) = node.child_by_field_name("operand") {
-                obj_name = Some(parser.node_text(operand_node));
-            }
-        }
-        _ => {
-            let mut ids = Vec::new();
-            for i in 0..node.named_child_count() {
-                let child = node.named_child(i as u32).unwrap();
-                if matches!(
-                    child.kind(),
-                    "identifier"
-                        | "property_identifier"
-                        | "private_property_identifier"
-                        | "field_identifier"
-                ) {
-                    ids.push(parser.node_text(child));
-                } else if matches!(
-                    child.kind(),
-                    "attribute" | "member_expression" | "selector_expression"
-                ) {
-                    obj_name = Some(parser.node_text(child));
-                }
-            }
-            if let Some(last) = ids.last() {
-                callee = last.clone();
-                if ids.len() > 1 && obj_name.is_none() {
-                    obj_name = Some(ids[0].clone());
-                }
-            }
-        }
-    }
-
-    (callee, obj_name)
-}
-
-fn resolve_non_java_call_parts<'a>(
-    parser: &ParseContext,
-    matched: &CallCaptureMatch<'a>,
-) -> (String, bool, Option<String>, Option<Node<'a>>) {
-    let call_node = matched.call;
-    let mut callee = String::new();
-    let mut is_method = false;
-    let mut obj_name: Option<String> = None;
-    let mut callee_function_node: Option<Node<'_>> = None;
-
-    if let Some(func_node) = call_node.child_by_field_name("function") {
-        callee_function_node = Some(func_node);
-        if func_node.kind() == "identifier" {
-            callee = parser.node_text(func_node);
-        } else if matches!(
-            func_node.kind(),
-            "attribute" | "member_expression" | "selector_expression"
-        ) {
-            is_method = true;
-            let (callee_name, object_name) = split_attribute_parts(parser, func_node);
-            callee = callee_name;
-            obj_name = object_name;
-        }
-    }
-    if callee.is_empty() {
-        if let Some(callee_cap) = matched.callee {
-            callee = parser.node_text(callee_cap);
-        }
-        if let Some(method_cap) = matched.method {
-            callee = parser.node_text(method_cap);
-            is_method = true;
-            if let Some(obj_cap) = matched.object {
-                obj_name = Some(parser.node_text(obj_cap));
-            }
-        }
-    }
-
-    (callee, is_method, obj_name, callee_function_node)
-}
-
-fn is_symbol_ref_node(parser: &ParseContext, node: Node<'_>) -> bool {
-    match parser.language.as_str() {
-        "python" => matches!(
-            node.kind(),
-            "identifier" | "dotted_name" | "relative_import"
-        ),
-        "javascript" | "typescript" | "tsx" => matches!(
-            node.kind(),
-            "identifier"
-                | "property_identifier"
-                | "private_property_identifier"
-                | "field_identifier"
-                | "type_identifier"
-        ),
-        "java" => matches!(
-            node.kind(),
-            "identifier" | "type_identifier" | "scoped_identifier" | "scoped_type_identifier"
-        ),
-        "go" => matches!(
-            node.kind(),
-            "identifier" | "field_identifier" | "type_identifier" | "qualified_type"
-        ),
-        _ => false,
-    }
-}
-
-fn scan_symbols(
-    parser: &ParseContext,
-    mut map_node: impl FnMut(Node<'_>) -> Option<SymbolRefInfo>,
-) -> Vec<SymbolRefInfo> {
-    let mut refs = Vec::new();
-    let mut stack = vec![parser.tree.root_node()];
-    while let Some(node) = stack.pop() {
-        if node.is_named() {
-            if is_symbol_ref_node(parser, node) {
-                if let Some(symbol) = map_node(node) {
-                    refs.push(symbol);
-                }
-            }
-            for i in (0..node.named_child_count()).rev() {
-                if let Some(child) = node.named_child(i as u32) {
-                    stack.push(child);
-                }
-            }
-        }
-    }
-    refs
 }

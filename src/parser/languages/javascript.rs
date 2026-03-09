@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use tree_sitter::Node;
 
+use super::super::capture::CallCaptureMatch;
 use super::super::ParseContext;
 use crate::models::{FieldInfo, FunctionParamInfo};
 
@@ -64,6 +65,179 @@ impl JsAliasResolverState {
     }
 }
 
+impl ParseContext {
+    pub(crate) fn resolve_call_targets_for_identifier(
+        &self,
+        call_node: Node<'_>,
+        identifier_name: &str,
+    ) -> Vec<String> {
+        let Some(func_node) = self.find_enclosing_context(call_node).function_node else {
+            return Vec::new();
+        };
+
+        let mut resolvers = self.js_alias_resolvers_by_function.borrow_mut();
+        let resolver = resolvers
+            .entry(func_node.id())
+            .or_insert_with(|| JsAliasResolverState::new(alias_events(self, func_node)));
+        resolver.resolve(call_node.start_byte(), identifier_name)
+    }
+}
+
+fn anonymous_function_name(context: &ParseContext, function_node: Node<'_>) -> Option<String> {
+    let parent = function_node.parent()?;
+    match parent.kind() {
+        "variable_declarator" => {
+            let name_node = parent.child_by_field_name("name")?;
+            if name_node.kind() == "identifier" {
+                return Some(context.node_text(name_node));
+            }
+        }
+        "assignment_expression" | "assignment" => {
+            let left_node = parent.child_by_field_name("left")?;
+            if left_node.kind() == "identifier" {
+                return Some(context.node_text(left_node));
+            }
+        }
+        "pair" | "property" => {
+            let key_node = parent.child_by_field_name("key")?;
+            if matches!(
+                key_node.kind(),
+                "identifier" | "property_identifier" | "string"
+            ) {
+                let text = context.node_text_lossy(key_node);
+                return Some(text.trim_matches(|c| c == '"' || c == '\'').to_string());
+            }
+        }
+        "export_statement" => {
+            for i in 0..parent.child_count() {
+                let child = parent.child(i as u32).unwrap();
+                if context.node_text_eq(child, "default") {
+                    return Some("<default_export>".to_string());
+                }
+            }
+        }
+        _ => {}
+    }
+    None
+}
+
+pub(crate) fn function_name_from_node(context: &ParseContext, node: Node<'_>) -> Option<String> {
+    if let Some(name_node) = node.child_by_field_name("name") {
+        let name = context.node_text(name_node);
+        if !name.is_empty() {
+            return Some(name);
+        }
+    }
+    if matches!(node.kind(), "arrow_function" | "function_expression") {
+        return anonymous_function_name(context, node);
+    }
+    for i in 0..node.child_count() {
+        let child = node.child(i as u32).unwrap();
+        if matches!(
+            child.kind(),
+            "identifier" | "property_identifier" | "field_identifier"
+        ) {
+            let name = context.node_text(child);
+            if !name.is_empty() {
+                return Some(name);
+            }
+        }
+    }
+    None
+}
+
+pub(crate) fn split_attribute_parts(
+    parser: &ParseContext,
+    node: Node<'_>,
+) -> (String, Option<String>) {
+    let mut callee = String::new();
+    let mut obj_name: Option<String> = None;
+
+    match node.kind() {
+        "member_expression" => {
+            if let Some(prop_node) = node.child_by_field_name("property") {
+                callee = parser.node_text(prop_node);
+            }
+            if let Some(obj_node) = node.child_by_field_name("object") {
+                obj_name = Some(parser.node_text(obj_node));
+            }
+        }
+        _ => {
+            let mut ids = Vec::new();
+            for i in 0..node.named_child_count() {
+                let child = node.named_child(i as u32).unwrap();
+                if matches!(
+                    child.kind(),
+                    "identifier"
+                        | "property_identifier"
+                        | "private_property_identifier"
+                        | "field_identifier"
+                ) {
+                    ids.push(parser.node_text(child));
+                } else if child.kind() == "member_expression" {
+                    obj_name = Some(parser.node_text(child));
+                }
+            }
+            if let Some(last) = ids.last() {
+                callee = last.clone();
+                if ids.len() > 1 && obj_name.is_none() {
+                    obj_name = Some(ids[0].clone());
+                }
+            }
+        }
+    }
+
+    (callee, obj_name)
+}
+
+pub(crate) fn resolve_call_parts<'a>(
+    parser: &ParseContext,
+    matched: &CallCaptureMatch<'a>,
+) -> (String, bool, Option<String>, Option<Node<'a>>) {
+    let call_node = matched.call;
+    let mut callee = String::new();
+    let mut is_method = false;
+    let mut obj_name: Option<String> = None;
+    let mut callee_function_node: Option<Node<'_>> = None;
+
+    if let Some(func_node) = call_node.child_by_field_name("function") {
+        callee_function_node = Some(func_node);
+        if func_node.kind() == "identifier" {
+            callee = parser.node_text(func_node);
+        } else if func_node.kind() == "member_expression" {
+            is_method = true;
+            let (callee_name, object_name) = split_attribute_parts(parser, func_node);
+            callee = callee_name;
+            obj_name = object_name;
+        }
+    }
+    if callee.is_empty() {
+        if let Some(callee_cap) = matched.callee {
+            callee = parser.node_text(callee_cap);
+        }
+        if let Some(method_cap) = matched.method {
+            callee = parser.node_text(method_cap);
+            is_method = true;
+            if let Some(obj_cap) = matched.object {
+                obj_name = Some(parser.node_text(obj_cap));
+            }
+        }
+    }
+
+    (callee, is_method, obj_name, callee_function_node)
+}
+
+pub(crate) fn is_symbol_ref_node(node: Node<'_>) -> bool {
+    matches!(
+        node.kind(),
+        "identifier"
+            | "property_identifier"
+            | "private_property_identifier"
+            | "field_identifier"
+            | "type_identifier"
+    )
+}
+
 pub(crate) fn function_params(
     parser: &ParseContext,
     function_node: Node<'_>,
@@ -77,15 +251,15 @@ pub(crate) fn function_params(
         let Some(param) = parameters.named_child(i as u32) else {
             continue;
         };
-        if let Some(info) = build_js_param_info(parser, param) {
+        if let Some(info) = build_param_info(parser, param) {
             params.push(info);
         }
     }
     params
 }
 
-fn build_js_param_info(parser: &ParseContext, param: Node<'_>) -> Option<FunctionParamInfo> {
-    let name_node = resolve_js_param_name_node(param)?;
+fn build_param_info(parser: &ParseContext, param: Node<'_>) -> Option<FunctionParamInfo> {
+    let name_node = resolve_param_name_node(param)?;
     let name = parser.node_text(name_node).trim().to_string();
     if name.is_empty() {
         return None;
@@ -93,11 +267,11 @@ fn build_js_param_info(parser: &ParseContext, param: Node<'_>) -> Option<Functio
 
     Some(FunctionParamInfo {
         name,
-        param_type: find_js_param_type(parser, param),
+        param_type: find_param_type(parser, param),
     })
 }
 
-fn resolve_js_param_name_node<'a>(node: Node<'a>) -> Option<Node<'a>> {
+fn resolve_param_name_node<'a>(node: Node<'a>) -> Option<Node<'a>> {
     match node.kind() {
         "identifier"
         | "property_identifier"
@@ -106,22 +280,22 @@ fn resolve_js_param_name_node<'a>(node: Node<'a>) -> Option<Node<'a>> {
         | "array_pattern" => Some(node),
         "assignment_pattern" => node
             .child_by_field_name("left")
-            .and_then(resolve_js_param_name_node),
+            .and_then(resolve_param_name_node),
         "rest_pattern" => {
             if let Some(pattern) = node.child_by_field_name("pattern") {
-                return resolve_js_param_name_node(pattern);
+                return resolve_param_name_node(pattern);
             }
-            node.named_child(0).and_then(resolve_js_param_name_node)
+            node.named_child(0).and_then(resolve_param_name_node)
         }
         _ => node
             .child_by_field_name("pattern")
             .or_else(|| node.child_by_field_name("name"))
-            .and_then(resolve_js_param_name_node)
-            .or_else(|| node.named_child(0).and_then(resolve_js_param_name_node)),
+            .and_then(resolve_param_name_node)
+            .or_else(|| node.named_child(0).and_then(resolve_param_name_node)),
     }
 }
 
-fn find_js_param_type(parser: &ParseContext, node: Node<'_>) -> Option<String> {
+fn find_param_type(parser: &ParseContext, node: Node<'_>) -> Option<String> {
     if let Some(type_node) = node.child_by_field_name("type") {
         return Some(normalize_type_text(&parser.node_text(type_node)));
     }
@@ -129,10 +303,10 @@ fn find_js_param_type(parser: &ParseContext, node: Node<'_>) -> Option<String> {
     node.child_by_field_name("pattern")
         .or_else(|| node.child_by_field_name("name"))
         .or_else(|| node.child_by_field_name("left"))
-        .and_then(|child| find_js_param_type(parser, child))
+        .and_then(|child| find_param_type(parser, child))
 }
 
-pub(crate) fn js_alias_events(parser: &ParseContext, func_node: Node<'_>) -> Vec<JsAliasEvent> {
+pub(crate) fn alias_events(parser: &ParseContext, func_node: Node<'_>) -> Vec<JsAliasEvent> {
     let mut aliases: HashMap<String, Vec<String>> = HashMap::new();
     let mut events = Vec::new();
 
@@ -304,9 +478,9 @@ pub(crate) fn field_infos(
                 .or_else(|| {
                     member
                         .child_by_field_name("value")
-                        .and_then(|value| infer_js_field_type_from_value(parser, value))
+                        .and_then(|value| infer_field_type_from_value(parser, value))
                 })
-                .or_else(|| infer_js_field_type_from_member(parser, member, name_node.id()));
+                .or_else(|| infer_field_type_from_member(parser, member, name_node.id()));
             if !name.is_empty() && seen.insert(name.clone()) {
                 fields.push(FieldInfo {
                     name,
@@ -436,7 +610,7 @@ fn collect_field_infos_from_constructor_body(
     }
 }
 
-fn infer_js_field_type_from_value(parser: &ParseContext, value_node: Node<'_>) -> Option<String> {
+fn infer_field_type_from_value(parser: &ParseContext, value_node: Node<'_>) -> Option<String> {
     match value_node.kind() {
         "call_expression" => {
             let function = value_node.child_by_field_name("function")?;
@@ -451,16 +625,16 @@ fn infer_js_field_type_from_value(parser: &ParseContext, value_node: Node<'_>) -
             if !is_supported_factory {
                 return None;
             }
-            first_js_type_name(parser, arguments)
+            first_type_name(parser, arguments)
         }
         "new_expression" => value_node
             .child_by_field_name("constructor")
-            .and_then(|constructor| js_type_name_from_node(parser, constructor)),
+            .and_then(|constructor| type_name_from_node(parser, constructor)),
         _ => None,
     }
 }
 
-fn infer_js_field_type_from_member(
+fn infer_field_type_from_member(
     parser: &ParseContext,
     member: Node<'_>,
     name_node_id: usize,
@@ -470,24 +644,24 @@ fn infer_js_field_type_from_member(
         if child.id() == name_node_id || child.kind().ends_with("modifier") {
             continue;
         }
-        if let Some(field_type) = infer_js_field_type_from_value(parser, child) {
+        if let Some(field_type) = infer_field_type_from_value(parser, child) {
             return Some(field_type);
         }
     }
     None
 }
 
-fn first_js_type_name(parser: &ParseContext, node: Node<'_>) -> Option<String> {
+fn first_type_name(parser: &ParseContext, node: Node<'_>) -> Option<String> {
     for i in 0..node.named_child_count() {
         let child = node.named_child(i as u32)?;
-        if let Some(name) = js_type_name_from_node(parser, child) {
+        if let Some(name) = type_name_from_node(parser, child) {
             return Some(name);
         }
     }
     None
 }
 
-fn js_type_name_from_node(parser: &ParseContext, node: Node<'_>) -> Option<String> {
+fn type_name_from_node(parser: &ParseContext, node: Node<'_>) -> Option<String> {
     match node.kind() {
         "identifier" | "type_identifier" => {
             let name = parser.node_text(node);
@@ -495,9 +669,9 @@ fn js_type_name_from_node(parser: &ParseContext, node: Node<'_>) -> Option<Strin
         }
         "member_expression" => node
             .child_by_field_name("property")
-            .and_then(|property| js_type_name_from_node(parser, property)),
+            .and_then(|property| type_name_from_node(parser, property)),
         "type_arguments" | "arguments" | "parenthesized_expression" => {
-            first_js_type_name(parser, node)
+            first_type_name(parser, node)
         }
         _ => None,
     }
@@ -604,23 +778,5 @@ fn collect_super_class_names_from_expression(
                 }
             }
         }
-    }
-}
-
-impl ParseContext {
-    pub(crate) fn resolve_js_call_targets_for_identifier(
-        &self,
-        call_node: Node<'_>,
-        identifier_name: &str,
-    ) -> Vec<String> {
-        let Some(func_node) = self.find_enclosing_context(call_node).function_node else {
-            return Vec::new();
-        };
-
-        let mut resolvers = self.js_alias_resolvers_by_function.borrow_mut();
-        let resolver = resolvers
-            .entry(func_node.id())
-            .or_insert_with(|| JsAliasResolverState::new(js_alias_events(self, func_node)));
-        resolver.resolve(call_node.start_byte(), identifier_name)
     }
 }

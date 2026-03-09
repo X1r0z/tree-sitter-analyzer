@@ -2,12 +2,16 @@ use std::collections::{HashMap, HashSet};
 
 use tree_sitter::Node;
 
+use super::super::capture::CallCaptureMatch;
 use super::super::{ParseContext, PythonPropertyCallers, PythonPropertyDefinitions};
 use crate::models::{AnnotationInfo, FieldInfo, FunctionParamInfo, PythonPropertyCallerInfo};
 
 type PythonPropertyCallerKey = (String, String, Option<String>, Option<String>, usize);
 
-fn split_attribute_parts(parser: &ParseContext, node: Node<'_>) -> (String, Option<String>) {
+pub(crate) fn split_attribute_parts(
+    parser: &ParseContext,
+    node: Node<'_>,
+) -> (String, Option<String>) {
     let mut callee = String::new();
     let mut obj_name: Option<String> = None;
 
@@ -19,6 +23,78 @@ fn split_attribute_parts(parser: &ParseContext, node: Node<'_>) -> (String, Opti
     }
 
     (callee, obj_name)
+}
+
+pub(crate) fn unwrap_callable_node<'a>(node: Node<'a>) -> Node<'a> {
+    if node.kind() == "decorated_definition" {
+        if let Some(definition) = node.child_by_field_name("definition") {
+            return definition;
+        }
+    }
+    node
+}
+
+pub(crate) fn function_name_from_node(context: &ParseContext, node: Node<'_>) -> Option<String> {
+    if let Some(name_node) = node.child_by_field_name("name") {
+        let name = context.node_text(name_node);
+        if !name.is_empty() {
+            return Some(name);
+        }
+    }
+    for i in 0..node.child_count() {
+        let child = node.child(i as u32).unwrap();
+        if child.kind() == "identifier" {
+            let name = context.node_text(child);
+            if !name.is_empty() {
+                return Some(name);
+            }
+        }
+    }
+    None
+}
+
+pub(crate) fn resolve_call_parts<'a>(
+    parser: &ParseContext,
+    matched: &CallCaptureMatch<'a>,
+) -> (String, bool, Option<String>, Option<Node<'a>>) {
+    let call_node = matched.call;
+    let mut callee = String::new();
+    let mut is_method = false;
+    let mut obj_name: Option<String> = None;
+    let mut callee_function_node: Option<Node<'_>> = None;
+
+    if let Some(func_node) = call_node.child_by_field_name("function") {
+        callee_function_node = Some(func_node);
+        if func_node.kind() == "identifier" {
+            callee = parser.node_text(func_node);
+        } else if func_node.kind() == "attribute" {
+            is_method = true;
+            let (callee_name, object_name) = split_attribute_parts(parser, func_node);
+            callee = callee_name;
+            obj_name = object_name;
+        }
+    }
+    if callee.is_empty() {
+        if let Some(callee_cap) = matched.callee {
+            callee = parser.node_text(callee_cap);
+        }
+        if let Some(method_cap) = matched.method {
+            callee = parser.node_text(method_cap);
+            is_method = true;
+            if let Some(obj_cap) = matched.object {
+                obj_name = Some(parser.node_text(obj_cap));
+            }
+        }
+    }
+
+    (callee, is_method, obj_name, callee_function_node)
+}
+
+pub(crate) fn is_symbol_ref_node(node: Node<'_>) -> bool {
+    matches!(
+        node.kind(),
+        "identifier" | "dotted_name" | "relative_import"
+    )
 }
 
 pub(crate) fn function_params(
@@ -34,17 +110,14 @@ pub(crate) fn function_params(
         let Some(param) = parameters.named_child(i as u32) else {
             continue;
         };
-        if let Some(info) = build_python_parameter_info(parser, param) {
+        if let Some(info) = build_parameter_info(parser, param) {
             params.push(info);
         }
     }
     params
 }
 
-fn build_python_parameter_info(
-    parser: &ParseContext,
-    param: Node<'_>,
-) -> Option<FunctionParamInfo> {
+fn build_parameter_info(parser: &ParseContext, param: Node<'_>) -> Option<FunctionParamInfo> {
     let type_node = param.child_by_field_name("type");
     let name = match param.kind() {
         "identifier" => parser.node_text(param),
@@ -53,7 +126,7 @@ fn build_python_parameter_info(
             .or_else(|| param.child_by_field_name("pattern"))
             .or_else(|| param.child_by_field_name("left"))
             .map(|node| parser.node_text(node))
-            .unwrap_or_else(|| first_python_identifier_text(parser, param)),
+            .unwrap_or_else(|| first_identifier_text(parser, param)),
         "list_splat_pattern" | "dictionary_splat_pattern" => {
             parser.node_text(param).trim_start_matches('*').to_string()
         }
@@ -62,7 +135,7 @@ fn build_python_parameter_info(
             .or_else(|| param.child_by_field_name("pattern"))
             .or_else(|| param.child_by_field_name("left"))
             .map(|node| parser.node_text(node))
-            .unwrap_or_else(|| first_python_identifier_text(parser, param)),
+            .unwrap_or_else(|| first_identifier_text(parser, param)),
     };
 
     if name.is_empty() {
@@ -75,7 +148,7 @@ fn build_python_parameter_info(
     })
 }
 
-pub(crate) fn extract_python_definition_header(
+pub(crate) fn extract_definition_header(
     parser: &ParseContext,
     definition_node: Node<'_>,
 ) -> String {
@@ -89,13 +162,13 @@ pub(crate) fn extract_python_definition_header(
         .to_string()
 }
 
-pub(crate) fn extract_python_decorators(parser: &ParseContext) -> Vec<AnnotationInfo> {
+pub(crate) fn extract_decorators(parser: &ParseContext) -> Vec<AnnotationInfo> {
     let mut annotations = Vec::new();
     let mut stack = vec![parser.tree.root_node()];
 
     while let Some(node) = stack.pop() {
         if node.kind() == "decorated_definition" {
-            collect_python_decorators_from_decorated(parser, node, &mut annotations);
+            collect_decorators_from_decorated(parser, node, &mut annotations);
             for i in (0..node.child_count()).rev() {
                 if let Some(child) = node.child(i as u32) {
                     stack.push(child);
@@ -112,7 +185,7 @@ pub(crate) fn extract_python_decorators(parser: &ParseContext) -> Vec<Annotation
     annotations
 }
 
-fn collect_python_decorators_from_decorated(
+fn collect_decorators_from_decorated(
     parser: &ParseContext,
     decorated_node: Node<'_>,
     annotations: &mut Vec<AnnotationInfo>,
@@ -142,7 +215,7 @@ fn collect_python_decorators_from_decorated(
             (
                 name,
                 target_kind.to_string(),
-                extract_python_definition_header(parser, definition_node),
+                extract_definition_header(parser, definition_node),
             )
         }
         None => (String::new(), String::new(), String::new()),
@@ -154,7 +227,7 @@ fn collect_python_decorators_from_decorated(
             continue;
         }
 
-        let name = extract_python_decorator_name(parser, child);
+        let name = extract_decorator_name(parser, child);
         if name.is_empty() {
             continue;
         }
@@ -170,7 +243,7 @@ fn collect_python_decorators_from_decorated(
     }
 }
 
-fn extract_python_decorator_name(parser: &ParseContext, decorator_node: Node<'_>) -> String {
+fn extract_decorator_name(parser: &ParseContext, decorator_node: Node<'_>) -> String {
     for i in 0..decorator_node.child_count() {
         let child = decorator_node.child(i as u32).unwrap();
         match child.kind() {
@@ -187,7 +260,7 @@ fn extract_python_decorator_name(parser: &ParseContext, decorator_node: Node<'_>
     String::new()
 }
 
-pub(crate) fn collect_python_property_indexes(
+pub(crate) fn collect_property_indexes(
     parser: &ParseContext,
 ) -> (PythonPropertyDefinitions, PythonPropertyCallers) {
     if parser.language != "python" {
@@ -405,7 +478,7 @@ pub(crate) fn super_class_names(parser: &ParseContext, class_node: Node<'_>) -> 
     super_classes
 }
 
-fn first_python_identifier_text(parser: &ParseContext, node: Node<'_>) -> String {
+fn first_identifier_text(parser: &ParseContext, node: Node<'_>) -> String {
     let mut stack = vec![node];
     while let Some(current) = stack.pop() {
         if matches!(current.kind(), "identifier" | "keyword_identifier") {

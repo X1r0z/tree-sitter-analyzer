@@ -3,6 +3,32 @@ use tree_sitter::Node;
 use super::super::{context, ParseContext};
 use crate::models::{AnnotationInfo, FieldInfo, FunctionParamInfo};
 
+pub(crate) fn function_name_from_node(context: &ParseContext, node: Node<'_>) -> Option<String> {
+    if let Some(name_node) = node.child_by_field_name("name") {
+        let name = context.node_text(name_node);
+        if !name.is_empty() {
+            return Some(name);
+        }
+    }
+    for i in 0..node.child_count() {
+        let child = node.child(i as u32).unwrap();
+        if matches!(child.kind(), "identifier" | "type_identifier") {
+            let name = context.node_text(child);
+            if !name.is_empty() {
+                return Some(name);
+            }
+        }
+    }
+    None
+}
+
+pub(crate) fn is_symbol_ref_node(node: Node<'_>) -> bool {
+    matches!(
+        node.kind(),
+        "identifier" | "type_identifier" | "scoped_identifier" | "scoped_type_identifier"
+    )
+}
+
 pub(crate) fn function_params(
     parser: &ParseContext,
     function_node: Node<'_>,
@@ -45,7 +71,7 @@ pub(crate) fn function_params(
     params
 }
 
-pub(crate) fn resolve_java_call_parts(
+pub(crate) fn resolve_call_parts(
     parser: &ParseContext,
     call_node: Node<'_>,
 ) -> (String, bool, Option<String>) {
@@ -82,12 +108,12 @@ pub(crate) fn resolve_java_call_parts(
     (callee, object_name.is_some(), object_name)
 }
 
-pub(crate) fn extract_java_signature(parser: &ParseContext, declaration_node: Node<'_>) -> String {
+pub(crate) fn extract_signature(parser: &ParseContext, declaration_node: Node<'_>) -> String {
     let end_byte = declaration_node
         .child_by_field_name("body")
         .map(|body| body.start_byte())
         .unwrap_or_else(|| declaration_node.end_byte());
-    let start_byte = java_signature_start_byte(declaration_node);
+    let start_byte = signature_start_byte(declaration_node);
     parser
         .source_text(start_byte, end_byte)
         .trim_end()
@@ -96,11 +122,11 @@ pub(crate) fn extract_java_signature(parser: &ParseContext, declaration_node: No
         .to_string()
 }
 
-pub(crate) fn extract_java_class_header_line(
+pub(crate) fn extract_class_header_line(
     parser: &ParseContext,
     declaration_node: Node<'_>,
 ) -> String {
-    let signature = extract_java_signature(parser, declaration_node);
+    let signature = extract_signature(parser, declaration_node);
     signature
         .lines()
         .next()
@@ -109,7 +135,7 @@ pub(crate) fn extract_java_class_header_line(
         .to_string()
 }
 
-fn java_signature_start_byte(declaration_node: Node<'_>) -> usize {
+fn signature_start_byte(declaration_node: Node<'_>) -> usize {
     for i in 0..declaration_node.child_count() {
         let Some(child) = declaration_node.child(i as u32) else {
             continue;
@@ -133,13 +159,13 @@ fn java_signature_start_byte(declaration_node: Node<'_>) -> usize {
     declaration_node.start_byte()
 }
 
-pub(crate) fn extract_java_annotations(parser: &ParseContext) -> Vec<AnnotationInfo> {
+pub(crate) fn extract_annotations(parser: &ParseContext) -> Vec<AnnotationInfo> {
     let mut annotations = Vec::new();
     let mut stack = vec![parser.tree.root_node()];
 
     while let Some(node) = stack.pop() {
         if matches!(node.kind(), "marker_annotation" | "annotation") {
-            if let Some(info) = java_annotation_info(parser, node) {
+            if let Some(info) = annotation_info(parser, node) {
                 annotations.push(info);
             }
             continue;
@@ -153,7 +179,7 @@ pub(crate) fn extract_java_annotations(parser: &ParseContext) -> Vec<AnnotationI
     annotations
 }
 
-fn java_annotation_info(parser: &ParseContext, node: Node<'_>) -> Option<AnnotationInfo> {
+fn annotation_info(parser: &ParseContext, node: Node<'_>) -> Option<AnnotationInfo> {
     let name_node = node.child_by_field_name("name")?;
     let name = parser.node_text(name_node);
     if name.is_empty() {
@@ -161,7 +187,7 @@ fn java_annotation_info(parser: &ParseContext, node: Node<'_>) -> Option<Annotat
     }
 
     let signature = parser.node_text(node);
-    let (target_name, target_type, target_signature) = find_java_annotation_target(parser, node);
+    let (target_name, target_type, target_signature) = find_annotation_target(parser, node);
 
     Some(AnnotationInfo {
         name,
@@ -173,7 +199,7 @@ fn java_annotation_info(parser: &ParseContext, node: Node<'_>) -> Option<Annotat
     })
 }
 
-fn find_java_annotation_target(
+fn find_annotation_target(
     parser: &ParseContext,
     annotation_node: Node<'_>,
 ) -> (String, String, String) {
@@ -189,7 +215,7 @@ fn find_java_annotation_target(
                 format!(
                     "{}\n{}",
                     parser.node_text(annotation_node),
-                    extract_java_signature(parser, parent)
+                    extract_signature(parser, parent)
                 ),
             ),
             "constructor_declaration" => (
@@ -201,7 +227,7 @@ fn find_java_annotation_target(
                 format!(
                     "{}\n{}",
                     parser.node_text(annotation_node),
-                    extract_java_signature(parser, parent)
+                    extract_signature(parser, parent)
                 ),
             ),
             "class_declaration" => (
@@ -213,7 +239,7 @@ fn find_java_annotation_target(
                 format!(
                     "{}\n{}",
                     parser.node_text(annotation_node),
-                    extract_java_class_header_line(parser, parent)
+                    extract_class_header_line(parser, parent)
                 ),
             ),
             "interface_declaration" => (
@@ -225,7 +251,7 @@ fn find_java_annotation_target(
                 format!(
                     "{}\n{}",
                     parser.node_text(annotation_node),
-                    extract_java_class_header_line(parser, parent)
+                    extract_class_header_line(parser, parent)
                 ),
             ),
             "enum_declaration" => (
@@ -237,7 +263,7 @@ fn find_java_annotation_target(
                 format!(
                     "{}\n{}",
                     parser.node_text(annotation_node),
-                    extract_java_class_header_line(parser, parent)
+                    extract_class_header_line(parser, parent)
                 ),
             ),
             "record_declaration" => (
@@ -249,7 +275,7 @@ fn find_java_annotation_target(
                 format!(
                     "{}\n{}",
                     parser.node_text(annotation_node),
-                    extract_java_class_header_line(parser, parent)
+                    extract_class_header_line(parser, parent)
                 ),
             ),
             "annotation_type_declaration" => (
@@ -261,7 +287,7 @@ fn find_java_annotation_target(
                 format!(
                     "{}\n{}",
                     parser.node_text(annotation_node),
-                    extract_java_class_header_line(parser, parent)
+                    extract_class_header_line(parser, parent)
                 ),
             ),
             "field_declaration" => {
@@ -274,7 +300,7 @@ fn find_java_annotation_target(
                     .map(|node| parser.node_text(node))
                     .unwrap_or_default(),
                 "parameter".to_string(),
-                find_enclosing_java_callable_signature(parser, parent),
+                find_enclosing_callable_signature(parser, parent),
             ),
             "local_variable_declaration" => {
                 let var_name = declarator_name(parser, parent);
@@ -294,14 +320,14 @@ fn find_java_annotation_target(
     (String::new(), String::new(), String::new())
 }
 
-fn find_enclosing_java_callable_signature(parser: &ParseContext, node: Node<'_>) -> String {
+fn find_enclosing_callable_signature(parser: &ParseContext, node: Node<'_>) -> String {
     let mut current = node;
     while let Some(parent) = current.parent() {
         if matches!(
             parent.kind(),
             "method_declaration" | "constructor_declaration"
         ) {
-            return extract_java_signature(parser, parent);
+            return extract_signature(parser, parent);
         }
         current = parent;
     }

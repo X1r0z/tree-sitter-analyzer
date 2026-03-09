@@ -2,7 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::cache::AnalyzerCache;
 use crate::models::*;
-use crate::parser::ParseContext;
+use crate::parser::query;
+use crate::parser::{languages::python, ParseContext};
 use crate::utils::{extract_instance_attr, split_function_target, type_matches_class};
 
 pub struct CodeExtractor {
@@ -88,7 +89,7 @@ impl CodeExtractor {
         if self.parser.language != "python" || self.cache.python_properties().is_some() {
             return;
         }
-        let (properties, callers) = self.parser.collect_python_property_indexes();
+        let (properties, callers) = python::collect_python_property_indexes(&self.parser);
         self.cache.set_python_properties(properties, callers);
     }
 
@@ -188,7 +189,7 @@ impl CodeExtractor {
     }
 
     pub fn has_function_named(&self, name: &str, class_name: Option<&str>) -> bool {
-        self.parser.has_function_named(name, class_name)
+        query::has_function_capture_named(&self.parser, name, class_name)
     }
 
     pub fn find_function_definitions(

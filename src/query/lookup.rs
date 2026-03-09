@@ -5,7 +5,7 @@ use rusqlite::{params_from_iter, ToSql};
 use super::prefilter::RegexPrefilter;
 use super::QueryContext;
 use crate::models::{
-    AnnotationInfo, ClassInfo, FieldInfo, FunctionInfo, ImportInfo, Location, SymbolRefInfo,
+    AnnotationInfo, ClassInfo, FieldInfo, FunctionInfo, ImportInfo, Location, RefInfo,
 };
 
 const SQLITE_BATCH_SIZE: usize = 256;
@@ -306,11 +306,11 @@ impl<'a> LookupQuery<'a> {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
-    pub(crate) fn find_symbols(&self, name: &str) -> anyhow::Result<Vec<SymbolRefInfo>> {
+    pub(crate) fn find_refs(&self, name: &str) -> anyhow::Result<Vec<RefInfo>> {
         let mut sql = String::from(
             "
             SELECT f.path, s.name, s.node_type, s.start_line, s.end_line, s.start_column, s.end_column
-            FROM symbol_refs s
+            FROM refs s
             JOIN files f ON f.id = s.file_id
             WHERE s.name = ?1
             ",
@@ -324,7 +324,7 @@ impl<'a> LookupQuery<'a> {
 
         let mut stmt = self.ctx.conn.prepare(&sql)?;
         let rows = stmt.query_map(params_from_iter(params), |row| {
-            Ok(SymbolRefInfo {
+            Ok(RefInfo {
                 name: row.get(1)?,
                 node_type: row.get(2)?,
                 location: Location {

@@ -18,7 +18,7 @@ pub(crate) struct SnapshotWriter<'tx> {
     insert_import_fts: CachedStatement<'tx>,
     insert_annotation: CachedStatement<'tx>,
     insert_annotation_fts: CachedStatement<'tx>,
-    insert_symbol_ref: CachedStatement<'tx>,
+    insert_ref: CachedStatement<'tx>,
     insert_python_property: CachedStatement<'tx>,
     insert_python_property_caller: CachedStatement<'tx>,
 }
@@ -87,9 +87,9 @@ impl<'tx> SnapshotWriter<'tx> {
             insert_annotation_fts: tx.prepare_cached(
                 "INSERT INTO annotations_fts(rowid, name) VALUES (?1, ?2)",
             )?,
-            insert_symbol_ref: tx.prepare_cached(
+            insert_ref: tx.prepare_cached(
                 "
-                INSERT INTO symbol_refs(file_id, name, node_type, start_line, end_line, start_column, end_column)
+                INSERT INTO refs(file_id, name, node_type, start_line, end_line, start_column, end_column)
                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                 ",
             )?,
@@ -206,15 +206,15 @@ impl<'tx> SnapshotWriter<'tx> {
                 .execute(params![annotation_id, annotation.name])?;
         }
 
-        for symbol in &snapshot.snapshot.symbols {
-            self.insert_symbol_ref.execute(params![
+        for reference in &snapshot.snapshot.refs {
+            self.insert_ref.execute(params![
                 file_id,
-                symbol.name,
-                symbol.node_type,
-                symbol.location.start_line as i64,
-                symbol.location.end_line as i64,
-                symbol.start_column as i64,
-                symbol.end_column as i64
+                reference.name,
+                reference.node_type,
+                reference.location.start_line as i64,
+                reference.location.end_line as i64,
+                reference.start_column as i64,
+                reference.end_column as i64
             ])?;
         }
 

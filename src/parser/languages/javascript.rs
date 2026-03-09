@@ -227,7 +227,7 @@ pub(crate) fn resolve_call_parts<'a>(
     (callee, is_method, obj_name, callee_function_node)
 }
 
-pub(crate) fn is_symbol_ref_node(node: Node<'_>) -> bool {
+pub(crate) fn is_ref_node(node: Node<'_>) -> bool {
     matches!(
         node.kind(),
         "identifier"

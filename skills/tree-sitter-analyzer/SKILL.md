@@ -43,12 +43,12 @@ tree-sitter-analyzer (tsa) is particularly powerful for security audits because 
 - **Sink reachability** — Start from a dangerous sink function, use `graph --backward` to build the full call graph back to entry points and determine if user-controlled data can reach it
 - **Attack surface mapping** — Use `functions` + `classes` to inventory all public API endpoints, handlers, and entry points; then use `graph --forward` to map the complete downstream call tree each endpoint reaches
 - **Privilege analysis** — Use `sub-classes` to find all implementations of permission/auth base classes; use `fields` to inspect their configuration
-- **Dependency mapping** — Use `imports` to audit which modules import dangerous libraries; use `annotations` to inspect framework metadata on handlers and models; use `symbols` to find every reference to security-critical identifiers
+- **Dependency mapping** — Use `imports` to audit which modules import dangerous libraries; use `annotations` to inspect framework metadata on handlers and models; use `refs` to find every reference to security-critical identifiers
 
 ### Codebase Onboarding & Refactoring
 
 - **New codebase exploration** — Quickly inventory the architecture: list all classes, map inheritance hierarchies, identify entry points
-- **Refactoring planning** — Before renaming or moving a function, use `callers` + `symbols` to find every reference that needs updating
+- **Refactoring planning** — Before renaming or moving a function, use `callers` + `refs` to find every reference that needs updating
 - **Dead code detection** — Find functions with zero callers to identify potentially unused code
 - **Architecture documentation** — Extract class hierarchies and call graphs to generate codebase maps
 
@@ -74,7 +74,7 @@ Only use Grep instead of tree-sitter-analyzer (tsa) when:
 | Get function source code | `definition <path> -f X` |
 | List imports / find a module | `imports <path> [-q pattern]` |
 | List annotations / find a decorator | `annotations <path> [-q pattern]` |
-| Find all references to symbol | `symbols <path> -n NAME` |
+| Find all references to symbol | `refs <path> -n NAME` |
 | Parent classes of X | `super-classes <path> -c X` |
 | Child classes of X | `sub-classes <path> -c X` |
 
@@ -281,10 +281,10 @@ tsa graph ./src/ -f handle_request -d 2 --backward
 tsa graph ./src/ -f save -c DatabaseHandler -d 3 --forward
 ```
 
-### `symbols` — Find all references to an identifier
+### `refs` — Find all references to an identifier
 
 ```bash
-tsa symbols <path> [-l LANGUAGE] -n NAME
+tsa refs <path> [-l LANGUAGE] -n NAME
 ```
 
 | Option | Description |
@@ -293,7 +293,7 @@ tsa symbols <path> [-l LANGUAGE] -n NAME
 | `-n, --name` | Identifier name (required) |
 
 ```bash
-tsa symbols ./src/ -n CONFIG_PATH
+tsa refs ./src/ -n CONFIG_PATH
 ```
 
 ### `definition` — Get function source code
@@ -383,10 +383,10 @@ tsa graph /path/to/project -f execute_query -d 4 --backward
 tsa graph /path/to/project -f handle_request -d 3 --forward | jq -r '.graphs[].stacktrace | join(" -> ")'
 ```
 
-### Trace a symbol through a project
+### Trace a reference through a project
 
 ```bash
-tsa symbols /path/to/project -n CONFIG_PATH
+tsa refs /path/to/project -n CONFIG_PATH
 ```
 
 ### Inspect a function in detail

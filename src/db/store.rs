@@ -188,7 +188,7 @@ impl IndexStore {
                 FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
             );
 
-            CREATE TABLE IF NOT EXISTS symbol_refs (
+            CREATE TABLE IF NOT EXISTS refs (
                 id INTEGER PRIMARY KEY,
                 file_id INTEGER NOT NULL,
                 name TEXT NOT NULL,
@@ -248,8 +248,8 @@ impl IndexStore {
             CREATE INDEX IF NOT EXISTS idx_annotations_name ON annotations(name);
             CREATE INDEX IF NOT EXISTS idx_annotations_name_file ON annotations(name, file_id);
             CREATE INDEX IF NOT EXISTS idx_annotations_file_id_start_line ON annotations(file_id, start_line);
-            CREATE INDEX IF NOT EXISTS idx_symbol_refs_file_id_start_end_type ON symbol_refs(file_id, start_line, end_line, node_type);
-            CREATE INDEX IF NOT EXISTS idx_symbol_refs_name_file ON symbol_refs(name, file_id);
+            CREATE INDEX IF NOT EXISTS idx_refs_file_id_start_end_type ON refs(file_id, start_line, end_line, node_type);
+            CREATE INDEX IF NOT EXISTS idx_refs_name_file ON refs(name, file_id);
             CREATE INDEX IF NOT EXISTS idx_python_properties_name_class ON python_properties(property_name, class_name);
             CREATE INDEX IF NOT EXISTS idx_python_properties_file_name_class ON python_properties(file_id, property_name, class_name);
             CREATE INDEX IF NOT EXISTS idx_python_property_callers_name ON python_property_callers(property_name);
@@ -275,16 +275,16 @@ impl IndexStore {
                 [],
             )?;
         }
-        let symbol_columns = Self::table_columns(conn, "symbol_refs")?;
-        if !symbol_columns.contains("start_column") {
+        let ref_columns = Self::table_columns(conn, "refs")?;
+        if !ref_columns.contains("start_column") {
             conn.execute(
-                "ALTER TABLE symbol_refs ADD COLUMN start_column INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE refs ADD COLUMN start_column INTEGER NOT NULL DEFAULT 0",
                 [],
             )?;
         }
-        if !symbol_columns.contains("end_column") {
+        if !ref_columns.contains("end_column") {
             conn.execute(
-                "ALTER TABLE symbol_refs ADD COLUMN end_column INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE refs ADD COLUMN end_column INTEGER NOT NULL DEFAULT 0",
                 [],
             )?;
         }
@@ -301,7 +301,6 @@ impl IndexStore {
                 [],
             )?;
         }
-        conn.execute("DROP INDEX IF EXISTS idx_symbol_refs_name", [])?;
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_python_property_callers_name_caller_class ON python_property_callers(property_name, caller_class_name)",
             [],
@@ -332,7 +331,7 @@ impl IndexStore {
             DELETE FROM calls;
             DELETE FROM imports;
             DELETE FROM annotations;
-            DELETE FROM symbol_refs;
+            DELETE FROM refs;
             DELETE FROM files;
         ",
         )?;

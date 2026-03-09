@@ -22,7 +22,7 @@ pub(crate) fn function_name_from_node(context: &ParseContext, node: Node<'_>) ->
     None
 }
 
-pub(crate) fn is_symbol_ref_node(node: Node<'_>) -> bool {
+pub(crate) fn is_ref_node(node: Node<'_>) -> bool {
     matches!(
         node.kind(),
         "identifier" | "type_identifier" | "scoped_identifier" | "scoped_type_identifier"

@@ -449,7 +449,7 @@ Each `params` item contains:
 }
 ```
 
-## `symbols`
+## `refs`
 
 Array key: `references`
 
@@ -467,7 +467,7 @@ Array key: `references`
   "searched_files": 42,
   "count": 2,
   "name": "CONFIG_PATH",
-  "references": [
+  "refs": [
     {
       "type": "identifier",
       "location": {"file": "src/config.py", "start_line": 3, "end_line": 3},

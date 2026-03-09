@@ -399,27 +399,27 @@ impl SourceAnalyzer {
         Ok(graph.collect_graphs(&start_nodes, direction, max_depth))
     }
 
-    pub(crate) fn find_symbols(&self, name: &str) -> Vec<SymbolRefInfo> {
+    pub(crate) fn find_refs(&self, name: &str) -> Vec<RefInfo> {
         let candidate_files = self.search.filter_by_text(name);
         if candidate_files.is_empty() {
             return Vec::new();
         }
-        let symbol = name.to_string();
+        let reference_name = name.to_string();
         self.analyze_files_with_progress(&candidate_files, |f: &String| {
-            self.analyze_file(f, |extractor| extractor.find_symbols(&symbol))
+            self.analyze_file(f, |extractor| extractor.find_refs(&reference_name))
                 .unwrap_or_default()
         })
     }
 
-    pub(crate) fn hydrate_symbols(&self, candidates: Vec<SymbolRefInfo>) -> Vec<SymbolRefInfo> {
+    pub(crate) fn hydrate_refs(&self, candidates: Vec<RefInfo>) -> Vec<RefInfo> {
         self.hydrate_candidates(
             candidates,
-            |candidate: &SymbolRefInfo| SymbolRefKey::from(candidate),
+            |candidate: &RefInfo| RefKey::from(candidate),
             |candidate| candidate.location.file.as_str(),
             |extractor, expected| {
-                let expected_symbols: Vec<_> = expected
+                let expected_refs: Vec<_> = expected
                     .iter()
-                    .map(|key| SymbolRefInfo {
+                    .map(|key| RefInfo {
                         name: key.name.clone(),
                         node_type: key.node_type.clone(),
                         location: Location {
@@ -432,7 +432,7 @@ impl SourceAnalyzer {
                         context: String::new(),
                     })
                     .collect();
-                extractor.hydrate_symbols(&expected_symbols)
+                extractor.hydrate_refs(&expected_refs)
             },
         )
     }
@@ -546,8 +546,8 @@ impl StoreAnalyzer {
         LookupQuery::new(self.query_context()).find_annotations(query)
     }
 
-    pub(crate) fn find_symbols(&self, name: &str) -> anyhow::Result<Vec<SymbolRefInfo>> {
-        LookupQuery::new(self.query_context()).find_symbols(name)
+    pub(crate) fn find_refs(&self, name: &str) -> anyhow::Result<Vec<RefInfo>> {
+        LookupQuery::new(self.query_context()).find_refs(name)
     }
 
     pub(crate) fn find_callers(

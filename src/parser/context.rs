@@ -11,7 +11,7 @@ use super::languages::{go, java, javascript, python};
 use crate::languages::{detect_language, find_language, find_language_info, QueryKind};
 use crate::models::{
     AnnotationInfo, CallInfo, ClassInfo, FieldInfo, FunctionInfo, FunctionParamInfo, ImportInfo,
-    Location, PythonPropertyCallerInfo, PythonPropertyInfo, SymbolRefInfo, SymbolRefKey,
+    Location, PythonPropertyCallerInfo, PythonPropertyInfo, RefInfo, RefKey,
 };
 
 pub(crate) type PythonPropertyKey = (String, Option<String>);
@@ -476,10 +476,10 @@ impl ParseContext {
         }
     }
 
-    pub(crate) fn collect_symbols(&self) -> Vec<SymbolRefInfo> {
-        self.scan_symbols(|node| {
+    pub(crate) fn collect_refs(&self) -> Vec<RefInfo> {
+        self.scan_refs(|node| {
             let name = self.node_text(node);
-            (!name.is_empty()).then(|| SymbolRefInfo {
+            (!name.is_empty()).then(|| RefInfo {
                 name,
                 node_type: node.kind().to_string(),
                 location: self.node_location(node),
@@ -490,7 +490,7 @@ impl ParseContext {
         })
     }
 
-    pub(crate) fn find_symbols(&self, name: &str, with_context: bool) -> Vec<SymbolRefInfo> {
+    pub(crate) fn find_refs(&self, name: &str, with_context: bool) -> Vec<RefInfo> {
         let name_bytes = name.as_bytes();
         if name_bytes.is_empty()
             || !self
@@ -501,8 +501,8 @@ impl ParseContext {
             return Vec::new();
         }
 
-        self.scan_symbols(|node| {
-            (self.node_bytes(node) == name_bytes).then(|| SymbolRefInfo {
+        self.scan_refs(|node| {
+            (self.node_bytes(node) == name_bytes).then(|| RefInfo {
                 name: name.to_string(),
                 node_type: node.kind().to_string(),
                 location: self.node_location(node),
@@ -519,15 +519,15 @@ impl ParseContext {
         })
     }
 
-    pub(crate) fn hydrate_symbols(&self, candidates: &[SymbolRefInfo]) -> Vec<SymbolRefInfo> {
+    pub(crate) fn hydrate_refs(&self, candidates: &[RefInfo]) -> Vec<RefInfo> {
         if candidates.is_empty() {
             return Vec::new();
         }
 
-        let expected: std::collections::HashSet<SymbolRefKey> =
-            candidates.iter().map(SymbolRefKey::from).collect();
-        self.scan_symbols(|node| {
-            let symbol = SymbolRefInfo {
+        let expected: std::collections::HashSet<RefKey> =
+            candidates.iter().map(RefKey::from).collect();
+        self.scan_refs(|node| {
+            let reference = RefInfo {
                 name: self.node_text(node),
                 node_type: node.kind().to_string(),
                 location: self.node_location(node),
@@ -536,35 +536,32 @@ impl ParseContext {
                 context: String::new(),
             };
             expected
-                .contains(&SymbolRefKey::from(&symbol))
-                .then(|| SymbolRefInfo {
+                .contains(&RefKey::from(&reference))
+                .then(|| RefInfo {
                     context: node
                         .parent()
                         .map(|parent| self.node_text(parent))
                         .unwrap_or_default(),
-                    ..symbol
+                    ..reference
                 })
         })
     }
 
-    fn scan_symbols(
-        &self,
-        mut map_node: impl FnMut(Node<'_>) -> Option<SymbolRefInfo>,
-    ) -> Vec<SymbolRefInfo> {
+    fn scan_refs(&self, mut map_node: impl FnMut(Node<'_>) -> Option<RefInfo>) -> Vec<RefInfo> {
         let mut refs = Vec::new();
         let mut stack = vec![self.tree.root_node()];
         while let Some(node) = stack.pop() {
             if node.is_named() {
-                let is_symbol_ref = match self.language.as_str() {
-                    "python" => python::is_symbol_ref_node(node),
-                    "javascript" | "typescript" | "tsx" => javascript::is_symbol_ref_node(node),
-                    "java" => java::is_symbol_ref_node(node),
-                    "go" => go::is_symbol_ref_node(node),
+                let is_ref = match self.language.as_str() {
+                    "python" => python::is_ref_node(node),
+                    "javascript" | "typescript" | "tsx" => javascript::is_ref_node(node),
+                    "java" => java::is_ref_node(node),
+                    "go" => go::is_ref_node(node),
                     _ => false,
                 };
-                if is_symbol_ref {
-                    if let Some(symbol) = map_node(node) {
-                        refs.push(symbol);
+                if is_ref {
+                    if let Some(reference) = map_node(node) {
+                        refs.push(reference);
                     }
                 }
                 for i in (0..node.named_child_count()).rev() {

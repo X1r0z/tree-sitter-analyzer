@@ -177,7 +177,7 @@ enum Commands {
         forward: bool,
     },
     /// Find all references to a specific identifier
-    Symbols {
+    Refs {
         /// Directory path
         path: String,
         /// Only analyze files for a single language
@@ -326,11 +326,11 @@ fn run() -> i32 {
                 GraphDirection::Forward
             },
         ),
-        Commands::Symbols {
+        Commands::Refs {
             path,
             language,
             name,
-        } => commands::symbols(&path, language.map(LanguageFilter::as_str), &name),
+        } => commands::refs(&path, language.map(LanguageFilter::as_str), &name),
         Commands::Definition {
             path,
             language,

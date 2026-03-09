@@ -1,8 +1,7 @@
 use serde_json::{json, Value};
 
 use crate::models::{
-    AnnotationInfo, CalleeInfo, CallerInfo, ClassInfo, FieldInfo, FunctionInfo, ImportInfo,
-    SymbolRefInfo,
+    AnnotationInfo, CalleeInfo, CallerInfo, ClassInfo, FieldInfo, FunctionInfo, ImportInfo, RefInfo,
 };
 
 #[derive(Clone, Copy)]
@@ -31,8 +30,8 @@ pub fn annotations(items: &[AnnotationInfo]) -> Value {
     Value::Array(items.iter().map(annotation).collect())
 }
 
-pub fn symbol_refs(items: &[SymbolRefInfo]) -> Value {
-    Value::Array(items.iter().map(symbol_ref).collect())
+pub fn refs(items: &[RefInfo]) -> Value {
+    Value::Array(items.iter().map(ref_item).collect())
 }
 
 pub fn callers(items: &[CallerInfo]) -> Value {
@@ -101,7 +100,7 @@ fn annotation(item: &AnnotationInfo) -> Value {
     Value::Object(map)
 }
 
-fn symbol_ref(item: &SymbolRefInfo) -> Value {
+fn ref_item(item: &RefInfo) -> Value {
     json!({
         "type": item.node_type,
         "location": item.location,

@@ -168,7 +168,7 @@ pub struct AnnotationInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SymbolRefInfo {
+pub struct RefInfo {
     pub name: String,
     #[serde(rename = "type")]
     pub node_type: String,
@@ -208,7 +208,7 @@ pub struct IndexInfo {
 }
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
-pub struct SymbolRefKey {
+pub struct RefKey {
     pub file: String,
     pub name: String,
     pub node_type: String,
@@ -218,16 +218,16 @@ pub struct SymbolRefKey {
     pub end_column: usize,
 }
 
-impl From<&SymbolRefInfo> for SymbolRefKey {
-    fn from(symbol: &SymbolRefInfo) -> Self {
+impl From<&RefInfo> for RefKey {
+    fn from(reference: &RefInfo) -> Self {
         Self {
-            file: symbol.location.file.clone(),
-            name: symbol.name.clone(),
-            node_type: symbol.node_type.clone(),
-            start_line: symbol.location.start_line,
-            end_line: symbol.location.end_line,
-            start_column: symbol.start_column,
-            end_column: symbol.end_column,
+            file: reference.location.file.clone(),
+            name: reference.name.clone(),
+            node_type: reference.node_type.clone(),
+            start_line: reference.location.start_line,
+            end_line: reference.location.end_line,
+            start_column: reference.start_column,
+            end_column: reference.end_column,
         }
     }
 }
@@ -256,7 +256,7 @@ pub struct AnalyzerSnapshot {
     pub calls: Vec<CallInfo>,
     pub imports: Vec<ImportInfo>,
     pub annotations: Vec<AnnotationInfo>,
-    pub symbols: Vec<SymbolRefInfo>,
+    pub refs: Vec<RefInfo>,
     pub python_properties: Vec<PythonPropertyInfo>,
     pub python_property_callers: Vec<PythonPropertyCallerInfo>,
 }

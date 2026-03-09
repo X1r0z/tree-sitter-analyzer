@@ -335,31 +335,28 @@ pub(crate) fn graph(
     )
 }
 
-pub(crate) fn symbols(path: &str, language: Option<&str>, name: &str) -> Value {
+pub(crate) fn refs(path: &str, language: Option<&str>, name: &str) -> Value {
     let context = match CommandContext::load(path, language) {
         Ok(context) => context,
         Err(error) => return error_response(error),
     };
     match &context.backend {
-        AnalyzerBackend::Store(store_backend) => match store_backend.find_symbols(name) {
+        AnalyzerBackend::Store(store_backend) => match store_backend.find_refs(name) {
             Ok(refs) if refs.is_empty() => success_response(
                 &context.real_path,
                 context.searched_files(),
                 [
                     ("name", json!(name)),
-                    ("references", Value::Array(Vec::new())),
+                    ("refs", Value::Array(Vec::new())),
                 ],
             ),
             Ok(refs) => match SourceAnalyzer::new_with_language(&context.real_path, language) {
                 Ok(source_backend) => {
-                    let refs = source_backend.hydrate_symbols(refs);
+                    let refs = source_backend.hydrate_refs(refs);
                     success_response(
                         &context.real_path,
                         context.searched_files(),
-                        [
-                            ("name", json!(name)),
-                            ("references", output::symbol_refs(&refs)),
-                        ],
+                        [("name", json!(name)), ("refs", output::refs(&refs))],
                     )
                 }
                 Err(error) => error_response(error),
@@ -367,14 +364,11 @@ pub(crate) fn symbols(path: &str, language: Option<&str>, name: &str) -> Value {
             Err(error) => error_response(error),
         },
         AnalyzerBackend::Source(source_backend) => {
-            let refs = source_backend.find_symbols(name);
+            let refs = source_backend.find_refs(name);
             success_response(
                 &context.real_path,
                 context.searched_files(),
-                [
-                    ("name", json!(name)),
-                    ("references", output::symbol_refs(&refs)),
-                ],
+                [("name", json!(name)), ("refs", output::refs(&refs))],
             )
         }
     }
@@ -523,7 +517,7 @@ fn success_response<const N: usize>(
         .find_map(|(key, value)| match (key.to_owned(), value) {
             (
                 "functions" | "classes" | "fields" | "imports" | "annotations" | "callers"
-                | "callees" | "graphs" | "references" | "super_classes" | "sub_classes",
+                | "callees" | "graphs" | "refs" | "super_classes" | "sub_classes",
                 Value::Array(items),
             ) => Some(items.len()),
             _ => None,

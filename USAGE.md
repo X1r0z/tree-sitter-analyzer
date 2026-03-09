@@ -62,7 +62,7 @@ Notes:
 
 - The cache file is always written to the current working directory as `tsa.db`
 - Indexing shows a progress bar with processed files and total files
-- If a compatible `tsa.db` is present, `functions`, `classes`, `fields`, `imports`, `annotations`, `callers`, `callees`, `symbols`, `definition`, `super-classes`, and `sub-classes` use the cache automatically
+- If a compatible `tsa.db` is present, all commands will use the cache automatically
 - If no compatible cache is found, queries fall back to direct AST analysis
 
 ### `functions` - Extract Function Definitions
@@ -270,12 +270,12 @@ tsa graph ./src/ -f process_data -d 2 --backward
 tsa graph ./src/ -f initialize -c Application -d 3 --forward
 ```
 
-### `symbols` - Find Symbol References
+### `refs` - Find Symbol References
 
 Find code symbol references such as identifiers, type names, property names, field names, and supported import-path nodes.
 
 ```bash
-tsa symbols <path> [-l LANGUAGE] -n NAME
+tsa refs <path> [-l LANGUAGE] -n NAME
 ```
 
 | Option | Description |
@@ -287,7 +287,7 @@ Examples:
 
 ```bash
 # Find all references to a symbol
-tsa symbols ./src/ -n CONFIG_PATH
+tsa refs ./src/ -n CONFIG_PATH
 ```
 
 ### `definition` - Get Function Source Code

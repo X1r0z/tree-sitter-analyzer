@@ -247,7 +247,7 @@ impl CodeExtractor {
         let calls = self.collect_calls();
         let imports = self.collect_imports();
         let annotations = self.collect_annotations();
-        let symbols = self.parser.collect_symbols();
+        let refs = self.parser.collect_refs();
         let python_properties = self.parser.collect_python_properties();
         let python_property_callers = self.parser.collect_python_property_callers(None);
 
@@ -258,7 +258,7 @@ impl CodeExtractor {
             calls,
             imports,
             annotations,
-            symbols,
+            refs,
             python_properties,
             python_property_callers,
         }
@@ -375,12 +375,12 @@ impl CodeExtractor {
         self.parser.collect_annotations()
     }
 
-    pub fn find_symbols(&mut self, name: &str) -> Vec<SymbolRefInfo> {
-        self.parser.find_symbols(name, true)
+    pub fn find_refs(&mut self, name: &str) -> Vec<RefInfo> {
+        self.parser.find_refs(name, true)
     }
 
-    pub fn hydrate_symbols(&mut self, candidates: &[SymbolRefInfo]) -> Vec<SymbolRefInfo> {
-        self.parser.hydrate_symbols(candidates)
+    pub fn hydrate_refs(&mut self, candidates: &[RefInfo]) -> Vec<RefInfo> {
+        self.parser.hydrate_refs(candidates)
     }
 
     pub fn find_class(&mut self, class_name: &str) -> Option<ClassInfo> {

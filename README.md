@@ -73,7 +73,7 @@ See [USAGE.md](USAGE.md) for complete documentation.
 | `callers` | Find functions that call a specific function |
 | `callees` | Find functions called by a specific function |
 | `graph` | Trace callers backward or callees forward across multiple call levels |
-| `symbols` | Find all references to a specific symbol |
+| `refs` | Find all references to a specific symbol |
 | `definition` | Extract source code of a function |
 | `super-classes` | Get all parent classes of a specific class |
 | `sub-classes` | Get all child classes that inherit from a specific class |

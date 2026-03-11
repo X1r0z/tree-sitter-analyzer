@@ -345,10 +345,7 @@ pub(crate) fn refs(path: &str, language: Option<&str>, name: &str) -> Value {
             Ok(refs) if refs.is_empty() => success_response(
                 &context.real_path,
                 context.searched_files(),
-                [
-                    ("name", json!(name)),
-                    ("refs", Value::Array(Vec::new())),
-                ],
+                [("name", json!(name)), ("refs", Value::Array(Vec::new()))],
             ),
             Ok(refs) => match SourceAnalyzer::new_with_language(&context.real_path, language) {
                 Ok(source_backend) => {

@@ -439,45 +439,70 @@ impl<'a> CallGraphQuery<'a> {
         let mut results = Vec::new();
         for row in rows {
             let (file_id, file, caller_name, caller_class_name, object_name, line) = row?;
-            let Some(caller_name) = caller_name.as_deref() else {
-                continue;
-            };
-            let caller = edge_query.resolve_enclosing_function(
-                file_id,
-                &file,
-                caller_name,
-                caller_class_name.as_deref(),
-                line,
-                node_cache,
-            )?;
-            if let Some(caller) = caller {
-                if let Some(class_name) = node.function.class_name.as_deref() {
-                    if !resolver.matches_call_target(
-                        &caller,
-                        object_name.as_deref(),
-                        class_name,
-                        field_type_cache,
-                        param_type_cache,
-                    )? {
-                        continue;
+            if let Some(caller_name) = caller_name.as_deref() {
+                let caller = edge_query.resolve_enclosing_function(
+                    file_id,
+                    &file,
+                    caller_name,
+                    caller_class_name.as_deref(),
+                    line,
+                    node_cache,
+                )?;
+                if let Some(caller) = caller {
+                    if let Some(class_name) = node.function.class_name.as_deref() {
+                        if !resolver.matches_call_target(
+                            &caller,
+                            object_name.as_deref(),
+                            class_name,
+                            field_type_cache,
+                            param_type_cache,
+                        )? {
+                            continue;
+                        }
                     }
-                }
-                let key = GraphEdgeKey {
-                    node: caller.key(),
-                    call_site: CallSite {
-                        file: file.clone(),
-                        line,
-                    },
-                };
-                if seen.insert(key) {
-                    results.push(GraphNeighbor {
-                        node: caller,
+                    let key = GraphEdgeKey {
+                        node: caller.key(),
                         call_site: CallSite {
                             file: file.clone(),
                             line,
                         },
-                    });
+                    };
+                    if seen.insert(key) {
+                        results.push(GraphNeighbor {
+                            node: caller,
+                            call_site: CallSite {
+                                file: file.clone(),
+                                line,
+                            },
+                        });
+                    }
                 }
+                continue;
+            }
+
+            if let Some(class_name) = node.function.class_name.as_deref() {
+                if !resolver.matches_call_target_without_enclosing_function(
+                    caller_class_name.as_deref(),
+                    object_name.as_deref(),
+                    class_name,
+                ) {
+                    continue;
+                }
+            }
+
+            let caller = module_caller_indexed_function(file_id, &file, line);
+            let key = GraphEdgeKey {
+                node: caller.key(),
+                call_site: CallSite {
+                    file: file.clone(),
+                    line,
+                },
+            };
+            if seen.insert(key) {
+                results.push(GraphNeighbor {
+                    node: caller,
+                    call_site: CallSite { file, line },
+                });
             }
         }
 
@@ -585,6 +610,24 @@ fn unresolved_indexed_function(
         file_id,
         function: FunctionInfo {
             name,
+            location: Location {
+                file: file.to_string(),
+                start_line: line,
+                end_line: line,
+            },
+            body: String::new(),
+            class_name: None,
+            params: Vec::new(),
+        },
+    }
+}
+
+fn module_caller_indexed_function(file_id: i64, file: &str, line: usize) -> IndexedFunction {
+    IndexedFunction {
+        function_id: -1,
+        file_id,
+        function: FunctionInfo {
+            name: "<module>".to_string(),
             location: Location {
                 file: file.to_string(),
                 start_line: line,

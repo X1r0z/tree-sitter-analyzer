@@ -105,14 +105,22 @@ impl CallGraph {
 
         let mut forward_edge_sets: HashMap<FunctionKey, HashSet<GraphEdgeKey>> = HashMap::new();
         for call in calls {
-            let Some(caller) = resolve_enclosing_function(
+            let caller = resolve_enclosing_function(
                 &functions_by_file_context,
                 &call.location.file,
                 call.caller.as_deref(),
                 call.caller_class_name.as_deref(),
                 call.location.start_line,
-            ) else {
-                continue;
+            )
+            .unwrap_or_else(|| {
+                module_caller_function(&call.location.file, call.location.start_line)
+            });
+
+            if call.caller.is_none() {
+                let module_key = FunctionKey::from(&caller);
+                functions_by_key
+                    .entry(module_key)
+                    .or_insert_with(|| caller.clone());
             };
 
             let mut callees =
@@ -546,5 +554,19 @@ fn unresolved_name(object_name: Option<&str>, callee_name: &str) -> String {
     match object_name {
         Some(object_name) => format!("{}.{}", object_name, callee_name),
         None => callee_name.to_string(),
+    }
+}
+
+fn module_caller_function(file: &str, line: usize) -> FunctionInfo {
+    FunctionInfo {
+        name: "<module>".to_string(),
+        location: Location {
+            file: file.to_string(),
+            start_line: line,
+            end_line: line,
+        },
+        body: String::new(),
+        class_name: None,
+        params: Vec::new(),
     }
 }

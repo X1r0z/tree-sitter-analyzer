@@ -77,13 +77,13 @@ impl SourceAnalyzer {
         self.search.files()
     }
 
-    pub(crate) fn find_functions(&self, query: &str) -> Vec<FunctionInfo> {
+    pub(crate) fn find_functions(&self, query: &str) -> anyhow::Result<Vec<FunctionInfo>> {
         let candidate_files = self.search.filter_candidates(query);
         if candidate_files.is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
-        let matcher = QueryMatcher::new(query);
-        self.analyze_files_with_progress(&candidate_files, |f: &String| {
+        let matcher = QueryMatcher::new(query)?;
+        Ok(self.analyze_files_with_progress(&candidate_files, |f: &String| {
             let funcs = self
                 .analyze_file(f, |extractor| extractor.collect_functions())
                 .unwrap_or_default();
@@ -95,7 +95,7 @@ impl SourceAnalyzer {
                     .filter(|func| matcher.is_match(&func.name))
                     .collect()
             }
-        })
+        }))
     }
 
     fn hydrate_candidates<K, Candidate, KeyOf, FileOf, Resolve>(
@@ -165,13 +165,13 @@ impl SourceAnalyzer {
         )
     }
 
-    pub(crate) fn find_classes(&self, query: &str) -> Vec<ClassInfo> {
+    pub(crate) fn find_classes(&self, query: &str) -> anyhow::Result<Vec<ClassInfo>> {
         let candidate_files = self.search.filter_candidates(query);
         if candidate_files.is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
-        let matcher = QueryMatcher::new(query);
-        self.analyze_files_with_progress(&candidate_files, |f: &String| {
+        let matcher = QueryMatcher::new(query)?;
+        Ok(self.analyze_files_with_progress(&candidate_files, |f: &String| {
             let classes = self
                 .analyze_file(f, |extractor| extractor.collect_classes())
                 .unwrap_or_default();
@@ -183,7 +183,7 @@ impl SourceAnalyzer {
                     .filter(|class| matcher.is_match(&class.name))
                     .collect()
             }
-        })
+        }))
     }
 
     pub(crate) fn find_fields(&self, class_name: &str) -> Vec<FieldInfo> {
@@ -198,13 +198,13 @@ impl SourceAnalyzer {
         })
     }
 
-    pub(crate) fn find_imports(&self, query: &str) -> Vec<ImportInfo> {
+    pub(crate) fn find_imports(&self, query: &str) -> anyhow::Result<Vec<ImportInfo>> {
         let candidate_files = self.search.filter_candidates(query);
         if candidate_files.is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
-        let matcher = QueryMatcher::new(query);
-        self.analyze_files_with_progress(&candidate_files, |f: &String| {
+        let matcher = QueryMatcher::new(query)?;
+        Ok(self.analyze_files_with_progress(&candidate_files, |f: &String| {
             let imports = self
                 .analyze_file(f, |extractor| extractor.collect_imports())
                 .unwrap_or_default();
@@ -216,16 +216,16 @@ impl SourceAnalyzer {
                     .filter(|import| matcher.is_match(&import.module))
                     .collect()
             }
-        })
+        }))
     }
 
-    pub(crate) fn find_annotations(&self, query: &str) -> Vec<AnnotationInfo> {
+    pub(crate) fn find_annotations(&self, query: &str) -> anyhow::Result<Vec<AnnotationInfo>> {
         let candidate_files = self.search.filter_candidates(query);
         if candidate_files.is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
-        let matcher = QueryMatcher::new(query);
-        self.analyze_files_with_progress(&candidate_files, |f: &String| {
+        let matcher = QueryMatcher::new(query)?;
+        Ok(self.analyze_files_with_progress(&candidate_files, |f: &String| {
             let annotations = self
                 .analyze_file(f, |extractor| extractor.collect_annotations())
                 .unwrap_or_default();
@@ -237,7 +237,7 @@ impl SourceAnalyzer {
                     .filter(|annotation| matcher.is_match(&annotation.name))
                     .collect()
             }
-        })
+        }))
     }
 
     pub(crate) fn find_callers(

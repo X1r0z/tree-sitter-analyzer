@@ -16,7 +16,6 @@ pub(crate) struct FileSearch {
 pub(crate) enum QueryMatcher {
     MatchAll,
     Regex(Regex),
-    Contains(String),
 }
 
 struct TextFilterCache {
@@ -90,21 +89,17 @@ impl FileSearch {
 }
 
 impl QueryMatcher {
-    pub(crate) fn new(query: &str) -> Self {
+    pub(crate) fn new(query: &str) -> anyhow::Result<Self> {
         if query.is_empty() {
-            return Self::MatchAll;
+            return Ok(Self::MatchAll);
         }
-        match Regex::new(query) {
-            Ok(re) => Self::Regex(re),
-            Err(_) => Self::Contains(query.to_string()),
-        }
+        Ok(Self::Regex(Regex::new(query)?))
     }
 
     pub(crate) fn is_match(&self, name: &str) -> bool {
         match self {
             Self::MatchAll => true,
             Self::Regex(re) => re.is_match(name),
-            Self::Contains(text) => name.contains(text),
         }
     }
 

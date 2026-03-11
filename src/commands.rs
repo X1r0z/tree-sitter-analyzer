@@ -141,7 +141,10 @@ pub(crate) fn functions(path: &str, language: Option<&str>, query: &str) -> Valu
             Ok(functions) => functions,
             Err(error) => return error_response(error),
         },
-        AnalyzerBackend::Source(source_backend) => source_backend.find_functions(query),
+        AnalyzerBackend::Source(source_backend) => match source_backend.find_functions(query) {
+            Ok(functions) => functions,
+            Err(error) => return error_response(error),
+        },
     };
     success_response(
         &context.real_path,
@@ -163,7 +166,10 @@ pub(crate) fn classes(path: &str, language: Option<&str>, query: &str) -> Value 
             Ok(classes) => classes,
             Err(error) => return error_response(error),
         },
-        AnalyzerBackend::Source(source_backend) => source_backend.find_classes(query),
+        AnalyzerBackend::Source(source_backend) => match source_backend.find_classes(query) {
+            Ok(classes) => classes,
+            Err(error) => return error_response(error),
+        },
     };
     success_response(
         &context.real_path,
@@ -204,7 +210,10 @@ pub(crate) fn imports(path: &str, language: Option<&str>, query: &str) -> Value 
             Ok(imports) => imports,
             Err(error) => return error_response(error),
         },
-        AnalyzerBackend::Source(source_backend) => source_backend.find_imports(query),
+        AnalyzerBackend::Source(source_backend) => match source_backend.find_imports(query) {
+            Ok(imports) => imports,
+            Err(error) => return error_response(error),
+        },
     };
     success_response(
         &context.real_path,
@@ -223,7 +232,10 @@ pub(crate) fn annotations(path: &str, language: Option<&str>, query: &str) -> Va
             Ok(annotations) => annotations,
             Err(error) => return error_response(error),
         },
-        AnalyzerBackend::Source(source_backend) => source_backend.find_annotations(query),
+        AnalyzerBackend::Source(source_backend) => match source_backend.find_annotations(query) {
+            Ok(annotations) => annotations,
+            Err(error) => return error_response(error),
+        },
     };
     success_response(
         &context.real_path,

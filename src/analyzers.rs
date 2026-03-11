@@ -83,19 +83,21 @@ impl SourceAnalyzer {
             return Ok(Vec::new());
         }
         let matcher = QueryMatcher::new(query)?;
-        Ok(self.analyze_files_with_progress(&candidate_files, |f: &String| {
-            let funcs = self
-                .analyze_file(f, |extractor| extractor.collect_functions())
-                .unwrap_or_default();
-            if matcher.matches_all() {
-                funcs
-            } else {
-                funcs
-                    .into_iter()
-                    .filter(|func| matcher.is_match(&func.name))
-                    .collect()
-            }
-        }))
+        Ok(
+            self.analyze_files_with_progress(&candidate_files, |f: &String| {
+                let funcs = self
+                    .analyze_file(f, |extractor| extractor.collect_functions())
+                    .unwrap_or_default();
+                if matcher.matches_all() {
+                    funcs
+                } else {
+                    funcs
+                        .into_iter()
+                        .filter(|func| matcher.is_match(&func.name))
+                        .collect()
+                }
+            }),
+        )
     }
 
     fn hydrate_candidates<K, Candidate, KeyOf, FileOf, Resolve>(
@@ -171,19 +173,21 @@ impl SourceAnalyzer {
             return Ok(Vec::new());
         }
         let matcher = QueryMatcher::new(query)?;
-        Ok(self.analyze_files_with_progress(&candidate_files, |f: &String| {
-            let classes = self
-                .analyze_file(f, |extractor| extractor.collect_classes())
-                .unwrap_or_default();
-            if matcher.matches_all() {
-                classes
-            } else {
-                classes
-                    .into_iter()
-                    .filter(|class| matcher.is_match(&class.name))
-                    .collect()
-            }
-        }))
+        Ok(
+            self.analyze_files_with_progress(&candidate_files, |f: &String| {
+                let classes = self
+                    .analyze_file(f, |extractor| extractor.collect_classes())
+                    .unwrap_or_default();
+                if matcher.matches_all() {
+                    classes
+                } else {
+                    classes
+                        .into_iter()
+                        .filter(|class| matcher.is_match(&class.name))
+                        .collect()
+                }
+            }),
+        )
     }
 
     pub(crate) fn find_fields(&self, class_name: &str) -> Vec<FieldInfo> {
@@ -204,19 +208,21 @@ impl SourceAnalyzer {
             return Ok(Vec::new());
         }
         let matcher = QueryMatcher::new(query)?;
-        Ok(self.analyze_files_with_progress(&candidate_files, |f: &String| {
-            let imports = self
-                .analyze_file(f, |extractor| extractor.collect_imports())
-                .unwrap_or_default();
-            if matcher.matches_all() {
-                imports
-            } else {
-                imports
-                    .into_iter()
-                    .filter(|import| matcher.is_match(&import.module))
-                    .collect()
-            }
-        }))
+        Ok(
+            self.analyze_files_with_progress(&candidate_files, |f: &String| {
+                let imports = self
+                    .analyze_file(f, |extractor| extractor.collect_imports())
+                    .unwrap_or_default();
+                if matcher.matches_all() {
+                    imports
+                } else {
+                    imports
+                        .into_iter()
+                        .filter(|import| matcher.is_match(&import.module))
+                        .collect()
+                }
+            }),
+        )
     }
 
     pub(crate) fn find_annotations(&self, query: &str) -> anyhow::Result<Vec<AnnotationInfo>> {
@@ -225,19 +231,21 @@ impl SourceAnalyzer {
             return Ok(Vec::new());
         }
         let matcher = QueryMatcher::new(query)?;
-        Ok(self.analyze_files_with_progress(&candidate_files, |f: &String| {
-            let annotations = self
-                .analyze_file(f, |extractor| extractor.collect_annotations())
-                .unwrap_or_default();
-            if matcher.matches_all() {
-                annotations
-            } else {
-                annotations
-                    .into_iter()
-                    .filter(|annotation| matcher.is_match(&annotation.name))
-                    .collect()
-            }
-        }))
+        Ok(
+            self.analyze_files_with_progress(&candidate_files, |f: &String| {
+                let annotations = self
+                    .analyze_file(f, |extractor| extractor.collect_annotations())
+                    .unwrap_or_default();
+                if matcher.matches_all() {
+                    annotations
+                } else {
+                    annotations
+                        .into_iter()
+                        .filter(|annotation| matcher.is_match(&annotation.name))
+                        .collect()
+                }
+            }),
+        )
     }
 
     pub(crate) fn find_callers(

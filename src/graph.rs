@@ -105,22 +105,28 @@ impl CallGraph {
 
         let mut forward_edge_sets: HashMap<FunctionKey, HashSet<GraphEdgeKey>> = HashMap::new();
         for call in calls {
-            let caller = resolve_enclosing_function(
-                &functions_by_file_context,
-                &call.location.file,
-                call.caller.as_deref(),
-                call.caller_class_name.as_deref(),
-                call.location.start_line,
-            )
-            .unwrap_or_else(|| {
-                module_caller_function(&call.location.file, call.location.start_line)
-            });
-
-            if call.caller.is_none() {
-                let module_key = FunctionKey::from(&caller);
-                functions_by_key
-                    .entry(module_key)
-                    .or_insert_with(|| caller.clone());
+            let caller = match call.caller.as_deref() {
+                None => {
+                    let caller =
+                        module_caller_function(&call.location.file, call.location.start_line);
+                    let module_key = FunctionKey::from(&caller);
+                    functions_by_key
+                        .entry(module_key)
+                        .or_insert_with(|| caller.clone());
+                    caller
+                }
+                Some(caller_name) => {
+                    let Some(caller) = resolve_enclosing_function(
+                        &functions_by_file_context,
+                        &call.location.file,
+                        Some(caller_name),
+                        call.caller_class_name.as_deref(),
+                        call.location.start_line,
+                    ) else {
+                        continue;
+                    };
+                    caller
+                }
             };
 
             let mut callees =
@@ -150,14 +156,25 @@ impl CallGraph {
         }
 
         for property_caller in property_callers {
-            let Some(caller) = resolve_enclosing_function(
-                &functions_by_file_context,
-                &property_caller.file,
-                Some(&property_caller.caller),
-                property_caller.caller_class_name.as_deref(),
-                property_caller.line,
-            ) else {
-                continue;
+            let module_level = property_caller.caller == "<module>";
+            let caller = if module_level {
+                let caller = module_caller_function(&property_caller.file, property_caller.line);
+                let module_key = FunctionKey::from(&caller);
+                functions_by_key
+                    .entry(module_key)
+                    .or_insert_with(|| caller.clone());
+                caller
+            } else {
+                let Some(caller) = resolve_enclosing_function(
+                    &functions_by_file_context,
+                    &property_caller.file,
+                    Some(&property_caller.caller),
+                    property_caller.caller_class_name.as_deref(),
+                    property_caller.line,
+                ) else {
+                    continue;
+                };
+                caller
             };
 
             let candidate_defs = defs_by_name
@@ -169,12 +186,26 @@ impl CallGraph {
                 if !property_keys.contains(&(property.name.clone(), property.class_name.clone())) {
                     continue;
                 }
-                if !matches_property_target(
-                    &caller,
-                    property_caller.object_name.as_deref(),
-                    property.class_name.as_deref(),
-                    &fields_by_file_class,
-                ) {
+                let Some(target_class_name) = property.class_name.as_deref() else {
+                    continue;
+                };
+                let matches_target = if module_level {
+                    matches_call_target(
+                        property_caller.caller_class_name.as_deref(),
+                        property_caller.object_name.as_deref(),
+                        target_class_name,
+                        |_attr_name, _target_class_name| false,
+                        |_attr_name, _target_class_name| false,
+                    )
+                } else {
+                    matches_property_target(
+                        &caller,
+                        property_caller.object_name.as_deref(),
+                        Some(target_class_name),
+                        &fields_by_file_class,
+                    )
+                };
+                if !matches_target {
                     continue;
                 }
                 let caller_key = FunctionKey::from(&caller);
@@ -568,5 +599,58 @@ fn module_caller_function(file: &str, line: usize) -> FunctionInfo {
         body: String::new(),
         class_name: None,
         params: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn function(name: &str, file: &str, start_line: usize, end_line: usize) -> FunctionInfo {
+        FunctionInfo {
+            name: name.to_string(),
+            location: Location {
+                file: file.to_string(),
+                start_line,
+                end_line,
+            },
+            body: String::new(),
+            class_name: None,
+            params: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn unresolved_named_caller_is_not_downgraded_to_module() {
+        let graph = CallGraph::build(
+            vec![function("target", "a.py", 10, 12)],
+            Vec::new(),
+            vec![CallInfo {
+                callee: "target".to_string(),
+                location: Location {
+                    file: "a.py".to_string(),
+                    start_line: 30,
+                    end_line: 30,
+                },
+                caller: Some("unknown_fn".to_string()),
+                caller_class_name: None,
+                object_name: None,
+            }],
+            Vec::new(),
+            Vec::new(),
+        );
+
+        let starts = graph.find_start_nodes("target", None);
+        let paths = graph.collect_graphs(&starts, GraphDirection::Backward, 3);
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].depth, 0);
+        assert!(
+            paths[0]
+                .stacktrace
+                .iter()
+                .all(|frame| !frame.contains("<module>")),
+            "unexpected module fallback in stacktrace: {:?}",
+            paths[0].stacktrace
+        );
     }
 }

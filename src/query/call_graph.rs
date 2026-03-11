@@ -547,6 +547,33 @@ impl<'a> CallGraphQuery<'a> {
 
             for row in property_rows {
                 let (file_id, file, caller_name, caller_class_name, object_name, line) = row?;
+                if caller_name == "<module>" {
+                    if let Some(class_name) = node.function.class_name.as_deref() {
+                        if !resolver.matches_call_target_without_enclosing_function(
+                            caller_class_name.as_deref(),
+                            object_name.as_deref(),
+                            class_name,
+                        ) {
+                            continue;
+                        }
+                    }
+                    let caller = module_caller_indexed_function(file_id, &file, line);
+                    let key = GraphEdgeKey {
+                        node: caller.key(),
+                        call_site: CallSite {
+                            file: file.clone(),
+                            line,
+                        },
+                    };
+                    if seen.insert(key) {
+                        results.push(GraphNeighbor {
+                            node: caller,
+                            call_site: CallSite { file, line },
+                        });
+                    }
+                    continue;
+                }
+
                 if let Some(caller) = edge_query.resolve_enclosing_function(
                     file_id,
                     &file,

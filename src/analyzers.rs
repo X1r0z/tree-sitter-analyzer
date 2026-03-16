@@ -275,10 +275,15 @@ impl SourceAnalyzer {
         }
         let fn_name = function_name.to_string();
         let target_function = split_function_target(function_name).0.to_string();
+        let target_candidate_files = self.search.filter_by_text(&target_function);
         let cn = class_name.map(|s| s.to_string());
         let unique_method_target = cn.as_deref().is_some_and(|target_class_name| {
             has_unique_class_method_target(
-                &self.find_function_definitions_in_files(&candidate_files, &target_function, None),
+                &self.find_function_definitions_in_files(
+                    &target_candidate_files,
+                    &target_function,
+                    None,
+                ),
                 target_class_name,
                 |function| {
                     if function.name == target_function {

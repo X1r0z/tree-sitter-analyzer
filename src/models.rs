@@ -245,6 +245,7 @@ pub struct PythonPropertyCallerInfo {
     pub caller: String,
     pub caller_class_name: Option<String>,
     pub object_name: Option<String>,
+    pub object_type: Option<String>,
     pub line: usize,
 }
 

@@ -6,8 +6,8 @@ use crate::models::{
     Location, PythonPropertyInfo,
 };
 use crate::parser::call_targets::{
-    matches_call_target, resolve_forward_targets_with_fallback, type_matches_class,
-    ForwardTargetContext,
+    matches_module_property_target, matches_property_target as call_matches_property_target,
+    resolve_forward_targets_with_fallback, type_matches_class, ForwardTargetContext,
 };
 use crate::traversal::{collect_paths_dfs, TraversalPathStep};
 use crate::utils::select_most_specific_by_line;
@@ -19,6 +19,7 @@ pub(crate) struct RawPropertyCaller {
     pub(crate) caller: String,
     pub(crate) caller_class_name: Option<String>,
     pub(crate) object_name: Option<String>,
+    pub(crate) object_type: Option<String>,
     pub(crate) line: usize,
 }
 
@@ -190,12 +191,10 @@ impl CallGraph {
                     continue;
                 };
                 let matches_target = if module_level {
-                    matches_call_target(
-                        property_caller.caller_class_name.as_deref(),
+                    matches_module_property_target(
                         property_caller.object_name.as_deref(),
+                        property_caller.object_type.as_deref(),
                         target_class_name,
-                        |_attr_name, _target_class_name| false,
-                        |_attr_name, _target_class_name| false,
                     )
                 } else {
                     matches_property_target(
@@ -360,7 +359,7 @@ fn matches_property_target(
         return false;
     };
 
-    matches_call_target(
+    call_matches_property_target(
         caller.class_name.as_deref(),
         object_name,
         class_name,

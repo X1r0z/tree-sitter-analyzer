@@ -215,6 +215,7 @@ impl IndexStore {
                 caller TEXT NOT NULL,
                 caller_class_name TEXT,
                 object_name TEXT,
+                object_type TEXT,
                 line INTEGER NOT NULL,
                 FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
             );
@@ -298,6 +299,12 @@ impl IndexStore {
         if !property_caller_columns.contains("object_name") {
             conn.execute(
                 "ALTER TABLE python_property_callers ADD COLUMN object_name TEXT",
+                [],
+            )?;
+        }
+        if !property_caller_columns.contains("object_type") {
+            conn.execute(
+                "ALTER TABLE python_property_callers ADD COLUMN object_type TEXT",
                 [],
             )?;
         }

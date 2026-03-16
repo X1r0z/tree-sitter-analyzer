@@ -269,6 +269,7 @@ pub(crate) fn collect_property_indexes(
         return (HashSet::new(), HashMap::new());
     }
 
+    let module_binding_types = collect_module_binding_types(parser);
     let mut properties = HashSet::new();
     let mut callers_by_property: HashMap<String, Vec<PythonPropertyCallerInfo>> = HashMap::new();
     let mut seen_callers: HashSet<PythonPropertyCallerKey> = HashSet::new();
@@ -308,6 +309,9 @@ pub(crate) fn collect_property_indexes(
                 }
             }
             "attribute" => {
+                if !is_load_like_property_access(node) {
+                    continue;
+                }
                 let (property_name, object_name) = split_attribute_parts(parser, node);
                 if property_name.is_empty() {
                     continue;
@@ -317,6 +321,14 @@ pub(crate) fn collect_property_indexes(
                     .function_name
                     .unwrap_or_else(|| "<module>".to_string());
                 let line = node.start_position().row + 1;
+                let object_type = if caller == "<module>" {
+                    object_name
+                        .as_deref()
+                        .and_then(|name| module_binding_types.get(name))
+                        .cloned()
+                } else {
+                    None
+                };
                 let seen_key = (
                     property_name.clone(),
                     caller.clone(),
@@ -334,6 +346,7 @@ pub(crate) fn collect_property_indexes(
                             caller,
                             caller_class_name: enclosing.class_name.clone(),
                             object_name,
+                            object_type,
                             line,
                         });
                 }
@@ -349,6 +362,104 @@ pub(crate) fn collect_property_indexes(
     }
 
     (properties, callers_by_property)
+}
+
+fn is_load_like_property_access(node: Node<'_>) -> bool {
+    let mut current = node;
+    while let Some(parent) = current.parent() {
+        match parent.kind() {
+            "assignment" | "augmented_assignment" => {
+                if parent
+                    .child_by_field_name("left")
+                    .is_some_and(|left| node_is_within(left, node))
+                {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+        current = parent;
+    }
+    true
+}
+
+fn node_is_within(container: Node<'_>, node: Node<'_>) -> bool {
+    container.start_byte() <= node.start_byte() && node.end_byte() <= container.end_byte()
+}
+
+fn collect_module_binding_types(parser: &ParseContext) -> HashMap<String, String> {
+    let mut bindings = HashMap::new();
+    let root = parser.tree.root_node();
+
+    for index in 0..root.named_child_count() {
+        let Some(node) = root.named_child(index as u32) else {
+            continue;
+        };
+        collect_module_binding_types_from_node(parser, node, &mut bindings);
+    }
+
+    bindings
+}
+
+fn collect_module_binding_types_from_node(
+    parser: &ParseContext,
+    node: Node<'_>,
+    bindings: &mut HashMap<String, String>,
+) {
+    match node.kind() {
+        "expression_statement" => {
+            for index in 0..node.named_child_count() {
+                if let Some(child) = node.named_child(index as u32) {
+                    collect_module_binding_types_from_node(parser, child, bindings);
+                }
+            }
+        }
+        "assignment" => {
+            let Some(left) = node.child_by_field_name("left") else {
+                return;
+            };
+            if left.kind() != "identifier" {
+                return;
+            }
+            let name = parser.node_text(left);
+            if name.is_empty() {
+                return;
+            }
+
+            if let Some(type_node) = node.child_by_field_name("type") {
+                let class_name = last_name_segment(&parser.node_text(type_node));
+                if !class_name.is_empty() {
+                    bindings.insert(name, class_name);
+                    return;
+                }
+            }
+
+            let Some(right) = node.child_by_field_name("right") else {
+                return;
+            };
+            if let Some(class_name) = infer_module_binding_type(parser, right) {
+                bindings.insert(name, class_name);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn infer_module_binding_type(parser: &ParseContext, node: Node<'_>) -> Option<String> {
+    match node.kind() {
+        "call" => node
+            .child_by_field_name("function")
+            .and_then(|function| infer_module_binding_type(parser, function)),
+        "identifier" | "attribute" => {
+            let class_name = last_name_segment(&parser.node_text(node));
+            (!class_name.is_empty()).then_some(class_name)
+        }
+        _ => None,
+    }
+}
+
+fn last_name_segment(value: &str) -> String {
+    value.rsplit('.').next().unwrap_or(value).to_string()
 }
 
 pub(crate) fn collect_property_infos(parser: &ParseContext) -> Vec<PythonPropertyInfo> {

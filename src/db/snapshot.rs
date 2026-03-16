@@ -98,8 +98,8 @@ impl<'tx> SnapshotWriter<'tx> {
             )?,
             insert_python_property_caller: tx.prepare_cached(
                 "
-                INSERT INTO python_property_callers(file_id, property_name, caller, caller_class_name, object_name, line)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                INSERT INTO python_property_callers(file_id, property_name, caller, caller_class_name, object_name, object_type, line)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                 ",
             )?,
         })
@@ -233,6 +233,7 @@ impl<'tx> SnapshotWriter<'tx> {
                 caller.caller,
                 caller.caller_class_name,
                 caller.object_name,
+                caller.object_type,
                 caller.line as i64
             ])?;
         }

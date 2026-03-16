@@ -224,6 +224,53 @@ where
     field_matches(attr_name, target_class_name) || param_matches(attr_name, target_class_name)
 }
 
+pub(crate) fn matches_property_target<FieldMatches, ParamMatches>(
+    caller_class_name: Option<&str>,
+    object_name: Option<&str>,
+    target_class_name: &str,
+    mut field_matches: FieldMatches,
+    mut param_matches: ParamMatches,
+) -> bool
+where
+    FieldMatches: FnMut(&str, &str) -> bool,
+    ParamMatches: FnMut(&str, &str) -> bool,
+{
+    if object_name.is_none() {
+        return caller_class_name == Some(target_class_name);
+    }
+    if matches!(object_name, Some("self") | Some("this") | Some("cls")) {
+        return caller_class_name == Some(target_class_name);
+    }
+
+    let Some(object_name) = object_name else {
+        return false;
+    };
+
+    if object_name == target_class_name {
+        return false;
+    }
+
+    let Some(attr_name) = extract_instance_attr(object_name) else {
+        return false;
+    };
+
+    field_matches(attr_name, target_class_name) || param_matches(attr_name, target_class_name)
+}
+
+pub(crate) fn matches_module_property_target(
+    object_name: Option<&str>,
+    object_type: Option<&str>,
+    target_class_name: &str,
+) -> bool {
+    let Some(object_name) = object_name else {
+        return false;
+    };
+    if object_name == target_class_name {
+        return false;
+    }
+    type_matches_class(object_type, target_class_name)
+}
+
 pub(crate) fn has_unique_class_method_target<C, ClassNameOf>(
     candidates: &[C],
     target_class_name: &str,

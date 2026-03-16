@@ -2,7 +2,9 @@ use std::collections::{HashMap, HashSet};
 
 use crate::models::*;
 use crate::parser::call_targets::{
-    has_non_self_object_target, matches_call_target, split_function_target, type_matches_class,
+    has_non_self_object_target, matches_call_target, matches_module_property_target,
+    matches_property_target as call_matches_property_target, split_function_target,
+    type_matches_class,
 };
 use crate::parser::capture;
 use crate::parser::ParseContext;
@@ -164,6 +166,46 @@ impl CodeExtractor {
         )
     }
 
+    fn matches_property_target(
+        &mut self,
+        caller_name: Option<&str>,
+        caller_class_name: Option<&str>,
+        object_name: Option<&str>,
+        object_type: Option<&str>,
+        line: usize,
+        class_name: &str,
+    ) -> bool {
+        if caller_name == Some("<module>") {
+            return matches_module_property_target(object_name, object_type, class_name);
+        }
+        let field_infos = caller_class_name
+            .map(|caller_class_name| self.collect_fields(caller_class_name))
+            .unwrap_or_default();
+        let caller_params = caller_name
+            .and_then(|caller_name| {
+                self.enclosing_function_info_at_line(caller_name, caller_class_name, line)
+            })
+            .map(|caller| caller.params)
+            .unwrap_or_default();
+        call_matches_property_target(
+            caller_class_name,
+            object_name,
+            class_name,
+            |attr_name, target_class_name| {
+                field_infos.iter().any(|field| {
+                    field.name == attr_name
+                        && type_matches_class(field.field_type.as_deref(), target_class_name)
+                })
+            },
+            |attr_name, target_class_name| {
+                caller_params.iter().any(|param| {
+                    param.name == attr_name
+                        && type_matches_class(param.param_type.as_deref(), target_class_name)
+                })
+            },
+        )
+    }
+
     pub fn collect_functions(&mut self) -> Vec<FunctionInfo> {
         if self.cache.functions.is_none() {
             self.cache.functions = Some(self.parser.collect_functions(false));
@@ -274,16 +316,29 @@ impl CodeExtractor {
         allow_unique_method_target: bool,
     ) -> Vec<(String, usize)> {
         self.ensure_calls_by_callee();
-        let by_callee = self.cache.calls_by_callee.as_ref().unwrap();
-        let calls = self.cache.calls.as_ref().unwrap().to_vec();
 
         let (target_function, target_object) = split_function_target(function_name);
+        let candidate_call_indices = self
+            .cache
+            .calls_by_callee
+            .as_ref()
+            .and_then(|by_callee| by_callee.get(target_function))
+            .cloned()
+            .unwrap_or_default();
+        let candidate_calls: Vec<CallInfo> = candidate_call_indices
+            .into_iter()
+            .filter_map(|index| {
+                self.cache
+                    .calls
+                    .as_ref()
+                    .and_then(|calls| calls.get(index))
+                    .cloned()
+            })
+            .collect();
 
         let mut callers = Vec::new();
         let mut seen: HashSet<(String, usize)> = HashSet::new();
-        let candidate_call_indices = by_callee.get(target_function).cloned().unwrap_or_default();
-        for call_index in candidate_call_indices {
-            let call = calls[call_index].clone();
+        for call in candidate_calls {
             if let Some(to) = target_object {
                 if call.object_name.as_deref() != Some(to) {
                     continue;
@@ -317,10 +372,11 @@ impl CodeExtractor {
                 .collect_python_property_callers(Some(function_name))
             {
                 if let Some(class_name) = class_name {
-                    if !self.matches_class_target(
+                    if !self.matches_property_target(
                         Some(&caller.caller),
                         caller.caller_class_name.as_deref(),
                         caller.object_name.as_deref(),
+                        caller.object_type.as_deref(),
                         caller.line,
                         class_name,
                     ) {
@@ -342,33 +398,43 @@ impl CodeExtractor {
         class_name: Option<&str>,
     ) -> Vec<(String, usize, Option<String>)> {
         self.ensure_calls_by_caller();
-        let by_caller = self.cache.calls_by_caller.as_ref().unwrap().clone();
-        let calls = self.cache.calls.as_ref().unwrap().to_vec();
+        let candidate_calls: Vec<CallInfo> = self
+            .cache
+            .calls_by_caller
+            .as_ref()
+            .and_then(|by_caller| by_caller.get(function_name))
+            .into_iter()
+            .flatten()
+            .filter_map(|&index| {
+                self.cache
+                    .calls
+                    .as_ref()
+                    .and_then(|calls| calls.get(index))
+                    .cloned()
+            })
+            .collect();
 
         let mut callees = Vec::new();
         let mut seen: HashSet<(String, usize, Option<String>)> = HashSet::new();
-        if let Some(caller_call_indices) = by_caller.get(function_name) {
-            for &call_index in caller_call_indices {
-                let call = &calls[call_index];
-                let Some(caller) = self.enclosing_function_info_at_line(
-                    function_name,
-                    class_name,
-                    call.location.start_line,
-                ) else {
-                    continue;
-                };
-                let mut callee_name = call.callee.clone();
-                if let Some(ref obj) = call.object_name {
-                    callee_name = format!("{}.{}", obj, callee_name);
-                }
-                let key = (
-                    callee_name.clone(),
-                    call.location.start_line,
-                    caller.class_name.clone(),
-                );
-                if seen.insert(key) {
-                    callees.push((callee_name, call.location.start_line, caller.class_name));
-                }
+        for call in candidate_calls {
+            let Some(caller) = self.enclosing_function_info_at_line(
+                function_name,
+                class_name,
+                call.location.start_line,
+            ) else {
+                continue;
+            };
+            let mut callee_name = call.callee.clone();
+            if let Some(ref obj) = call.object_name {
+                callee_name = format!("{}.{}", obj, callee_name);
+            }
+            let key = (
+                callee_name.clone(),
+                call.location.start_line,
+                caller.class_name.clone(),
+            );
+            if seen.insert(key) {
+                callees.push((callee_name, call.location.start_line, caller.class_name));
             }
         }
         callees

@@ -8,6 +8,7 @@ use super::{CallEdgeQuery, QueryContext};
 use crate::models::{
     CallGraphPath, FunctionInfo, FunctionKey, GraphDirection, GraphPathNode, Location,
 };
+use crate::parser::call_targets::has_non_self_object_target;
 use crate::traversal::{collect_paths_dfs, TraversalPathStep};
 
 #[derive(Clone, Eq, Hash, PartialEq)]
@@ -437,6 +438,12 @@ impl<'a> CallGraphQuery<'a> {
 
         let mut seen = HashSet::new();
         let mut results = Vec::new();
+        let unique_method_target = match node.function.class_name.as_deref() {
+            Some(class_name) => {
+                resolver.has_unique_method_target(&node.function.name, class_name)?
+            }
+            None => false,
+        };
         for row in rows {
             let (file_id, file, caller_name, caller_class_name, object_name, line) = row?;
             if let Some(caller_name) = caller_name.as_deref() {
@@ -450,13 +457,15 @@ impl<'a> CallGraphQuery<'a> {
                 )?;
                 if let Some(caller) = caller {
                     if let Some(class_name) = node.function.class_name.as_deref() {
-                        if !resolver.matches_call_target(
+                        if !(resolver.matches_call_target(
                             &caller,
                             object_name.as_deref(),
                             class_name,
                             field_type_cache,
                             param_type_cache,
-                        )? {
+                        )? || unique_method_target
+                            && has_non_self_object_target(object_name.as_deref()))
+                        {
                             continue;
                         }
                     }
@@ -481,11 +490,13 @@ impl<'a> CallGraphQuery<'a> {
             }
 
             if let Some(class_name) = node.function.class_name.as_deref() {
-                if !resolver.matches_call_target_without_enclosing_function(
+                if !(resolver.matches_call_target_without_enclosing_function(
                     caller_class_name.as_deref(),
                     object_name.as_deref(),
                     class_name,
-                ) {
+                ) || unique_method_target
+                    && has_non_self_object_target(object_name.as_deref()))
+                {
                     continue;
                 }
             }
@@ -519,7 +530,7 @@ impl<'a> CallGraphQuery<'a> {
         if is_property {
             let mut property_sql = String::from(
                 "
-                SELECT ppc.file_id, f.path, ppc.caller, ppc.caller_class_name, ppc.object_name, ppc.line
+                SELECT ppc.file_id, f.path, ppc.caller, ppc.caller_class_name, ppc.object_name, ppc.object_type, ppc.line
                 FROM python_property_callers ppc
                 JOIN files f ON f.id = ppc.file_id
                 WHERE ppc.property_name = ?1
@@ -541,17 +552,19 @@ impl<'a> CallGraphQuery<'a> {
                         row.get::<_, String>(2)?,
                         row.get::<_, Option<String>>(3)?,
                         row.get::<_, Option<String>>(4)?,
-                        row.get::<_, i64>(5)? as usize,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, i64>(6)? as usize,
                     ))
                 })?;
 
             for row in property_rows {
-                let (file_id, file, caller_name, caller_class_name, object_name, line) = row?;
+                let (file_id, file, caller_name, caller_class_name, object_name, object_type, line) =
+                    row?;
                 if caller_name == "<module>" {
                     if let Some(class_name) = node.function.class_name.as_deref() {
-                        if !resolver.matches_call_target_without_enclosing_function(
-                            caller_class_name.as_deref(),
+                        if !resolver.matches_property_target_without_enclosing_function(
                             object_name.as_deref(),
+                            object_type.as_deref(),
                             class_name,
                         ) {
                             continue;

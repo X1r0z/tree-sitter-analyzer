@@ -5,7 +5,8 @@ use rusqlite::{params, OptionalExtension};
 use super::call_edges::IndexedFunction;
 use super::QueryContext;
 use crate::parser::call_targets::{
-    has_unique_class_method_target, matches_call_target, resolve_forward_targets_with_fallback,
+    has_unique_class_method_target, matches_call_target, matches_module_property_target,
+    matches_property_target as call_matches_property_target, resolve_forward_targets_with_fallback,
     type_matches_class, ForwardTargetContext,
 };
 
@@ -74,13 +75,49 @@ impl<'a> CallTargetResolver<'a> {
         let Some(caller) = caller else {
             return Ok(false);
         };
-        self.matches_call_target(
-            caller,
+        let field_types = caller
+            .function
+            .class_name
+            .as_deref()
+            .map(|caller_class_name| {
+                self.load_field_types_by_file_class(
+                    caller.file_id,
+                    caller_class_name,
+                    field_type_cache,
+                )
+            })
+            .transpose()?
+            .unwrap_or_default();
+        let param_types =
+            self.load_param_types_by_function(caller.function_id, param_type_cache)?;
+        Ok(call_matches_property_target(
+            caller.function.class_name.as_deref(),
             object_name,
             class_name,
-            field_type_cache,
-            param_type_cache,
-        )
+            |attr_name, target_class_name| {
+                field_types
+                    .get(attr_name)
+                    .into_iter()
+                    .flatten()
+                    .any(|field_type| type_matches_class(field_type.as_deref(), target_class_name))
+            },
+            |attr_name, target_class_name| {
+                param_types
+                    .get(attr_name)
+                    .into_iter()
+                    .flatten()
+                    .any(|param_type| type_matches_class(param_type.as_deref(), target_class_name))
+            },
+        ))
+    }
+
+    pub(super) fn matches_property_target_without_enclosing_function(
+        &self,
+        object_name: Option<&str>,
+        object_type: Option<&str>,
+        class_name: &str,
+    ) -> bool {
+        matches_module_property_target(object_name, object_type, class_name)
     }
 
     pub(super) fn matches_call_target(

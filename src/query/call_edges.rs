@@ -148,7 +148,7 @@ impl<'a> CallEdgeQuery<'a> {
         if resolver.is_python_property(function_name, class_name)? {
             let mut property_sql = String::from(
                 "
-                SELECT ppc.file_id, f.path, ppc.caller, ppc.caller_class_name, ppc.object_name, ppc.line
+                SELECT ppc.file_id, f.path, ppc.caller, ppc.caller_class_name, ppc.object_name, ppc.object_type, ppc.line
                 FROM python_property_callers ppc
                 JOIN files f ON f.id = ppc.file_id
                 WHERE ppc.property_name = ?1
@@ -169,28 +169,40 @@ impl<'a> CallEdgeQuery<'a> {
                         row.get::<_, String>(2)?,
                         row.get::<_, Option<String>>(3)?,
                         row.get::<_, Option<String>>(4)?,
-                        row.get::<_, i64>(5)? as usize,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, i64>(6)? as usize,
                     ))
                 })?;
             for row in property_rows {
-                let (file_id, file, caller_name, caller_class_name, object_name, line) = row?;
+                let (file_id, file, caller_name, caller_class_name, object_name, object_type, line) =
+                    row?;
                 if let Some(class_name) = class_name {
-                    let caller = self.resolve_enclosing_function(
-                        file_id,
-                        &file,
-                        &caller_name,
-                        caller_class_name.as_deref(),
-                        line,
-                        &mut node_cache,
-                    )?;
-                    if !resolver.matches_property_target(
-                        caller.as_ref(),
-                        object_name.as_deref(),
-                        class_name,
-                        &mut field_type_cache,
-                        &mut param_type_cache,
-                    )? {
-                        continue;
+                    if caller_name == "<module>" {
+                        if !resolver.matches_property_target_without_enclosing_function(
+                            object_name.as_deref(),
+                            object_type.as_deref(),
+                            class_name,
+                        ) {
+                            continue;
+                        }
+                    } else {
+                        let caller = self.resolve_enclosing_function(
+                            file_id,
+                            &file,
+                            &caller_name,
+                            caller_class_name.as_deref(),
+                            line,
+                            &mut node_cache,
+                        )?;
+                        if !resolver.matches_property_target(
+                            caller.as_ref(),
+                            object_name.as_deref(),
+                            class_name,
+                            &mut field_type_cache,
+                            &mut param_type_cache,
+                        )? {
+                            continue;
+                        }
                     }
                 }
                 let key = (file.clone(), caller_name.clone(), line);

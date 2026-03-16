@@ -264,6 +264,20 @@ impl CodeExtractor {
             .collect()
     }
 
+    pub fn find_function_signatures(
+        &mut self,
+        name: &str,
+        class_name: Option<&str>,
+    ) -> Vec<FunctionInfo> {
+        self.collect_functions()
+            .iter()
+            .filter(|f| {
+                f.name == name && (class_name.is_none() || f.class_name.as_deref() == class_name)
+            })
+            .cloned()
+            .collect()
+    }
+
     pub fn collect_classes(&mut self) -> Vec<ClassInfo> {
         if self.cache.classes.is_none() {
             self.cache.classes = Some(self.parser.collect_classes());
@@ -502,19 +516,13 @@ impl CodeExtractor {
     pub fn hydrate_refs(&mut self, candidates: &[RefInfo]) -> Vec<RefInfo> {
         self.parser.hydrate_refs(candidates)
     }
-
-    pub fn find_class(&mut self, class_name: &str) -> Option<ClassInfo> {
-        self.collect_classes()
-            .iter()
-            .find(|c| c.name == class_name)
-            .cloned()
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::fs;
 
+    use crate::models::FunctionKey;
     use tempfile::{Builder, NamedTempFile};
 
     use super::CodeExtractor;
@@ -584,5 +592,43 @@ module_value = foo.value
             file_snapshot.python_property_callers[0].caller,
             source_snapshot.python_property_callers[0].caller
         );
+    }
+
+    #[test]
+    fn lightweight_function_signatures_match_definition_keys() {
+        let file = write_python_fixture(
+            r#"
+class Repo:
+    def load(self):
+        value = 1
+        return value
+
+def load():
+    value = 2
+    return value
+"#,
+        );
+        let path = file.path().to_string_lossy().into_owned();
+        let mut extractor = CodeExtractor::new(&path).expect("extractor");
+
+        let signature_keys: Vec<_> = extractor
+            .find_function_signatures("load", None)
+            .iter()
+            .map(FunctionKey::from)
+            .collect();
+        let definition_keys: Vec<_> = extractor
+            .find_function_definitions("load", None)
+            .iter()
+            .map(FunctionKey::from)
+            .collect();
+        assert_eq!(signature_keys, definition_keys);
+
+        let method_signatures = extractor.find_function_signatures("load", Some("Repo"));
+        assert_eq!(method_signatures.len(), 1);
+        assert!(method_signatures[0].body.is_empty());
+
+        let method_definitions = extractor.find_function_definitions("load", Some("Repo"));
+        assert_eq!(method_definitions.len(), 1);
+        assert!(!method_definitions[0].body.is_empty());
     }
 }

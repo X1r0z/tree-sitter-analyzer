@@ -20,7 +20,7 @@ struct FunctionRow {
     end_line: i64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ClassRow {
     class_id: i64,
     file_id: i64,
@@ -153,39 +153,7 @@ impl<'a> LookupQuery<'a> {
                 end_line: row.get(5)?,
             })
         })?;
-        let class_rows = rows.collect::<Result<Vec<_>, _>>()?;
-        let class_ids: Vec<i64> = class_rows.iter().map(|row| row.class_id).collect();
-        let field_keys: Vec<(i64, String)> = class_rows
-            .iter()
-            .map(|row| (row.file_id, row.name.clone()))
-            .collect();
-        let methods_by_class = self.load_methods_by_class_id(&class_ids)?;
-        let super_classes_by_class = self.load_superclasses_by_class_id(&class_ids)?;
-        let fields_by_class = self.load_field_names_by_file_class(&field_keys)?;
-
-        Ok(class_rows
-            .into_iter()
-            .map(|row| ClassInfo {
-                name: row.name.clone(),
-                location: Location {
-                    file: row.file,
-                    start_line: row.start_line as usize,
-                    end_line: row.end_line as usize,
-                },
-                methods: methods_by_class
-                    .get(&row.class_id)
-                    .cloned()
-                    .unwrap_or_default(),
-                fields: fields_by_class
-                    .get(&(row.file_id, row.name.clone()))
-                    .cloned()
-                    .unwrap_or_default(),
-                super_classes: super_classes_by_class
-                    .get(&row.class_id)
-                    .cloned()
-                    .unwrap_or_default(),
-            })
-            .collect())
+        self.hydrate_class_rows(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
     pub(crate) fn find_fields(&self, class_name: &str) -> anyhow::Result<Vec<FieldInfo>> {
@@ -467,6 +435,75 @@ impl<'a> LookupQuery<'a> {
             }
         }
         Ok(map)
+    }
+
+    pub(super) fn load_classes_by_ids(&self, class_ids: &[i64]) -> anyhow::Result<Vec<ClassInfo>> {
+        if class_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut class_rows = Vec::new();
+        for chunk in class_ids.chunks(SQLITE_BATCH_SIZE) {
+            let placeholders = repeat_placeholders(chunk.len());
+            let sql = format!(
+                "
+                SELECT c.id, c.file_id, f.path, c.name, c.start_line, c.end_line
+                FROM classes c
+                JOIN files f ON f.id = c.file_id
+                WHERE c.id IN ({placeholders})
+                ORDER BY f.path, c.start_line
+                "
+            );
+            let mut stmt = self.ctx.conn.prepare(&sql)?;
+            let rows = stmt.query_map(params_from_iter(chunk.iter()), |row| {
+                Ok(ClassRow {
+                    class_id: row.get(0)?,
+                    file_id: row.get(1)?,
+                    file: row.get(2)?,
+                    name: row.get(3)?,
+                    start_line: row.get(4)?,
+                    end_line: row.get(5)?,
+                })
+            })?;
+            class_rows.extend(rows.collect::<Result<Vec<_>, _>>()?);
+        }
+
+        self.hydrate_class_rows(class_rows)
+    }
+
+    fn hydrate_class_rows(&self, class_rows: Vec<ClassRow>) -> anyhow::Result<Vec<ClassInfo>> {
+        let class_ids: Vec<i64> = class_rows.iter().map(|row| row.class_id).collect();
+        let field_keys: Vec<(i64, String)> = class_rows
+            .iter()
+            .map(|row| (row.file_id, row.name.clone()))
+            .collect();
+        let methods_by_class = self.load_methods_by_class_id(&class_ids)?;
+        let super_classes_by_class = self.load_superclasses_by_class_id(&class_ids)?;
+        let fields_by_class = self.load_field_names_by_file_class(&field_keys)?;
+
+        Ok(class_rows
+            .into_iter()
+            .map(|row| ClassInfo {
+                name: row.name.clone(),
+                location: Location {
+                    file: row.file,
+                    start_line: row.start_line as usize,
+                    end_line: row.end_line as usize,
+                },
+                methods: methods_by_class
+                    .get(&row.class_id)
+                    .cloned()
+                    .unwrap_or_default(),
+                fields: fields_by_class
+                    .get(&(row.file_id, row.name.clone()))
+                    .cloned()
+                    .unwrap_or_default(),
+                super_classes: super_classes_by_class
+                    .get(&row.class_id)
+                    .cloned()
+                    .unwrap_or_default(),
+            })
+            .collect())
     }
 }
 

@@ -9,7 +9,7 @@ use crate::db::IndexStore;
 use crate::extractor::CodeExtractor;
 use crate::graph::{CallGraph, RawPropertyCaller};
 use crate::models::*;
-use crate::parser::call_targets::has_unique_class_method_target;
+use crate::parser::call_targets::{has_unique_class_method_target, split_function_target};
 use crate::query::{CallEdgeQuery, CallGraphQuery, ClassHierarchyQuery, LookupQuery, QueryContext};
 use crate::search::{FileSearch, QueryMatcher};
 use crate::traversal::collect_reachable_bfs;
@@ -258,13 +258,14 @@ impl SourceAnalyzer {
             return Vec::new();
         }
         let fn_name = function_name.to_string();
+        let target_function = split_function_target(function_name).0.to_string();
         let cn = class_name.map(|s| s.to_string());
         let unique_method_target = cn.as_deref().is_some_and(|target_class_name| {
             has_unique_class_method_target(
-                &self.find_function_definitions(&fn_name, None),
+                &self.find_function_definitions(&target_function, None),
                 target_class_name,
                 |function| {
-                    if function.name == fn_name {
+                    if function.name == target_function {
                         function.class_name.as_deref()
                     } else {
                         None

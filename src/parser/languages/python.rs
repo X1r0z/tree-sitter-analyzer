@@ -435,10 +435,13 @@ fn collect_module_binding_types_from_node(
             }
 
             let Some(right) = node.child_by_field_name("right") else {
+                bindings.remove(&name);
                 return;
             };
             if let Some(class_name) = infer_module_binding_type(parser, right) {
                 bindings.insert(name, class_name);
+            } else {
+                bindings.remove(&name);
             }
         }
         _ => {}

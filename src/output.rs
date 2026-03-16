@@ -121,6 +121,5 @@ fn callee(item: &CalleeInfo) -> Value {
         "callee": item.callee,
         "line": item.line,
         "file": item.file,
-        "class_name": item.class_name,
     })
 }

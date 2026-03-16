@@ -193,8 +193,6 @@ pub struct CalleeInfo {
     pub callee: String,
     pub line: usize,
     pub file: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub class_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -324,11 +324,10 @@ impl SourceAnalyzer {
                 })
                 .unwrap_or_default()
                 .into_iter()
-                .map(|(callee, line, callee_class)| CalleeInfo {
+                .map(|(callee, line)| CalleeInfo {
                     callee,
                     line,
                     file: f.clone(),
-                    class_name: callee_class,
                 })
                 .collect::<Vec<_>>()
             });

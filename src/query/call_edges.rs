@@ -22,10 +22,8 @@ pub(super) struct CallerRow {
 
 #[derive(Debug)]
 pub(super) struct CalleeRow {
-    file_id: i64,
     file: String,
     callee: String,
-    object_name: Option<String>,
     line: usize,
 }
 
@@ -279,10 +277,15 @@ impl<'a> CallEdgeQuery<'a> {
         let rows: Vec<CalleeRow> = stmt
             .query_map(params_from_iter(params.iter()), |row| {
                 Ok(CalleeRow {
-                    file_id: row.get(0)?,
                     file: row.get(1)?,
-                    callee: row.get(2)?,
-                    object_name: row.get(3)?,
+                    callee: {
+                        let callee: String = row.get(2)?;
+                        let object_name: Option<String> = row.get(3)?;
+                        match object_name {
+                            Some(object_name) => format!("{}.{}", object_name, callee),
+                            None => callee,
+                        }
+                    },
                     line: row.get::<_, i64>(5)? as usize,
                 })
             })?
@@ -290,36 +293,73 @@ impl<'a> CallEdgeQuery<'a> {
 
         let mut results = Vec::new();
         let mut seen = HashSet::new();
-        let mut node_cache = HashMap::new();
         for row in rows {
-            let Some(caller) = self.resolve_enclosing_function(
-                row.file_id,
-                &row.file,
-                function_name,
-                class_name,
-                row.line,
-                &mut node_cache,
-            )?
-            else {
-                continue;
-            };
-            let mut callee_name = row.callee.clone();
-            if let Some(object_name) = &row.object_name {
-                callee_name = format!("{}.{}", object_name, callee_name);
-            }
-            let key = (
-                row.file.clone(),
-                callee_name.clone(),
-                row.line,
-                caller.function.class_name.clone(),
-            );
+            let key = (row.file.clone(), row.callee.clone(), row.line);
             if seen.insert(key) {
                 results.push(CalleeInfo {
-                    callee: callee_name,
+                    callee: row.callee,
                     line: row.line,
                     file: row.file,
-                    class_name: caller.function.class_name,
                 });
+            }
+        }
+
+        let mut property_sql = String::from(
+            "
+            SELECT f.path, ppc.property_name, ppc.object_name, ppc.line
+            FROM python_property_callers ppc
+            JOIN files f ON f.id = ppc.file_id
+            WHERE ppc.caller = ?1
+            ",
+        );
+        let mut property_params = vec![Value::from(function_name.to_string())];
+        if let Some(class_name) = class_name {
+            property_sql.push_str(" AND ppc.caller_class_name = ?2");
+            property_params.push(Value::from(class_name.to_string()));
+        } else {
+            property_sql.push_str(" AND ppc.caller_class_name IS NULL");
+        }
+        let file_id_param_start = property_params.len() + 1;
+        let mut relevant_file_ids: Vec<_> = relevant_files.into_iter().collect();
+        relevant_file_ids.sort_unstable();
+        let placeholders = (0..relevant_file_ids.len())
+            .map(|offset| format!("?{}", file_id_param_start + offset))
+            .collect::<Vec<_>>()
+            .join(", ");
+        property_sql.push_str(&format!(" AND ppc.file_id IN ({placeholders})"));
+        for file_id in relevant_file_ids {
+            property_params.push(Value::from(file_id));
+        }
+        if let Some(language) = self.ctx.language.as_ref() {
+            let index = property_params.len() + 1;
+            property_sql.push_str(&format!(" AND f.language = ?{index}"));
+            property_params.push(Value::from(language.to_string()));
+        }
+        property_sql.push_str(
+            "
+            ORDER BY f.path, ppc.line
+            ",
+        );
+
+        let mut property_stmt = self.ctx.conn.prepare(&property_sql)?;
+        let property_rows =
+            property_stmt.query_map(params_from_iter(property_params.iter()), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, i64>(3)? as usize,
+                ))
+            })?;
+        for row in property_rows {
+            let (file, property_name, object_name, line) = row?;
+            let callee = match object_name {
+                Some(object_name) => format!("{}.{}", object_name, property_name),
+                None => property_name,
+            };
+            let key = (file.clone(), callee.clone(), line);
+            if seen.insert(key) {
+                results.push(CalleeInfo { callee, line, file });
             }
         }
         sort_callees_by_file_line(&mut results);

@@ -102,7 +102,6 @@ pub fn sort_callees_by_file_line(results: &mut [CalleeInfo]) {
             .cmp(&right.file)
             .then(left.line.cmp(&right.line))
             .then(left.callee.cmp(&right.callee))
-            .then(left.class_name.cmp(&right.class_name))
     });
 }
 

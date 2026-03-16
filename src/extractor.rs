@@ -396,7 +396,7 @@ impl CodeExtractor {
         &mut self,
         function_name: &str,
         class_name: Option<&str>,
-    ) -> Vec<(String, usize, Option<String>)> {
+    ) -> Vec<(String, usize)> {
         self.ensure_calls_by_caller();
         let candidate_calls: Vec<CallInfo> = self
             .cache
@@ -415,9 +415,9 @@ impl CodeExtractor {
             .collect();
 
         let mut callees = Vec::new();
-        let mut seen: HashSet<(String, usize, Option<String>)> = HashSet::new();
+        let mut seen: HashSet<(String, usize)> = HashSet::new();
         for call in candidate_calls {
-            let Some(caller) = self.enclosing_function_info_at_line(
+            let Some(_caller) = self.enclosing_function_info_at_line(
                 function_name,
                 class_name,
                 call.location.start_line,
@@ -428,13 +428,27 @@ impl CodeExtractor {
             if let Some(ref obj) = call.object_name {
                 callee_name = format!("{}.{}", obj, callee_name);
             }
-            let key = (
-                callee_name.clone(),
-                call.location.start_line,
-                caller.class_name.clone(),
-            );
+            let key = (callee_name.clone(), call.location.start_line);
             if seen.insert(key) {
-                callees.push((callee_name, call.location.start_line, caller.class_name));
+                callees.push((callee_name, call.location.start_line));
+            }
+        }
+
+        for property_caller in self.parser.collect_python_property_callers(None) {
+            let Some(_caller) = self.enclosing_function_info_at_line(
+                function_name,
+                class_name,
+                property_caller.line,
+            ) else {
+                continue;
+            };
+            let mut callee_name = property_caller.property_name.clone();
+            if let Some(ref obj) = property_caller.object_name {
+                callee_name = format!("{}.{}", obj, callee_name);
+            }
+            let key = (callee_name.clone(), property_caller.line);
+            if seen.insert(key) {
+                callees.push((callee_name, property_caller.line));
             }
         }
         callees

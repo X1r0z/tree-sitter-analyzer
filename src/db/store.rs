@@ -255,6 +255,7 @@ impl IndexStore {
             CREATE INDEX IF NOT EXISTS idx_python_properties_file_name_class ON python_properties(file_id, property_name, class_name);
             CREATE INDEX IF NOT EXISTS idx_python_property_callers_name ON python_property_callers(property_name);
             CREATE INDEX IF NOT EXISTS idx_python_property_callers_name_caller_class ON python_property_callers(property_name, caller_class_name);
+            CREATE INDEX IF NOT EXISTS idx_python_property_callers_caller_class_file_line ON python_property_callers(caller, caller_class_name, file_id, line);
             CREATE INDEX IF NOT EXISTS idx_python_property_callers_file_name_line ON python_property_callers(file_id, property_name, line);
             CREATE INDEX IF NOT EXISTS idx_python_property_callers_file_caller_class_line ON python_property_callers(file_id, caller, caller_class_name, line);
         ",
@@ -311,6 +312,10 @@ impl IndexStore {
         }
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_python_property_callers_name_caller_class ON python_property_callers(property_name, caller_class_name)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_python_property_callers_caller_class_file_line ON python_property_callers(caller, caller_class_name, file_id, line)",
             [],
         )?;
         conn.execute(

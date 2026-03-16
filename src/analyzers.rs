@@ -606,3 +606,105 @@ impl StoreAnalyzer {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+    use std::fs;
+
+    use indicatif::ProgressBar;
+    use tempfile::tempdir;
+
+    use super::{SourceAnalyzer, StoreAnalyzer};
+    use crate::db::{
+        file_record_with_hash, FileIndexData, IndexStore, IndexSyncPlan, IndexSynchronizer,
+    };
+    use crate::extractor::CodeExtractor;
+    use crate::languages::detect_language;
+    use crate::models::{CallGraphPath, GraphDirection};
+
+    #[test]
+    fn indexed_forward_graph_uses_most_specific_enclosing_function() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let root = tempdir.path().canonicalize()?;
+        let source_path = root.join("nested.py");
+        fs::write(
+            &source_path,
+            r#"def outer_leaf():
+    pass
+
+def inner_leaf():
+    pass
+
+def target():
+    def target():
+        inner_leaf()
+
+    outer_leaf()
+    target()
+"#,
+        )?;
+
+        let root_str = root.to_string_lossy().to_string();
+        let source = SourceAnalyzer::new_with_language(&root_str, Some("python"))?;
+        let indexed = build_store_analyzer(&root)?;
+
+        let source_graphs = source.find_graphs("target", None, GraphDirection::Forward, 1)?;
+        let indexed_graphs = indexed.find_graphs("target", None, GraphDirection::Forward, 1)?;
+
+        assert_eq!(
+            graph_signatures(&source_graphs),
+            graph_signatures(&indexed_graphs)
+        );
+        assert_eq!(indexed_graphs.len(), 3);
+        assert!(!indexed_graphs.iter().any(|graph| {
+            graph.path.len() == 2
+                && graph.path[0].name == "target"
+                && graph.path[0].start_line == 7
+                && graph.path[1].name == "inner_leaf"
+        }));
+
+        Ok(())
+    }
+
+    fn build_store_analyzer(root: &std::path::Path) -> anyhow::Result<StoreAnalyzer> {
+        let root_str = root.to_string_lossy().to_string();
+        let source_path = root.join("nested.py");
+        let source_path_str = source_path.to_string_lossy().to_string();
+        let language = detect_language(&source_path)
+            .ok_or_else(|| anyhow::anyhow!("failed to detect language"))?
+            .to_string();
+        let file = file_record_with_hash(&source_path_str, &language)?;
+
+        let mut extractor = CodeExtractor::new(&source_path_str)?;
+        let snapshot = extractor.snapshot_for_index();
+        let plan = IndexSyncPlan {
+            current_files: vec![file.clone()],
+            changed_snapshots: vec![FileIndexData { file, snapshot }],
+        };
+
+        let db_path = root.join("tsa.db");
+        let progress = ProgressBar::hidden();
+        IndexSynchronizer::sync(&db_path, &root_str, Some("python"), &plan, &progress)?;
+
+        let store = IndexStore::open_if_compatible(&db_path, &root_str, Some("python"))?
+            .ok_or_else(|| anyhow::anyhow!("indexed store should be compatible"))?;
+        Ok(StoreAnalyzer {
+            conn: store.into_connection(),
+            language: Some("python".to_string()),
+        })
+    }
+
+    fn graph_signatures(graphs: &[CallGraphPath]) -> BTreeSet<Vec<(String, usize)>> {
+        graphs
+            .iter()
+            .map(|graph| {
+                graph
+                    .path
+                    .iter()
+                    .map(|node| (node.name.clone(), node.start_line))
+                    .collect()
+            })
+            .collect()
+    }
+}

@@ -237,6 +237,9 @@ impl<'a> CallGraphQuery<'a> {
         let mut seen = HashSet::new();
         let mut results = Vec::new();
         for (callee_name, object_name, line) in rows {
+            if !self.forward_call_belongs_to_node(node, line, &edge_query, node_cache)? {
+                continue;
+            }
             let candidates = edge_query.load_functions_by_name(&callee_name, node_cache)?;
             let mut resolved = resolver.resolve_forward_targets_with_fallback(
                 node,
@@ -339,6 +342,24 @@ impl<'a> CallGraphQuery<'a> {
         }
 
         Ok(results)
+    }
+
+    fn forward_call_belongs_to_node(
+        &self,
+        node: &IndexedFunction,
+        line: usize,
+        edge_query: &CallEdgeQuery<'_>,
+        node_cache: &mut HashMap<(String, Option<String>), Vec<IndexedFunction>>,
+    ) -> anyhow::Result<bool> {
+        let enclosing = edge_query.resolve_enclosing_function(
+            node.file_id,
+            &node.function.location.file,
+            &node.function.name,
+            node.function.class_name.as_deref(),
+            line,
+            node_cache,
+        )?;
+        Ok(enclosing.is_some_and(|caller| caller.key() == node.key()))
     }
 
     fn load_forward_property_rows(

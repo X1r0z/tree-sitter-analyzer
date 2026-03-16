@@ -87,6 +87,14 @@ pub fn progress_bar(total: usize, unit: &str, bar_style: &str, message: &str) ->
     progress
 }
 
+pub fn print_warning(message: &str) {
+    if std::io::stderr().is_terminal() {
+        eprintln!("\x1b[33mwarning:\x1b[0m {message}");
+    } else {
+        eprintln!("warning: {message}");
+    }
+}
+
 pub fn sort_callers_by_file_line(results: &mut [CallerInfo]) {
     results.sort_by(|left, right| {
         left.file

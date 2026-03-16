@@ -6,7 +6,6 @@ use crate::parser::call_targets::{
     matches_property_target as call_matches_property_target, split_function_target,
     type_matches_class,
 };
-use crate::parser::capture;
 use crate::parser::ParseContext;
 use crate::utils::select_most_specific_by_line;
 
@@ -222,10 +221,6 @@ impl CodeExtractor {
             .as_deref()
             .unwrap_or(&[])
             .to_vec()
-    }
-
-    pub fn has_function_named(&self, name: &str, class_name: Option<&str>) -> bool {
-        capture::has_function_capture_named(&self.parser, name, class_name)
     }
 
     pub fn find_function_definitions(
@@ -452,6 +447,21 @@ impl CodeExtractor {
             }
         }
         callees
+    }
+
+    pub fn find_function_callees_if_present(
+        &mut self,
+        function_name: &str,
+        class_name: Option<&str>,
+    ) -> Vec<(String, usize)> {
+        let has_target = self.collect_functions_with_bodies().iter().any(|function| {
+            function.name == function_name
+                && (class_name.is_none() || function.class_name.as_deref() == class_name)
+        });
+        if !has_target {
+            return Vec::new();
+        }
+        self.find_function_callees(function_name, class_name)
     }
 
     pub fn collect_annotations(&self) -> Vec<AnnotationInfo> {

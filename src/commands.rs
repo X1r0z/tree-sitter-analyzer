@@ -12,7 +12,7 @@ use crate::extractor::CodeExtractor;
 use crate::languages::detect_language;
 use crate::models::{GraphDirection, IndexInfo};
 use crate::output::{self, FunctionView};
-use crate::utils::progress_bar;
+use crate::utils::{print_warning, progress_bar};
 
 enum AnalyzerBackend {
     Store(StoreAnalyzer),
@@ -328,6 +328,9 @@ pub(crate) fn graph(
             }
         }
         AnalyzerBackend::Source(source_backend) => {
+            print_warning(
+                "graph on source mode scans all files; run tsa index for repeated queries",
+            );
             match source_backend.find_graphs(function_name, class_name, direction, max_depth) {
                 Ok(graphs) => graphs,
                 Err(error) => return error_response(error),

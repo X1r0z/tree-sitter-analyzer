@@ -96,62 +96,6 @@ pub(crate) fn collect_capture_pairs<'a>(
     .unwrap_or_default()
 }
 
-pub(crate) fn has_function_capture_named(
-    context: &ParseContext,
-    function_name: &str,
-    class_name: Option<&str>,
-) -> bool {
-    with_compiled_capture_query(context, QueryKind::Function, |query| {
-        let capture_names = query.capture_names();
-        let Some(function_index) = capture_names
-            .iter()
-            .position(|name| *name == "function")
-            .map(|idx| idx as u32)
-        else {
-            return false;
-        };
-        let Some(name_index) = capture_names
-            .iter()
-            .position(|name| *name == "name")
-            .map(|idx| idx as u32)
-        else {
-            return false;
-        };
-
-        let mut cursor = QueryCursor::new();
-        let mut capture_matches =
-            cursor.matches(query, context.tree.root_node(), context.source.as_slice());
-        while let Some(capture_match) = capture_matches.next() {
-            let mut function_node = None;
-            let mut name_node = None;
-            for capture in capture_match.captures {
-                if capture.index == function_index {
-                    function_node = Some(capture.node);
-                } else if capture.index == name_index {
-                    name_node = Some(capture.node);
-                }
-            }
-            let (Some(function_node), Some(name_node)) = (function_node, name_node) else {
-                continue;
-            };
-            if !context.node_text_eq(name_node, function_name) {
-                continue;
-            }
-            if class_name.is_none()
-                || context
-                    .find_enclosing_context(function_node)
-                    .class_name
-                    .as_deref()
-                    == class_name
-            {
-                return true;
-            }
-        }
-        false
-    })
-    .unwrap_or(false)
-}
-
 pub(crate) fn collect_call_capture_matches<'a>(
     context: &'a ParseContext,
     kind: QueryKind,

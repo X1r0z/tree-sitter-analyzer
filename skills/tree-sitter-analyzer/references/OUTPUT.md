@@ -327,8 +327,8 @@ Array key: `callees`
   "function": "main",
   "class_name": null,
   "callees": [
-    {"callee": "load_config", "line": 18, "file": "src/app.py", "class_name": null},
-    {"callee": "process_data", "line": 25, "file": "src/app.py", "class_name": null}
+    {"callee": "load_config", "line": 18, "file": "src/app.py"},
+    {"callee": "process_data", "line": 25, "file": "src/app.py"}
   ]
 }
 ```

@@ -224,11 +224,6 @@ impl<'a> CallEdgeQuery<'a> {
         function_name: &str,
         class_name: Option<&str>,
     ) -> anyhow::Result<Vec<CalleeInfo>> {
-        let relevant_files = self.matching_function_file_ids(function_name, class_name)?;
-        if relevant_files.is_empty() {
-            return Ok(Vec::new());
-        }
-
         let mut sql = String::from(
             "
             SELECT c.file_id, f.path, c.callee, c.object_name, c.caller_class_name, c.start_line
@@ -313,28 +308,45 @@ impl<'a> CallEdgeQuery<'a> {
             ",
         );
         let mut property_params = vec![Value::from(function_name.to_string())];
+        let mut next_property_param_index = 2;
         if let Some(class_name) = class_name {
-            property_sql.push_str(" AND ppc.caller_class_name = ?2");
+            property_sql.push_str(&format!(
+                " AND ppc.caller_class_name = ?{next_property_param_index}"
+            ));
             property_params.push(Value::from(class_name.to_string()));
+            next_property_param_index += 1;
         } else {
             property_sql.push_str(" AND ppc.caller_class_name IS NULL");
         }
-        let file_id_param_start = property_params.len() + 1;
-        let mut relevant_file_ids: Vec<_> = relevant_files.into_iter().collect();
-        relevant_file_ids.sort_unstable();
-        let placeholders = (0..relevant_file_ids.len())
-            .map(|offset| format!("?{}", file_id_param_start + offset))
-            .collect::<Vec<_>>()
-            .join(", ");
-        property_sql.push_str(&format!(" AND ppc.file_id IN ({placeholders})"));
-        for file_id in relevant_file_ids {
-            property_params.push(Value::from(file_id));
+        if let Some(language) = self.ctx.language.as_ref() {
+            property_sql.push_str(&format!(" AND f.language = ?{next_property_param_index}"));
+            property_params.push(Value::from(language.to_string()));
+            next_property_param_index += 1;
+        }
+        property_sql.push_str(&format!(
+            "
+            AND EXISTS (
+                SELECT 1
+                FROM functions fn
+                JOIN files ff ON ff.id = fn.file_id
+                WHERE fn.file_id = ppc.file_id
+                  AND fn.name = ?{next_property_param_index}
+            "
+        ));
+        property_params.push(Value::from(function_name.to_string()));
+        next_property_param_index += 1;
+        if let Some(class_name) = class_name {
+            property_sql.push_str(&format!(
+                " AND fn.class_name = ?{next_property_param_index}"
+            ));
+            property_params.push(Value::from(class_name.to_string()));
+            next_property_param_index += 1;
         }
         if let Some(language) = self.ctx.language.as_ref() {
-            let index = property_params.len() + 1;
-            property_sql.push_str(&format!(" AND f.language = ?{index}"));
+            property_sql.push_str(&format!(" AND ff.language = ?{next_property_param_index}"));
             property_params.push(Value::from(language.to_string()));
         }
+        property_sql.push_str(" )");
         property_sql.push_str(
             "
             ORDER BY f.path, ppc.line
@@ -461,52 +473,6 @@ impl<'a> CallEdgeQuery<'a> {
                 )
             },
         ))
-    }
-
-    fn matching_function_file_ids(
-        &self,
-        function_name: &str,
-        class_name: Option<&str>,
-    ) -> anyhow::Result<HashSet<i64>> {
-        let mut sql = String::from(
-            "
-            SELECT DISTINCT fn.file_id, f.language
-            FROM functions fn
-            JOIN files f ON f.id = fn.file_id
-            WHERE fn.name = ?1
-            ",
-        );
-        let language = self.ctx.language;
-        if class_name.is_some() {
-            sql.push_str(" AND fn.class_name = ?2");
-        }
-        if language.is_some() {
-            sql.push_str(if class_name.is_some() {
-                " AND f.language = ?3"
-            } else {
-                " AND f.language = ?2"
-            });
-        }
-        let mut stmt = self.ctx.conn.prepare(&sql)?;
-        let rows: Vec<i64> = match (class_name, language) {
-            (Some(class_name), Some(language)) => stmt
-                .query_map(params![function_name, class_name, language], |row| {
-                    row.get::<_, i64>(0)
-                })?
-                .collect::<Result<Vec<_>, _>>()?,
-            (Some(class_name), None) => stmt
-                .query_map(params![function_name, class_name], |row| {
-                    row.get::<_, i64>(0)
-                })?
-                .collect::<Result<Vec<_>, _>>()?,
-            (None, Some(language)) => stmt
-                .query_map(params![function_name, language], |row| row.get::<_, i64>(0))?
-                .collect::<Result<Vec<_>, _>>()?,
-            (None, None) => stmt
-                .query_map([function_name], |row| row.get::<_, i64>(0))?
-                .collect::<Result<Vec<_>, _>>()?,
-        };
-        Ok(rows.into_iter().collect())
     }
 
     fn function_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<IndexedFunction> {

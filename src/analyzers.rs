@@ -69,6 +69,22 @@ impl SourceAnalyzer {
         results
     }
 
+    fn find_function_definitions_in_files(
+        &self,
+        files: &[String],
+        name: &str,
+        class_name: Option<&str>,
+    ) -> Vec<FunctionInfo> {
+        let fn_name = name.to_string();
+        let class_name = class_name.map(str::to_string);
+        self.analyze_files_with_progress(files, |file: &String| {
+            self.analyze_file(file, |extractor| {
+                extractor.find_function_definitions(&fn_name, class_name.as_deref())
+            })
+            .unwrap_or_default()
+        })
+    }
+
     pub(crate) fn file_count(&self) -> usize {
         self.search.files().len()
     }
@@ -262,7 +278,7 @@ impl SourceAnalyzer {
         let cn = class_name.map(|s| s.to_string());
         let unique_method_target = cn.as_deref().is_some_and(|target_class_name| {
             has_unique_class_method_target(
-                &self.find_function_definitions(&target_function, None),
+                &self.find_function_definitions_in_files(&candidate_files, &target_function, None),
                 target_class_name,
                 |function| {
                     if function.name == target_function {
@@ -303,24 +319,10 @@ impl SourceAnalyzer {
 
         let fn_name = function_name.to_string();
         let cn = class_name.map(|s| s.to_string());
-        let mut relevant_files: Vec<String> =
-            self.analyze_files_with_progress(&candidate_files, |f| {
-                self.analyze_file(f, |extractor| {
-                    extractor.has_function_named(&fn_name, cn.as_deref())
-                })
-                .and_then(|exists| exists.then(|| f.clone()))
-                .into_iter()
-                .collect()
-            });
-
-        if relevant_files.is_empty() {
-            relevant_files = candidate_files;
-        }
-
         let mut results: Vec<CalleeInfo> =
-            self.analyze_files_with_progress(&relevant_files, |f: &String| {
+            self.analyze_files_with_progress(&candidate_files, |f: &String| {
                 self.analyze_file(f, |extractor| {
-                    extractor.find_function_callees(&fn_name, cn.as_deref())
+                    extractor.find_function_callees_if_present(&fn_name, cn.as_deref())
                 })
                 .unwrap_or_default()
                 .into_iter()

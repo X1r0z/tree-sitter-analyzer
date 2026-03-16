@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use rusqlite::types::Value;
 use rusqlite::{params, params_from_iter, ToSql};
 
 use super::call_resolver::CallTargetResolver;
@@ -226,6 +227,9 @@ impl<'a> CallEdgeQuery<'a> {
         class_name: Option<&str>,
     ) -> anyhow::Result<Vec<CalleeInfo>> {
         let relevant_files = self.matching_function_file_ids(function_name, class_name)?;
+        if relevant_files.is_empty() {
+            return Ok(Vec::new());
+        }
 
         let mut sql = String::from(
             "
@@ -235,74 +239,59 @@ impl<'a> CallEdgeQuery<'a> {
             WHERE c.caller = ?1
             ",
         );
+        let mut params = vec![Value::from(function_name.to_string())];
+        let mut next_param_index = 2;
         let language = self.ctx.language;
-        if class_name.is_some() {
-            sql.push_str(" AND c.caller_class_name = ?2");
+        if let Some(class_name) = class_name {
+            sql.push_str(&format!(" AND c.caller_class_name = ?{next_param_index}"));
+            params.push(Value::from(class_name.to_string()));
+            next_param_index += 1;
         }
-        if language.is_some() {
-            sql.push_str(if class_name.is_some() {
-                " AND f.language = ?3"
-            } else {
-                " AND f.language = ?2"
-            });
+        if let Some(language) = language {
+            sql.push_str(&format!(" AND f.language = ?{next_param_index}"));
+            params.push(Value::from(language.to_string()));
+            next_param_index += 1;
         }
-        sql.push_str(" ORDER BY f.path, c.start_line");
+        sql.push_str(&format!(
+            "
+            AND EXISTS (
+                SELECT 1
+                FROM functions fn
+                JOIN files ff ON ff.id = fn.file_id
+                WHERE fn.file_id = c.file_id
+                  AND fn.name = ?{next_param_index}
+            "
+        ));
+        params.push(Value::from(function_name.to_string()));
+        next_param_index += 1;
+        if let Some(class_name) = class_name {
+            sql.push_str(&format!(" AND fn.class_name = ?{next_param_index}"));
+            params.push(Value::from(class_name.to_string()));
+            next_param_index += 1;
+        }
+        if let Some(language) = language {
+            sql.push_str(&format!(" AND ff.language = ?{next_param_index}"));
+            params.push(Value::from(language.to_string()));
+        }
+        sql.push_str(" ) ORDER BY f.path, c.start_line");
 
         let mut stmt = self.ctx.conn.prepare(&sql)?;
-        let rows: Vec<CalleeRow> = match (class_name, language) {
-            (Some(class_name), Some(language)) => stmt
-                .query_map(params![function_name, class_name, language], |row| {
-                    Ok(CalleeRow {
-                        file_id: row.get(0)?,
-                        file: row.get(1)?,
-                        callee: row.get(2)?,
-                        object_name: row.get(3)?,
-                        line: row.get::<_, i64>(5)? as usize,
-                    })
-                })?
-                .collect::<Result<Vec<_>, _>>()?,
-            (Some(class_name), None) => stmt
-                .query_map(params![function_name, class_name], |row| {
-                    Ok(CalleeRow {
-                        file_id: row.get(0)?,
-                        file: row.get(1)?,
-                        callee: row.get(2)?,
-                        object_name: row.get(3)?,
-                        line: row.get::<_, i64>(5)? as usize,
-                    })
-                })?
-                .collect::<Result<Vec<_>, _>>()?,
-            (None, Some(language)) => stmt
-                .query_map(params![function_name, language], |row| {
-                    Ok(CalleeRow {
-                        file_id: row.get(0)?,
-                        file: row.get(1)?,
-                        callee: row.get(2)?,
-                        object_name: row.get(3)?,
-                        line: row.get::<_, i64>(5)? as usize,
-                    })
-                })?
-                .collect::<Result<Vec<_>, _>>()?,
-            (None, None) => stmt
-                .query_map([function_name], |row| {
-                    Ok(CalleeRow {
-                        file_id: row.get(0)?,
-                        file: row.get(1)?,
-                        callee: row.get(2)?,
-                        object_name: row.get(3)?,
-                        line: row.get::<_, i64>(5)? as usize,
-                    })
-                })?
-                .collect::<Result<Vec<_>, _>>()?,
-        };
+        let rows: Vec<CalleeRow> = stmt
+            .query_map(params_from_iter(params.iter()), |row| {
+                Ok(CalleeRow {
+                    file_id: row.get(0)?,
+                    file: row.get(1)?,
+                    callee: row.get(2)?,
+                    object_name: row.get(3)?,
+                    line: row.get::<_, i64>(5)? as usize,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
 
         let mut results = Vec::new();
         let mut seen = HashSet::new();
         let mut node_cache = HashMap::new();
         for row in rows {
-            if !relevant_files.is_empty() && !relevant_files.contains(&row.file_id) {
-                continue;
-            }
             let Some(caller) = self.resolve_enclosing_function(
                 row.file_id,
                 &row.file,

@@ -256,6 +256,7 @@ impl IndexStore {
             CREATE INDEX IF NOT EXISTS idx_python_property_callers_name ON python_property_callers(property_name);
             CREATE INDEX IF NOT EXISTS idx_python_property_callers_name_caller_class ON python_property_callers(property_name, caller_class_name);
             CREATE INDEX IF NOT EXISTS idx_python_property_callers_file_name_line ON python_property_callers(file_id, property_name, line);
+            CREATE INDEX IF NOT EXISTS idx_python_property_callers_file_caller_class_line ON python_property_callers(file_id, caller, caller_class_name, line);
         ",
         )?;
         Self::apply_migrations(conn)?;
@@ -310,6 +311,10 @@ impl IndexStore {
         }
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_python_property_callers_name_caller_class ON python_property_callers(property_name, caller_class_name)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_python_property_callers_file_caller_class_line ON python_property_callers(file_id, caller, caller_class_name, line)",
             [],
         )?;
         Self::ensure_trigram_fts(conn, "functions_fts", "name", "functions", "id", "name")?;

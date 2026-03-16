@@ -5,8 +5,8 @@ use serde_json::{json, Value};
 
 use crate::analyzers::{SourceAnalyzer, StoreAnalyzer};
 use crate::db::{
-    db_path_in_current_dir, file_record_metadata, file_record_with_hash, FileIndexData, IndexStore,
-    IndexSyncPlan, IndexSynchronizer, IndexedFileRecord,
+    db_path_in_current_dir, file_record_metadata, file_record_with_hash_from_source, FileIndexData,
+    IndexStore, IndexSyncPlan, IndexSynchronizer, IndexedFileRecord,
 };
 use crate::extractor::CodeExtractor;
 use crate::languages::detect_language;
@@ -553,6 +553,8 @@ fn build_file_index(
     file: &str,
     existing: Option<&IndexedFileRecord>,
 ) -> anyhow::Result<(IndexedFileRecord, Option<FileIndexData>)> {
+    use std::fs;
+
     let language = detect_language(Path::new(file))
         .ok_or_else(|| anyhow::anyhow!("Could not detect language for: {}", file))?
         .to_string();
@@ -564,9 +566,10 @@ fn build_file_index(
     }) {
         return Ok((record.clone(), None));
     }
-    let file_record = file_record_with_hash(file, &language)?;
+    let source = fs::read(file)?;
+    let file_record = file_record_with_hash_from_source(file, &language, &source)?;
 
-    let mut extractor = CodeExtractor::new(file)?;
+    let mut extractor = CodeExtractor::from_source(file, source)?;
     let snapshot = extractor.snapshot_for_index();
     Ok((
         file_record.clone(),

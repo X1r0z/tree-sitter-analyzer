@@ -28,7 +28,16 @@ pub struct CodeExtractor {
 impl CodeExtractor {
     pub fn new(file_path: &str) -> anyhow::Result<Self> {
         let parser = ParseContext::new(file_path)?;
-        Ok(Self {
+        Ok(Self::from_parser(parser))
+    }
+
+    pub fn from_source(file_path: &str, source: Vec<u8>) -> anyhow::Result<Self> {
+        let parser = ParseContext::from_source(file_path, source)?;
+        Ok(Self::from_parser(parser))
+    }
+
+    fn from_parser(parser: ParseContext) -> Self {
+        Self {
             parser,
             cache: ParseCache {
                 functions: None,
@@ -40,7 +49,7 @@ impl CodeExtractor {
                 imports: None,
                 fields_by_class: HashMap::new(),
             },
-        })
+        }
     }
 
     fn ensure_calls(&mut self) {
@@ -499,5 +508,81 @@ impl CodeExtractor {
             .iter()
             .find(|c| c.name == class_name)
             .cloned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use tempfile::{Builder, NamedTempFile};
+
+    use super::CodeExtractor;
+
+    fn write_python_fixture(source: &str) -> NamedTempFile {
+        let file = Builder::new().suffix(".py").tempfile().expect("temp file");
+        fs::write(file.path(), source).expect("write fixture");
+        file
+    }
+
+    #[test]
+    fn snapshot_from_source_matches_file_backed_snapshot() {
+        let source = br#"
+class Foo:
+    @property
+    def value(self):
+        return 1
+
+    def read_self(self):
+        return self.value
+
+foo = Foo()
+module_value = foo.value
+"#
+        .to_vec();
+        let file = write_python_fixture(std::str::from_utf8(&source).expect("utf8 fixture"));
+        let path = file.path().to_string_lossy().into_owned();
+
+        let mut from_file = CodeExtractor::new(&path).expect("extractor from file");
+        let mut from_source =
+            CodeExtractor::from_source(&path, source).expect("extractor from source");
+
+        let file_snapshot = from_file.snapshot_for_index();
+        let source_snapshot = from_source.snapshot_for_index();
+
+        assert_eq!(
+            file_snapshot.functions.len(),
+            source_snapshot.functions.len()
+        );
+        assert_eq!(file_snapshot.classes.len(), source_snapshot.classes.len());
+        assert_eq!(file_snapshot.fields.len(), source_snapshot.fields.len());
+        assert_eq!(file_snapshot.calls.len(), source_snapshot.calls.len());
+        assert_eq!(file_snapshot.imports.len(), source_snapshot.imports.len());
+        assert_eq!(
+            file_snapshot.annotations.len(),
+            source_snapshot.annotations.len()
+        );
+        assert_eq!(file_snapshot.refs.len(), source_snapshot.refs.len());
+        assert_eq!(
+            file_snapshot.python_properties.len(),
+            source_snapshot.python_properties.len()
+        );
+        assert_eq!(
+            file_snapshot.python_property_callers.len(),
+            source_snapshot.python_property_callers.len()
+        );
+
+        assert_eq!(
+            file_snapshot.python_properties[0].name,
+            source_snapshot.python_properties[0].name
+        );
+        assert_eq!(
+            file_snapshot.python_property_callers[0].property_name,
+            source_snapshot.python_property_callers[0].property_name
+        );
+        assert_eq!(
+            file_snapshot.python_property_callers[0].caller,
+            source_snapshot.python_property_callers[0].caller
+        );
     }
 }

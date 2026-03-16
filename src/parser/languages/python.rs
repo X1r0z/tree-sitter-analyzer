@@ -1,3 +1,4 @@
+use std::cell::Ref;
 use std::collections::{HashMap, HashSet};
 
 use tree_sitter::Node;
@@ -9,6 +10,46 @@ use crate::models::{
 };
 
 type PythonPropertyCallerKey = (String, String, Option<String>, Option<String>, usize);
+
+fn ensure_property_indexes_cached(parser: &ParseContext) {
+    if parser.language != "python" {
+        return;
+    }
+    if parser.python_property_indexes.borrow().is_some() {
+        return;
+    }
+    *parser.python_property_indexes.borrow_mut() = Some(collect_property_indexes(parser));
+}
+
+fn with_cached_property_definitions<R>(
+    parser: &ParseContext,
+    f: impl FnOnce(&PythonPropertyDefinitions) -> R,
+) -> R {
+    if parser.language != "python" {
+        return f(&HashSet::new());
+    }
+    ensure_property_indexes_cached(parser);
+    let indexes = parser.python_property_indexes.borrow();
+    let definitions = Ref::map(indexes, |indexes| {
+        &indexes.as_ref().expect("python cache").0
+    });
+    f(&definitions)
+}
+
+fn with_cached_property_callers<R>(
+    parser: &ParseContext,
+    f: impl FnOnce(&PythonPropertyCallers) -> R,
+) -> R {
+    if parser.language != "python" {
+        return f(&HashMap::new());
+    }
+    ensure_property_indexes_cached(parser);
+    let indexes = parser.python_property_indexes.borrow();
+    let callers = Ref::map(indexes, |indexes| {
+        &indexes.as_ref().expect("python cache").1
+    });
+    f(&callers)
+}
 
 pub(crate) fn split_attribute_parts(
     parser: &ParseContext,
@@ -466,44 +507,47 @@ fn last_name_segment(value: &str) -> String {
 }
 
 pub(crate) fn collect_property_infos(parser: &ParseContext) -> Vec<PythonPropertyInfo> {
-    let (properties, _) = collect_property_indexes(parser);
-    let mut values: Vec<_> = properties
-        .into_iter()
-        .map(|(name, class_name)| PythonPropertyInfo { name, class_name })
-        .collect();
-    values.sort_by(|left, right| {
-        left.name
-            .cmp(&right.name)
-            .then_with(|| left.class_name.cmp(&right.class_name))
-    });
-    values
+    with_cached_property_definitions(parser, |properties| {
+        let mut values: Vec<_> = properties
+            .iter()
+            .cloned()
+            .map(|(name, class_name)| PythonPropertyInfo { name, class_name })
+            .collect();
+        values.sort_by(|left, right| {
+            left.name
+                .cmp(&right.name)
+                .then_with(|| left.class_name.cmp(&right.class_name))
+        });
+        values
+    })
 }
 
 pub(crate) fn collect_property_callers(
     parser: &ParseContext,
     property_name: Option<&str>,
 ) -> Vec<PythonPropertyCallerInfo> {
-    let (_, callers) = collect_property_indexes(parser);
-    let mut values = Vec::new();
+    with_cached_property_callers(parser, |callers| {
+        let mut values = Vec::new();
 
-    match property_name {
-        Some(property_name) => {
-            values.extend(callers.get(property_name).cloned().unwrap_or_default());
-        }
-        None => {
-            for entries in callers.into_values() {
-                values.extend(entries);
+        match property_name {
+            Some(property_name) => {
+                values.extend(callers.get(property_name).cloned().unwrap_or_default());
+            }
+            None => {
+                for entries in callers.values() {
+                    values.extend(entries.iter().cloned());
+                }
             }
         }
-    }
 
-    values.sort_by(|left, right| {
-        left.property_name
-            .cmp(&right.property_name)
-            .then_with(|| left.caller.cmp(&right.caller))
-            .then_with(|| left.line.cmp(&right.line))
-    });
-    values
+        values.sort_by(|left, right| {
+            left.property_name
+                .cmp(&right.property_name)
+                .then_with(|| left.caller.cmp(&right.caller))
+                .then_with(|| left.line.cmp(&right.line))
+        });
+        values
+    })
 }
 
 pub(crate) fn has_property_definition(
@@ -511,8 +555,9 @@ pub(crate) fn has_property_definition(
     property_name: &str,
     class_name: Option<&str>,
 ) -> bool {
-    let (properties, _) = collect_property_indexes(parser);
-    properties.contains(&(property_name.to_string(), class_name.map(str::to_string)))
+    with_cached_property_definitions(parser, |properties| {
+        properties.contains(&(property_name.to_string(), class_name.map(str::to_string)))
+    })
 }
 
 pub(crate) fn field_infos(

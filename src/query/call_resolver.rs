@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use rusqlite::{params, OptionalExtension};
 
@@ -11,9 +12,9 @@ use crate::parser::call_targets::{
 };
 
 pub(super) type FieldTypesByName = HashMap<String, Vec<Option<String>>>;
-pub(super) type FieldTypeCache = HashMap<(i64, String), FieldTypesByName>;
+pub(super) type FieldTypeCache = HashMap<(i64, String), Arc<FieldTypesByName>>;
 pub(super) type ParamTypesByName = HashMap<String, Vec<Option<String>>>;
-pub(super) type ParamTypeCache = HashMap<i64, ParamTypesByName>;
+pub(super) type ParamTypeCache = HashMap<i64, Arc<ParamTypesByName>>;
 
 pub(crate) struct CallTargetResolver<'a> {
     ctx: QueryContext<'a>,
@@ -267,10 +268,10 @@ impl<'a> CallTargetResolver<'a> {
         file_id: i64,
         class_name: &str,
         cache: &mut FieldTypeCache,
-    ) -> anyhow::Result<FieldTypesByName> {
+    ) -> anyhow::Result<Arc<FieldTypesByName>> {
         let key = (file_id, class_name.to_string());
         if let Some(cached) = cache.get(&key) {
-            return Ok(cached.clone());
+            return Ok(Arc::clone(cached));
         }
 
         let mut stmt = self.ctx.conn.prepare(
@@ -288,7 +289,8 @@ impl<'a> CallTargetResolver<'a> {
             let (name, field_type) = row?;
             map.entry(name).or_default().push(field_type);
         }
-        cache.insert(key, map.clone());
+        let map = Arc::new(map);
+        cache.insert(key, Arc::clone(&map));
         Ok(map)
     }
 
@@ -296,9 +298,9 @@ impl<'a> CallTargetResolver<'a> {
         &self,
         function_id: i64,
         cache: &mut ParamTypeCache,
-    ) -> anyhow::Result<ParamTypesByName> {
+    ) -> anyhow::Result<Arc<ParamTypesByName>> {
         if let Some(cached) = cache.get(&function_id) {
-            return Ok(cached.clone());
+            return Ok(Arc::clone(cached));
         }
 
         let mut stmt = self.ctx.conn.prepare(
@@ -317,7 +319,8 @@ impl<'a> CallTargetResolver<'a> {
             let (name, param_type) = row?;
             map.entry(name).or_default().push(param_type);
         }
-        cache.insert(function_id, map.clone());
+        let map = Arc::new(map);
+        cache.insert(function_id, Arc::clone(&map));
         Ok(map)
     }
 }

@@ -85,6 +85,38 @@ impl SourceAnalyzer {
         })
     }
 
+    fn graph_candidate_files(
+        &self,
+        function_name: &str,
+        class_name: Option<&str>,
+        direction: GraphDirection,
+    ) -> Vec<String> {
+        if matches!(direction, GraphDirection::Forward) {
+            return self.search.files().to_vec();
+        }
+
+        let base_function_name = split_function_target(function_name).0;
+        let mut candidate_files = self.search.filter_by_text(base_function_name);
+
+        let definition_files: Vec<_> = self
+            .find_function_definitions_in_files(&candidate_files, base_function_name, class_name)
+            .into_iter()
+            .map(|function| function.location.file)
+            .collect();
+        candidate_files.extend(definition_files);
+
+        if let Some(class_name) = class_name {
+            candidate_files.extend(self.search.filter_by_text(class_name));
+        }
+
+        candidate_files.sort();
+        candidate_files.dedup();
+        if candidate_files.is_empty() && !self.search.files().is_empty() {
+            return self.search.files().to_vec();
+        }
+        candidate_files
+    }
+
     pub(crate) fn file_count(&self) -> usize {
         self.search.files().len()
     }
@@ -368,7 +400,8 @@ impl SourceAnalyzer {
         direction: GraphDirection,
         max_depth: usize,
     ) -> anyhow::Result<Vec<CallGraphPath>> {
-        let snapshots = self.analyze_files_with_progress(self.search.files(), |file: &String| {
+        let candidate_files = self.graph_candidate_files(function_name, class_name, direction);
+        let snapshots = self.analyze_files_with_progress(&candidate_files, |file: &String| {
             vec![match CodeExtractor::new(file) {
                 Ok(mut extractor) => anyhow::Ok(extractor.snapshot_for_index()),
                 Err(error) => Err(error),

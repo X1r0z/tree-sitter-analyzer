@@ -1,8 +1,10 @@
 use std::io::IsTerminal;
 use std::path::Path;
+use std::sync::Mutex;
 
 use crate::languages::{language_extensions, supported_extensions};
 use crate::models::{CalleeInfo, CallerInfo};
+use ignore::WalkState;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressState, ProgressStyle};
 use serde_json::Value;
 
@@ -11,25 +13,37 @@ pub fn find_files(path: &str, language: Option<&str>) -> Vec<String> {
         .and_then(language_extensions)
         .unwrap_or_else(supported_extensions);
 
-    let mut files = Vec::new();
+    let files = Mutex::new(Vec::new());
     let walker = ignore::WalkBuilder::new(path)
         .hidden(false)
         .require_git(false)
-        .build();
+        .build_parallel();
 
-    for entry in walker.flatten() {
-        let p = entry.path();
-        if p.is_file() {
-            if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
-                let dotted = format!(".{}", ext);
-                if extensions.contains(&dotted.as_str()) {
-                    if let Ok(canonical) = p.canonicalize() {
-                        files.push(canonical.to_string_lossy().to_string());
+    walker.run(|| {
+        let files = &files;
+        let extensions = &extensions;
+        Box::new(move |entry| {
+            let Ok(entry) = entry else {
+                return WalkState::Continue;
+            };
+            let p = entry.path();
+            if p.is_file() {
+                if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
+                    let dotted = format!(".{}", ext);
+                    if extensions.contains(&dotted.as_str()) {
+                        if let Ok(canonical) = p.canonicalize() {
+                            if let Ok(mut matched_files) = files.lock() {
+                                matched_files.push(canonical.to_string_lossy().to_string());
+                            }
+                        }
                     }
                 }
             }
-        }
-    }
+            WalkState::Continue
+        })
+    });
+
+    let mut files = files.into_inner().unwrap_or_default();
     files.sort();
     files.dedup();
     files
@@ -113,32 +127,49 @@ pub fn sort_callees_by_file_line(results: &mut [CalleeInfo]) {
     });
 }
 
-pub fn select_most_specific_by_line<C, I, Bounds>(
-    candidates: I,
+pub fn select_most_specific_by_line<C, Bounds>(
+    candidates: &[C],
     line: usize,
     bounds: Bounds,
-) -> Option<C>
+) -> Option<&C>
 where
-    I: IntoIterator<Item = C>,
     Bounds: Fn(&C) -> (usize, usize),
 {
-    candidates
-        .into_iter()
-        .filter(|candidate| {
-            let (start_line, end_line) = bounds(candidate);
-            start_line <= line && line <= end_line
-        })
-        .max_by(|left, right| {
-            let (left_start, left_end) = bounds(left);
-            let (right_start, right_end) = bounds(right);
-            let left_span = left_end.saturating_sub(left_start);
-            let right_span = right_end.saturating_sub(right_start);
+    let upper_bound = candidates.partition_point(|candidate| bounds(candidate).0 <= line);
+    let mut best_index: Option<usize> = None;
+    let mut best_start = 0usize;
 
-            left_start
-                .cmp(&right_start)
-                .then_with(|| right_span.cmp(&left_span))
-                .then_with(|| right_end.cmp(&left_end))
-        })
+    for index in (0..upper_bound).rev() {
+        let (start_line, end_line) = bounds(&candidates[index]);
+        if best_index.is_some() && start_line < best_start {
+            break;
+        }
+        if !(start_line <= line && line <= end_line) {
+            continue;
+        }
+
+        match best_index {
+            None => {
+                best_index = Some(index);
+                best_start = start_line;
+            }
+            Some(current_best) => {
+                let (best_candidate_start, best_candidate_end) = bounds(&candidates[current_best]);
+                let current_span = end_line.saturating_sub(start_line);
+                let best_span = best_candidate_end.saturating_sub(best_candidate_start);
+                let is_better = start_line > best_candidate_start
+                    || (start_line == best_candidate_start
+                        && (current_span < best_span
+                            || (current_span == best_span && end_line < best_candidate_end)));
+                if is_better {
+                    best_index = Some(index);
+                    best_start = start_line;
+                }
+            }
+        }
+    }
+
+    best_index.map(|index| &candidates[index])
 }
 
 pub fn relative_path(path: &str, root: &str) -> String {

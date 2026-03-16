@@ -106,16 +106,28 @@ impl CodeExtractor {
                     None => true,
                 }
         };
-        select_most_specific_by_line(self.collect_functions(), line, |function| {
+        if self.cache.functions.is_none() {
+            let mut functions = self.parser.collect_functions(false);
+            functions
+                .sort_by_key(|function| (function.location.start_line, function.location.end_line));
+            self.cache.functions = Some(functions);
+        }
+        let functions = self.cache.functions.as_deref().unwrap_or(&[]);
+        select_most_specific_by_line(functions, line, |function| {
             (function.location.start_line, function.location.end_line)
         })
-        .filter(&matches_target)
+        .filter(|function| matches_target(function))
+        .cloned()
         .or_else(|| {
-            select_most_specific_by_line(
-                self.collect_functions().into_iter().filter(matches_target),
-                line,
-                |function| (function.location.start_line, function.location.end_line),
-            )
+            let filtered: Vec<_> = functions
+                .iter()
+                .filter(|function| matches_target(function))
+                .cloned()
+                .collect();
+            select_most_specific_by_line(&filtered, line, |function| {
+                (function.location.start_line, function.location.end_line)
+            })
+            .cloned()
         })
     }
 
@@ -207,14 +219,20 @@ impl CodeExtractor {
 
     pub fn collect_functions(&mut self) -> Vec<FunctionInfo> {
         if self.cache.functions.is_none() {
-            self.cache.functions = Some(self.parser.collect_functions(false));
+            let mut functions = self.parser.collect_functions(false);
+            functions
+                .sort_by_key(|function| (function.location.start_line, function.location.end_line));
+            self.cache.functions = Some(functions);
         }
         self.cache.functions.as_deref().unwrap_or(&[]).to_vec()
     }
 
     pub fn collect_functions_with_bodies(&mut self) -> Vec<FunctionInfo> {
         if self.cache.functions_with_bodies.is_none() {
-            self.cache.functions_with_bodies = Some(self.parser.collect_functions(true));
+            let mut functions = self.parser.collect_functions(true);
+            functions
+                .sort_by_key(|function| (function.location.start_line, function.location.end_line));
+            self.cache.functions_with_bodies = Some(functions);
         }
         self.cache
             .functions_with_bodies

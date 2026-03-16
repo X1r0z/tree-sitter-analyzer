@@ -41,6 +41,10 @@ struct GraphEdgeKey {
     call_site: CallSite,
 }
 
+type FunctionsByFileContext = HashMap<(String, String, Option<String>), Vec<FunctionInfo>>;
+type FunctionsByFileName = HashMap<(String, String), Vec<FunctionInfo>>;
+type ResolutionCacheKey = (String, String, Option<String>, usize);
+
 #[derive(Debug, Clone)]
 pub(crate) struct CallGraph {
     functions_by_key: HashMap<FunctionKey, FunctionInfo>,
@@ -89,6 +93,8 @@ impl CallGraph {
             (String, String, Option<String>),
             Vec<FunctionInfo>,
         > = HashMap::new();
+        let mut functions_by_file_name: HashMap<(String, String), Vec<FunctionInfo>> =
+            HashMap::new();
         for function in functions_by_key.values() {
             functions_by_file_context
                 .entry((
@@ -98,13 +104,23 @@ impl CallGraph {
                 ))
                 .or_default()
                 .push(function.clone());
+            functions_by_file_name
+                .entry((function.location.file.clone(), function.name.clone()))
+                .or_default()
+                .push(function.clone());
         }
         for functions in functions_by_file_context.values_mut() {
             functions
                 .sort_by_key(|function| (function.location.start_line, function.location.end_line));
         }
+        for functions in functions_by_file_name.values_mut() {
+            functions
+                .sort_by_key(|function| (function.location.start_line, function.location.end_line));
+        }
 
         let mut forward_edge_sets: HashMap<FunctionKey, HashSet<GraphEdgeKey>> = HashMap::new();
+        let mut resolution_cache: HashMap<ResolutionCacheKey, Option<FunctionInfo>> =
+            HashMap::new();
         for call in calls {
             let caller = match call.caller.as_deref() {
                 None => {
@@ -119,10 +135,12 @@ impl CallGraph {
                 Some(caller_name) => {
                     let Some(caller) = resolve_enclosing_function(
                         &functions_by_file_context,
+                        &functions_by_file_name,
                         &call.location.file,
                         Some(caller_name),
                         call.caller_class_name.as_deref(),
                         call.location.start_line,
+                        &mut resolution_cache,
                     ) else {
                         continue;
                     };
@@ -168,10 +186,12 @@ impl CallGraph {
             } else {
                 let Some(caller) = resolve_enclosing_function(
                     &functions_by_file_context,
+                    &functions_by_file_name,
                     &property_caller.file,
                     Some(&property_caller.caller),
                     property_caller.caller_class_name.as_deref(),
                     property_caller.line,
+                    &mut resolution_cache,
                 ) else {
                     continue;
                 };
@@ -419,36 +439,53 @@ fn graph_path_identity(
 }
 
 fn resolve_enclosing_function(
-    functions_by_file_context: &HashMap<(String, String, Option<String>), Vec<FunctionInfo>>,
+    functions_by_file_context: &FunctionsByFileContext,
+    functions_by_file_name: &FunctionsByFileName,
     file: &str,
     function_name: Option<&str>,
     class_name: Option<&str>,
     line: usize,
+    resolution_cache: &mut HashMap<ResolutionCacheKey, Option<FunctionInfo>>,
 ) -> Option<FunctionInfo> {
     let function_name = function_name?;
-    let mut candidates = functions_by_file_context
+    let cache_key = (
+        file.to_string(),
+        function_name.to_string(),
+        class_name.map(str::to_string),
+        line,
+    );
+    if let Some(cached) = resolution_cache.get(&cache_key) {
+        return cached.clone();
+    }
+
+    let selected = functions_by_file_context
         .get(&(
             file.to_string(),
             function_name.to_string(),
             class_name.map(str::to_string),
         ))
+        .and_then(|candidates| {
+            select_most_specific_by_line(candidates, line, |function| {
+                (function.location.start_line, function.location.end_line)
+            })
+        })
         .cloned()
-        .unwrap_or_default();
-
-    if candidates.is_empty() && class_name.is_none() {
-        candidates.extend(
-            functions_by_file_context
-                .iter()
-                .filter(|((candidate_file, candidate_name, _), _)| {
-                    candidate_file == file && candidate_name == function_name
+        .or_else(|| {
+            if class_name.is_some() {
+                return None;
+            }
+            functions_by_file_name
+                .get(&(file.to_string(), function_name.to_string()))
+                .and_then(|candidates| {
+                    select_most_specific_by_line(candidates, line, |function| {
+                        (function.location.start_line, function.location.end_line)
+                    })
                 })
-                .flat_map(|(_, functions)| functions.clone()),
-        );
-    }
+                .cloned()
+        });
 
-    select_most_specific_by_line(candidates, line, |function| {
-        (function.location.start_line, function.location.end_line)
-    })
+    resolution_cache.insert(cache_key, selected.clone());
+    selected
 }
 
 fn resolve_call_targets(

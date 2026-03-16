@@ -7,8 +7,9 @@ use super::call_resolver::CallTargetResolver;
 use super::QueryContext;
 use crate::models::{CalleeInfo, CallerInfo, FunctionInfo, FunctionKey, Location};
 use crate::parser::call_targets::{has_non_self_object_target, split_function_target};
-use crate::utils::select_most_specific_by_line;
-use crate::utils::{sort_callees_by_file_line, sort_callers_by_file_line};
+use crate::utils::{
+    select_most_specific_by_line, sort_callees_by_file_line, sort_callers_by_file_line,
+};
 
 #[derive(Debug)]
 pub(super) struct CallerRow {
@@ -42,6 +43,16 @@ impl IndexedFunction {
 
 pub(crate) struct CallEdgeQuery<'a> {
     ctx: QueryContext<'a>,
+}
+
+type IndexedFunctionCacheKey = (String, Option<String>);
+type IndexedResolutionCacheKey = (i64, String, String, Option<String>, usize);
+type IndexedFunctionCache = HashMap<IndexedFunctionCacheKey, Vec<IndexedFunction>>;
+type IndexedResolutionCache = HashMap<IndexedResolutionCacheKey, Option<IndexedFunction>>;
+
+pub(super) struct EnclosingFunctionCaches<'a> {
+    pub(super) candidates: &'a mut IndexedFunctionCache,
+    pub(super) resolutions: &'a mut IndexedResolutionCache,
 }
 
 impl<'a> CallEdgeQuery<'a> {
@@ -88,6 +99,11 @@ impl<'a> CallEdgeQuery<'a> {
         let mut field_type_cache = HashMap::new();
         let mut param_type_cache = HashMap::new();
         let mut node_cache = HashMap::new();
+        let mut resolution_cache = HashMap::new();
+        let mut enclosing_caches = EnclosingFunctionCaches {
+            candidates: &mut node_cache,
+            resolutions: &mut resolution_cache,
+        };
         let unique_method_target = match class_name {
             Some(class_name) => resolver.has_unique_method_target(target_function, class_name)?,
             None => false,
@@ -107,7 +123,7 @@ impl<'a> CallEdgeQuery<'a> {
                         caller_name,
                         row.caller_class_name.as_deref(),
                         row.line,
-                        &mut node_cache,
+                        &mut enclosing_caches,
                     )?
                     else {
                         continue;
@@ -191,7 +207,7 @@ impl<'a> CallEdgeQuery<'a> {
                             &caller_name,
                             caller_class_name.as_deref(),
                             line,
-                            &mut node_cache,
+                            &mut enclosing_caches,
                         )?;
                         if !resolver.matches_property_target(
                             caller.as_ref(),
@@ -431,7 +447,7 @@ impl<'a> CallEdgeQuery<'a> {
     pub(super) fn load_functions_by_name(
         &self,
         function_name: &str,
-        cache: &mut HashMap<(String, Option<String>), Vec<IndexedFunction>>,
+        cache: &mut IndexedFunctionCache,
     ) -> anyhow::Result<Vec<IndexedFunction>> {
         let key = (function_name.to_string(), None);
         if let Some(cached) = cache.get(&key) {
@@ -450,29 +466,31 @@ impl<'a> CallEdgeQuery<'a> {
         function_name: &str,
         class_name: Option<&str>,
         line: usize,
-        cache: &mut HashMap<(String, Option<String>), Vec<IndexedFunction>>,
+        caches: &mut EnclosingFunctionCaches<'_>,
     ) -> anyhow::Result<Option<IndexedFunction>> {
+        let resolution_key = (
+            file_id,
+            file.to_string(),
+            function_name.to_string(),
+            class_name.map(str::to_string),
+            line,
+        );
+        if let Some(cached) = caches.resolutions.get(&resolution_key) {
+            return Ok(cached.clone());
+        }
+
         let cache_key = (function_name.to_string(), class_name.map(str::to_string));
-        let candidates = if let Some(cached) = cache.get(&cache_key) {
+        let candidates = if let Some(cached) = caches.candidates.get(&cache_key) {
             cached.clone()
         } else {
             let loaded = self.load_exact_functions(function_name, class_name)?;
-            cache.insert(cache_key.clone(), loaded.clone());
+            caches.candidates.insert(cache_key, loaded.clone());
             loaded
         };
 
-        Ok(select_most_specific_by_line(
-            candidates.into_iter().filter(|candidate| {
-                candidate.file_id == file_id && candidate.function.location.file == file
-            }),
-            line,
-            |candidate| {
-                (
-                    candidate.function.location.start_line,
-                    candidate.function.location.end_line,
-                )
-            },
-        ))
+        let resolved = resolve_enclosing_function_from_candidates(&candidates, file_id, file, line);
+        caches.resolutions.insert(resolution_key, resolved.clone());
+        Ok(resolved)
     }
 
     fn function_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<IndexedFunction> {
@@ -492,4 +510,26 @@ impl<'a> CallEdgeQuery<'a> {
             },
         })
     }
+}
+
+fn resolve_enclosing_function_from_candidates(
+    candidates: &[IndexedFunction],
+    file_id: i64,
+    file: &str,
+    line: usize,
+) -> Option<IndexedFunction> {
+    let file_start =
+        candidates.partition_point(|candidate| candidate.function.location.file.as_str() < file);
+    let file_end =
+        candidates.partition_point(|candidate| candidate.function.location.file.as_str() <= file);
+    let file_candidates = &candidates[file_start..file_end];
+
+    select_most_specific_by_line(file_candidates, line, |candidate| {
+        (
+            candidate.function.location.start_line,
+            candidate.function.location.end_line,
+        )
+    })
+    .filter(|candidate| candidate.file_id == file_id)
+    .cloned()
 }

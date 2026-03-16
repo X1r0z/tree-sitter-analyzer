@@ -37,6 +37,17 @@ struct GraphTraversalState {
     is_property_cache: HashMap<(String, Option<String>), bool>,
 }
 
+type IndexedResolutionCache =
+    HashMap<(i64, String, String, Option<String>, usize), Option<IndexedFunction>>;
+
+struct GraphTraversalCaches<'a> {
+    node_cache: &'a mut HashMap<(String, Option<String>), Vec<IndexedFunction>>,
+    resolution_cache: &'a mut IndexedResolutionCache,
+    field_type_cache: &'a mut FieldTypeCache,
+    param_type_cache: &'a mut ParamTypeCache,
+    is_property_cache: &'a mut HashMap<(String, Option<String>), bool>,
+}
+
 pub(crate) struct CallGraphQuery<'a> {
     ctx: QueryContext<'a>,
 }
@@ -66,12 +77,16 @@ impl<'a> CallGraphQuery<'a> {
             param_type_cache: HashMap::new(),
             is_property_cache: HashMap::new(),
         };
+        let mut resolution_cache = HashMap::new();
 
         let neighbor_cache = &mut state.neighbor_cache;
-        let node_cache = &mut state.node_cache;
-        let field_type_cache = &mut state.field_type_cache;
-        let param_type_cache = &mut state.param_type_cache;
-        let is_property_cache = &mut state.is_property_cache;
+        let mut traversal_caches = GraphTraversalCaches {
+            node_cache: &mut state.node_cache,
+            resolution_cache: &mut resolution_cache,
+            field_type_cache: &mut state.field_type_cache,
+            param_type_cache: &mut state.param_type_cache,
+            is_property_cache: &mut state.is_property_cache,
+        };
 
         let mut results = collect_paths_dfs(
             &start_nodes,
@@ -83,14 +98,8 @@ impl<'a> CallGraphQuery<'a> {
                 let neighbors = if let Some(cached) = neighbor_cache.get(&cache_key) {
                     cached.clone()
                 } else {
-                    let loaded = self.load_graph_neighbors(
-                        current,
-                        direction,
-                        node_cache,
-                        field_type_cache,
-                        param_type_cache,
-                        is_property_cache,
-                    )?;
+                    let loaded =
+                        self.load_graph_neighbors(current, direction, &mut traversal_caches)?;
                     neighbor_cache.insert(cache_key, loaded.clone());
                     loaded
                 };
@@ -147,39 +156,21 @@ impl<'a> CallGraphQuery<'a> {
         &self,
         node: &IndexedFunction,
         direction: GraphDirection,
-        node_cache: &mut HashMap<(String, Option<String>), Vec<IndexedFunction>>,
-        field_type_cache: &mut FieldTypeCache,
-        param_type_cache: &mut ParamTypeCache,
-        is_property_cache: &mut HashMap<(String, Option<String>), bool>,
+        caches: &mut GraphTraversalCaches<'_>,
     ) -> anyhow::Result<Vec<GraphNeighbor>> {
         if node.function_id < 0 {
             return Ok(Vec::new());
         }
         match direction {
-            GraphDirection::Forward => self.load_forward_neighbors(
-                node,
-                node_cache,
-                field_type_cache,
-                param_type_cache,
-                is_property_cache,
-            ),
-            GraphDirection::Backward => self.load_backward_neighbors(
-                node,
-                node_cache,
-                field_type_cache,
-                param_type_cache,
-                is_property_cache,
-            ),
+            GraphDirection::Forward => self.load_forward_neighbors(node, caches),
+            GraphDirection::Backward => self.load_backward_neighbors(node, caches),
         }
     }
 
     fn load_forward_neighbors(
         &self,
         node: &IndexedFunction,
-        node_cache: &mut HashMap<(String, Option<String>), Vec<IndexedFunction>>,
-        field_type_cache: &mut FieldTypeCache,
-        param_type_cache: &mut ParamTypeCache,
-        is_property_cache: &mut HashMap<(String, Option<String>), bool>,
+        caches: &mut GraphTraversalCaches<'_>,
     ) -> anyhow::Result<Vec<GraphNeighbor>> {
         let edge_query = CallEdgeQuery::new(self.ctx);
         let resolver = CallTargetResolver::new(self.ctx);
@@ -237,16 +228,16 @@ impl<'a> CallGraphQuery<'a> {
         let mut seen = HashSet::new();
         let mut results = Vec::new();
         for (callee_name, object_name, line) in rows {
-            if !self.forward_call_belongs_to_node(node, line, &edge_query, node_cache)? {
+            if !self.forward_call_belongs_to_node(node, line, &edge_query, caches)? {
                 continue;
             }
-            let candidates = edge_query.load_functions_by_name(&callee_name, node_cache)?;
+            let candidates = edge_query.load_functions_by_name(&callee_name, caches.node_cache)?;
             let mut resolved = resolver.resolve_forward_targets_with_fallback(
                 node,
                 object_name.as_deref(),
                 &candidates,
-                field_type_cache,
-                param_type_cache,
+                caches.field_type_cache,
+                caches.param_type_cache,
             )?;
             if resolved.is_empty() {
                 resolved.push(unresolved_indexed_function(
@@ -279,21 +270,22 @@ impl<'a> CallGraphQuery<'a> {
 
         let property_rows = self.load_forward_property_rows(node)?;
         for (property_name, object_name, line) in property_rows {
-            let candidates = edge_query.load_functions_by_name(&property_name, node_cache)?;
+            let candidates =
+                edge_query.load_functions_by_name(&property_name, caches.node_cache)?;
             let mut matched = Vec::new();
             for candidate in candidates {
                 let property_key = (
                     candidate.function.name.clone(),
                     candidate.function.class_name.clone(),
                 );
-                let is_property = if let Some(value) = is_property_cache.get(&property_key) {
+                let is_property = if let Some(value) = caches.is_property_cache.get(&property_key) {
                     *value
                 } else {
                     let value = resolver.is_python_property(
                         &candidate.function.name,
                         candidate.function.class_name.as_deref(),
                     )?;
-                    is_property_cache.insert(property_key.clone(), value);
+                    caches.is_property_cache.insert(property_key.clone(), value);
                     value
                 };
                 if !is_property {
@@ -303,8 +295,8 @@ impl<'a> CallGraphQuery<'a> {
                     Some(node),
                     object_name.as_deref(),
                     candidate.function.class_name.as_deref().unwrap_or_default(),
-                    field_type_cache,
-                    param_type_cache,
+                    caches.field_type_cache,
+                    caches.param_type_cache,
                 )? {
                     continue;
                 }
@@ -349,7 +341,7 @@ impl<'a> CallGraphQuery<'a> {
         node: &IndexedFunction,
         line: usize,
         edge_query: &CallEdgeQuery<'_>,
-        node_cache: &mut HashMap<(String, Option<String>), Vec<IndexedFunction>>,
+        caches: &mut GraphTraversalCaches<'_>,
     ) -> anyhow::Result<bool> {
         let enclosing = edge_query.resolve_enclosing_function(
             node.file_id,
@@ -357,7 +349,10 @@ impl<'a> CallGraphQuery<'a> {
             &node.function.name,
             node.function.class_name.as_deref(),
             line,
-            node_cache,
+            &mut super::call_edges::EnclosingFunctionCaches {
+                candidates: caches.node_cache,
+                resolutions: caches.resolution_cache,
+            },
         )?;
         Ok(enclosing.is_some_and(|caller| caller.key() == node.key()))
     }
@@ -423,10 +418,7 @@ impl<'a> CallGraphQuery<'a> {
     fn load_backward_neighbors(
         &self,
         node: &IndexedFunction,
-        node_cache: &mut HashMap<(String, Option<String>), Vec<IndexedFunction>>,
-        field_type_cache: &mut FieldTypeCache,
-        param_type_cache: &mut ParamTypeCache,
-        is_property_cache: &mut HashMap<(String, Option<String>), bool>,
+        caches: &mut GraphTraversalCaches<'_>,
     ) -> anyhow::Result<Vec<GraphNeighbor>> {
         let edge_query = CallEdgeQuery::new(self.ctx);
         let resolver = CallTargetResolver::new(self.ctx);
@@ -474,7 +466,10 @@ impl<'a> CallGraphQuery<'a> {
                     caller_name,
                     caller_class_name.as_deref(),
                     line,
-                    node_cache,
+                    &mut super::call_edges::EnclosingFunctionCaches {
+                        candidates: caches.node_cache,
+                        resolutions: caches.resolution_cache,
+                    },
                 )?;
                 if let Some(caller) = caller {
                     if let Some(class_name) = node.function.class_name.as_deref() {
@@ -482,8 +477,8 @@ impl<'a> CallGraphQuery<'a> {
                             &caller,
                             object_name.as_deref(),
                             class_name,
-                            field_type_cache,
-                            param_type_cache,
+                            caches.field_type_cache,
+                            caches.param_type_cache,
                         )? || unique_method_target
                             && has_non_self_object_target(object_name.as_deref()))
                         {
@@ -539,12 +534,12 @@ impl<'a> CallGraphQuery<'a> {
         }
 
         let property_key = (node.function.name.clone(), node.function.class_name.clone());
-        let is_property = if let Some(value) = is_property_cache.get(&property_key) {
+        let is_property = if let Some(value) = caches.is_property_cache.get(&property_key) {
             *value
         } else {
             let value = resolver
                 .is_python_property(&node.function.name, node.function.class_name.as_deref())?;
-            is_property_cache.insert(property_key.clone(), value);
+            caches.is_property_cache.insert(property_key.clone(), value);
             value
         };
 
@@ -614,14 +609,17 @@ impl<'a> CallGraphQuery<'a> {
                     &caller_name,
                     caller_class_name.as_deref(),
                     line,
-                    node_cache,
+                    &mut super::call_edges::EnclosingFunctionCaches {
+                        candidates: caches.node_cache,
+                        resolutions: caches.resolution_cache,
+                    },
                 )? {
                     if !resolver.matches_property_target(
                         Some(&caller),
                         object_name.as_deref(),
                         node.function.class_name.as_deref().unwrap_or_default(),
-                        field_type_cache,
-                        param_type_cache,
+                        caches.field_type_cache,
+                        caches.param_type_cache,
                     )? {
                         continue;
                     }

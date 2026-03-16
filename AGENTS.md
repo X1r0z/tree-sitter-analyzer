@@ -2,8 +2,12 @@
 
 - Build: `cargo build` (debug) / `cargo build --release` (optimized, LTO enabled)
 - Run: `cargo run -- <subcommand>` — binary name is `tsa`
+- Test: `cargo test` (all) / `cargo test <test_name>` (single test, e.g. `cargo test test_functions`)
 - Lint: `cargo clippy`
 - Format: `cargo fmt` — check with `cargo fmt -- --check`
+
+## Design Philosophy
+This tool primarily assists LLM Agents in code auditing. SAST analysis intentionally allows over-approximations (false positives) to avoid missing real issues—prefer recall over precision.
 
 ## Architecture
 Rust CLI tool using **clap** (derive) for arg parsing. Parses source code via **tree-sitter** grammars (Python, JS, TS, TSX, Java, Go) and provides structural analysis (functions, classes, imports, call graphs, inheritance, symbol references).

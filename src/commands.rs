@@ -66,7 +66,9 @@ pub(crate) fn index(path: &str, language: Option<&str>) -> Value {
                 .is_compatible_with(&real_path, language)
                 .unwrap_or(false) =>
         {
-            store.indexed_files_by_path().unwrap_or_default()
+            store
+                .indexed_files_by_paths(source_backend.files())
+                .unwrap_or_default()
         }
         Ok(_) => Default::default(),
         Err(_) => Default::default(),
@@ -578,4 +580,27 @@ fn build_file_index(
             snapshot,
         }),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    use super::*;
+
+    #[test]
+    fn build_file_index_skips_hash_when_metadata_matches() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let file_path = temp.path().join("sample.py");
+        fs::write(&file_path, "def same():\n    return 1\n")?;
+
+        let existing = file_record_metadata(file_path.to_str().unwrap_or_default(), "python")?;
+        let (_, snapshot) =
+            build_file_index(file_path.to_str().unwrap_or_default(), Some(&existing))?;
+
+        assert!(snapshot.is_none());
+        Ok(())
+    }
 }

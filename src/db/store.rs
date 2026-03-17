@@ -5,9 +5,9 @@ use std::sync::Arc;
 use regex::Regex;
 use rusqlite::functions::FunctionFlags;
 use rusqlite::Error;
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Transaction};
 
-use super::types::IndexedFileRecord;
+use super::types::{IndexedFileEntry, IndexedFileRecord};
 
 pub(crate) struct IndexStore {
     conn: Connection,
@@ -35,31 +35,6 @@ impl IndexStore {
 
     pub(crate) fn into_connection(self) -> Connection {
         self.conn
-    }
-
-    pub(crate) fn indexed_files_by_path(
-        &self,
-    ) -> anyhow::Result<HashMap<String, IndexedFileRecord>> {
-        let mut stmt = self.conn.prepare(
-            "
-            SELECT path, language, mtime_nanos, size_bytes, content_hash
-            FROM files
-            ",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            Ok(IndexedFileRecord {
-                path: row.get(0)?,
-                language: row.get(1)?,
-                mtime_nanos: row.get(2)?,
-                size_bytes: row.get(3)?,
-                content_hash: row.get(4)?,
-            })
-        })?;
-        let records = rows.collect::<Result<Vec<_>, _>>()?;
-        Ok(records
-            .into_iter()
-            .map(|record| (record.path.clone(), record))
-            .collect())
     }
 
     pub(crate) fn is_compatible_with(
@@ -353,6 +328,136 @@ impl IndexStore {
         ",
         )?;
         Ok(())
+    }
+
+    pub(crate) fn create_temp_current_files(
+        tx: &Transaction<'_>,
+        current_files: &[IndexedFileRecord],
+    ) -> anyhow::Result<()> {
+        tx.execute_batch(
+            "
+            CREATE TEMP TABLE IF NOT EXISTS temp_current_files (
+                path TEXT PRIMARY KEY
+            );
+            DELETE FROM temp_current_files;
+            ",
+        )?;
+        let mut stmt =
+            tx.prepare_cached("INSERT OR IGNORE INTO temp_current_files(path) VALUES (?1)")?;
+        for record in current_files {
+            stmt.execute([record.path.as_str()])?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn count_deleted_files_against_temp(tx: &Transaction<'_>) -> anyhow::Result<u64> {
+        let count = tx.query_row(
+            "
+            SELECT COUNT(*)
+            FROM files
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM temp_current_files
+                WHERE temp_current_files.path = files.path
+            )
+            ",
+            [],
+            |row| row.get::<_, i64>(0),
+        )?;
+        Ok(count as u64)
+    }
+
+    pub(crate) fn deleted_file_ids_against_temp(tx: &Transaction<'_>) -> anyhow::Result<Vec<i64>> {
+        let mut stmt = tx.prepare(
+            "
+            SELECT id
+            FROM files
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM temp_current_files
+                WHERE temp_current_files.path = files.path
+            )
+            ",
+        )?;
+        let rows = stmt.query_map([], |row| row.get(0))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub(crate) fn indexed_files_by_paths(
+        &self,
+        paths: &[String],
+    ) -> anyhow::Result<HashMap<String, IndexedFileRecord>> {
+        const QUERY_CHUNK_SIZE: usize = 500;
+
+        let mut records = HashMap::new();
+        for chunk in paths.chunks(QUERY_CHUNK_SIZE) {
+            if chunk.is_empty() {
+                continue;
+            }
+            let placeholders = vec!["?"; chunk.len()].join(", ");
+            let query = format!(
+                "
+                SELECT path, language, mtime_nanos, size_bytes, content_hash
+                FROM files
+                WHERE path IN ({})
+                ",
+                placeholders
+            );
+            let mut stmt = self.conn.prepare(&query)?;
+            let rows = stmt.query_map(params_from_iter(chunk.iter()), |row| {
+                Ok(IndexedFileRecord {
+                    path: row.get(0)?,
+                    language: row.get(1)?,
+                    mtime_nanos: row.get(2)?,
+                    size_bytes: row.get(3)?,
+                    content_hash: row.get(4)?,
+                })
+            })?;
+            for record in rows {
+                let record = record?;
+                records.insert(record.path.clone(), record);
+            }
+        }
+        Ok(records)
+    }
+
+    pub(crate) fn indexed_file_entries_by_paths(
+        tx: &Transaction<'_>,
+        paths: &[String],
+    ) -> anyhow::Result<HashMap<String, IndexedFileEntry>> {
+        const QUERY_CHUNK_SIZE: usize = 500;
+
+        let mut entries = HashMap::new();
+        for chunk in paths.chunks(QUERY_CHUNK_SIZE) {
+            if chunk.is_empty() {
+                continue;
+            }
+            let placeholders = vec!["?"; chunk.len()].join(", ");
+            let query = format!(
+                "
+                SELECT id, path, language, mtime_nanos, size_bytes, content_hash
+                FROM files
+                WHERE path IN ({})
+                ",
+                placeholders
+            );
+            let mut stmt = tx.prepare(&query)?;
+            let rows = stmt.query_map(params_from_iter(chunk.iter()), |row| {
+                Ok(IndexedFileEntry {
+                    id: row.get(0)?,
+                    path: row.get(1)?,
+                    language: row.get(2)?,
+                    mtime_nanos: row.get(3)?,
+                    size_bytes: row.get(4)?,
+                    content_hash: row.get(5)?,
+                })
+            })?;
+            for entry in rows {
+                let entry = entry?;
+                entries.insert(entry.path.clone(), entry);
+            }
+        }
+        Ok(entries)
     }
 
     pub(crate) fn insert_metadata(

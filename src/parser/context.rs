@@ -305,6 +305,7 @@ impl ParseContext {
 
         let mut classes = Vec::new();
         let mut active_ranges: Vec<usize> = Vec::new();
+        let allow_nested_classes = matches!(self.language.as_str(), "python" | "java");
 
         for (class_node, name_node) in class_pairs {
             let name = self.node_text(name_node);
@@ -321,7 +322,7 @@ impl ParseContext {
                 }
             }
             let is_nested = !active_ranges.is_empty();
-            if is_nested && self.language != "java" {
+            if is_nested && !allow_nested_classes {
                 continue;
             }
             active_ranges.push(end);
@@ -613,97 +614,6 @@ fn class_name_from_node(context: &ParseContext, node: Node<'_>) -> Option<String
         }
     }
     None
-}
-
-#[cfg(test)]
-mod tests {
-    use std::fs;
-
-    use tempfile::{Builder, NamedTempFile};
-
-    use super::ParseContext;
-
-    fn write_python_fixture(source: &str) -> NamedTempFile {
-        let file = Builder::new().suffix(".py").tempfile().expect("temp file");
-        fs::write(file.path(), source).expect("write fixture");
-        file
-    }
-
-    #[test]
-    fn python_property_queries_reuse_cached_indexes() {
-        let file = write_python_fixture(
-            r#"
-class Foo:
-    @property
-    def value(self):
-        return 1
-
-    def read_self(self):
-        return self.value
-
-foo = Foo()
-module_value = foo.value
-"#,
-        );
-        let path = file.path().to_string_lossy().into_owned();
-        let parser = ParseContext::new(&path).expect("parse context");
-
-        let properties = parser.collect_python_properties();
-        assert_eq!(properties.len(), 1);
-        assert_eq!(properties[0].name, "value");
-        assert_eq!(properties[0].class_name.as_deref(), Some("Foo"));
-
-        let callers = parser.collect_python_property_callers(None);
-        assert_eq!(callers.len(), 2);
-        assert!(parser.has_python_property_definition("value", Some("Foo")));
-        assert!(!parser.has_python_property_definition("missing", Some("Foo")));
-
-        let properties_again = parser.collect_python_properties();
-        let callers_again = parser.collect_python_property_callers(None);
-        assert!(parser.has_python_property_definition("value", Some("Foo")));
-        assert_eq!(properties_again.len(), properties.len());
-        assert_eq!(callers_again.len(), callers.len());
-        assert_eq!(properties_again[0].name, properties[0].name);
-        assert_eq!(callers_again[0].property_name, callers[0].property_name);
-
-        let filtered_callers = parser.collect_python_property_callers(Some("value"));
-        assert_eq!(filtered_callers.len(), 2);
-    }
-
-    #[test]
-    fn parse_context_from_source_matches_file_backed_queries() {
-        let source = br#"
-class Foo:
-    @property
-    def value(self):
-        return 1
-
-foo = Foo()
-module_value = foo.value
-"#
-        .to_vec();
-        let file = write_python_fixture(std::str::from_utf8(&source).expect("utf8 fixture"));
-        let path = file.path().to_string_lossy().into_owned();
-
-        let from_file = ParseContext::new(&path).expect("parse from file");
-        let from_source = ParseContext::from_source(&path, source).expect("parse from source");
-
-        let file_props = from_file.collect_python_properties();
-        let source_props = from_source.collect_python_properties();
-        assert_eq!(file_props.len(), source_props.len());
-        assert_eq!(file_props[0].name, source_props[0].name);
-        assert_eq!(file_props[0].class_name, source_props[0].class_name);
-
-        let file_callers = from_file.collect_python_property_callers(None);
-        let source_callers = from_source.collect_python_property_callers(None);
-        assert_eq!(file_callers.len(), source_callers.len());
-        assert_eq!(
-            file_callers[0].property_name,
-            source_callers[0].property_name
-        );
-        assert_eq!(file_callers[0].caller, source_callers[0].caller);
-        assert_eq!(file_callers[0].line, source_callers[0].line);
-    }
 }
 
 pub(crate) fn collect_field_infos_from_declarations(

@@ -235,8 +235,8 @@ impl<'tx> SnapshotWriter<'tx> {
                 caller.caller_class_name,
                 caller.object_name,
                 caller.object_type,
-                caller.start_line as i64,
-                caller.end_line as i64
+                caller.location.start_line as i64,
+                caller.location.end_line as i64
             ])?;
         }
 

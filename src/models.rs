@@ -2,9 +2,8 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, Hash, PartialEq)]
 pub struct Location {
-    #[serde(rename = "path")]
     pub file: String,
     pub start_line: usize,
     pub end_line: usize,
@@ -31,21 +30,17 @@ pub struct FunctionInfo {
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
 pub struct FunctionKey {
-    pub file: String,
+    pub location: Location,
     pub name: String,
     pub class_name: Option<String>,
-    pub start_line: usize,
-    pub end_line: usize,
 }
 
 impl From<&FunctionInfo> for FunctionKey {
     fn from(function: &FunctionInfo) -> Self {
         Self {
-            file: function.location.file.clone(),
+            location: function.location.clone(),
             name: function.name.clone(),
             class_name: function.class_name.clone(),
-            start_line: function.location.start_line,
-            end_line: function.location.end_line,
         }
     }
 }
@@ -67,9 +62,7 @@ impl GraphDirection {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, Hash, PartialEq)]
 pub struct GraphPathNode {
-    pub file: String,
-    pub start_line: usize,
-    pub end_line: usize,
+    pub location: Location,
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub class_name: Option<String>,
@@ -102,9 +95,7 @@ pub struct CallGraphPath {
 impl From<&FunctionInfo> for GraphPathNode {
     fn from(function: &FunctionInfo) -> Self {
         Self {
-            file: function.location.file.clone(),
-            start_line: function.location.start_line,
-            end_line: function.location.end_line,
+            location: function.location.clone(),
             name: function.name.clone(),
             class_name: function.class_name.clone(),
         }
@@ -190,14 +181,10 @@ pub struct CalleeInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexInfo {
     pub database: String,
-    #[serde(rename = "candidates")]
-    pub discovered_files: usize,
-    #[serde(rename = "indexed")]
-    pub indexed_files: usize,
-    #[serde(rename = "reparsed")]
-    pub reparsed_files: usize,
-    #[serde(rename = "failed")]
-    pub failed_files: usize,
+    pub candidates: usize,
+    pub indexed: usize,
+    pub reparsed: usize,
+    pub failed: usize,
     pub errors: Vec<String>,
 }
 
@@ -234,14 +221,12 @@ pub struct PythonPropertyInfo {
 
 #[derive(Debug, Clone)]
 pub struct PythonPropertyCallerInfo {
-    pub file: String,
+    pub location: Location,
     pub property_name: String,
     pub caller: String,
     pub caller_class_name: Option<String>,
     pub object_name: Option<String>,
     pub object_type: Option<String>,
-    pub start_line: usize,
-    pub end_line: usize,
 }
 
 #[derive(Debug, Clone)]

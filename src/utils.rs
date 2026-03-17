@@ -188,8 +188,8 @@ pub fn relativize_json_file_paths(value: &mut Value, root: &str) {
             for (key, nested) in map.iter_mut() {
                 if key == "location" {
                     if let Value::Object(location) = nested {
-                        if let Some(Value::String(path)) = location.get_mut("path") {
-                            *path = relative_path(path, root);
+                        if let Some(Value::String(file)) = location.get_mut("file") {
+                            *file = relative_path(file, root);
                         }
                     }
                 }

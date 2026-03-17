@@ -159,7 +159,7 @@ impl<'a> CallGraphQuery<'a> {
                         .edge
                         .as_ref()
                         .map(|call_site| (call_site.file.as_str(), call_site.line))
-                        .unwrap_or((node.file.as_str(), node.start_line));
+                        .unwrap_or((node.location.file.as_str(), node.location.start_line));
                     node.stacktrace_name(file, line)
                 })
                 .collect(),

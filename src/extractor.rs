@@ -413,22 +413,19 @@ impl CodeExtractor {
                         caller.caller_class_name.as_deref(),
                         caller.object_name.as_deref(),
                         caller.object_type.as_deref(),
-                        caller.start_line,
+                        caller.location.start_line,
                         class_name,
                     ) {
                         continue;
                     }
                 }
-                let key = (caller.caller.clone(), caller.start_line, caller.end_line);
+                let key = (
+                    caller.caller.clone(),
+                    caller.location.start_line,
+                    caller.location.end_line,
+                );
                 if seen.insert(key) {
-                    callers.push((
-                        caller.caller,
-                        Location {
-                            file: caller.file,
-                            start_line: caller.start_line,
-                            end_line: caller.end_line,
-                        },
-                    ));
+                    callers.push((caller.caller, caller.location));
                 }
             }
         }
@@ -485,7 +482,7 @@ impl CodeExtractor {
             let Some(_caller) = self.enclosing_function_info_at_line(
                 function_name,
                 class_name,
-                property_caller.start_line,
+                property_caller.location.start_line,
             ) else {
                 continue;
             };
@@ -495,18 +492,11 @@ impl CodeExtractor {
             }
             let key = (
                 callee_name.clone(),
-                property_caller.start_line,
-                property_caller.end_line,
+                property_caller.location.start_line,
+                property_caller.location.end_line,
             );
             if seen.insert(key) {
-                callees.push((
-                    callee_name,
-                    Location {
-                        file: property_caller.file,
-                        start_line: property_caller.start_line,
-                        end_line: property_caller.end_line,
-                    },
-                ));
+                callees.push((callee_name, property_caller.location));
             }
         }
         callees

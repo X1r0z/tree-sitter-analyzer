@@ -6,7 +6,8 @@ use tree_sitter::Node;
 use super::super::capture::CallCaptureMatch;
 use super::super::{ParseContext, PythonPropertyCallers, PythonPropertyDefinitions};
 use crate::models::{
-    AnnotationInfo, FieldInfo, FunctionParamInfo, PythonPropertyCallerInfo, PythonPropertyInfo,
+    AnnotationInfo, FieldInfo, FunctionParamInfo, Location, PythonPropertyCallerInfo,
+    PythonPropertyInfo,
 };
 
 type PythonPropertyCallerKey = (String, String, Option<String>, Option<String>, usize, usize);
@@ -384,14 +385,16 @@ pub(crate) fn collect_property_indexes(
                         .entry(property_name.clone())
                         .or_default()
                         .push(PythonPropertyCallerInfo {
-                            file: parser.file_path.clone(),
+                            location: Location {
+                                file: parser.file_path.clone(),
+                                start_line,
+                                end_line,
+                            },
                             property_name: property_name.clone(),
                             caller,
                             caller_class_name: enclosing.class_name.clone(),
                             object_name,
                             object_type,
-                            start_line,
-                            end_line,
                         });
                 }
             }
@@ -547,7 +550,7 @@ pub(crate) fn collect_property_callers(
             left.property_name
                 .cmp(&right.property_name)
                 .then_with(|| left.caller.cmp(&right.caller))
-                .then_with(|| left.start_line.cmp(&right.start_line))
+                .then_with(|| left.location.start_line.cmp(&right.location.start_line))
         });
         values
     })

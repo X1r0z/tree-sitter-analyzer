@@ -14,14 +14,12 @@ use crate::utils::select_most_specific_by_line;
 
 #[derive(Debug, Clone)]
 pub(crate) struct RawPropertyCaller {
-    pub(crate) file: String,
+    pub(crate) location: Location,
     pub(crate) property_name: String,
     pub(crate) caller: String,
     pub(crate) caller_class_name: Option<String>,
     pub(crate) object_name: Option<String>,
     pub(crate) object_type: Option<String>,
-    pub(crate) start_line: usize,
-    pub(crate) end_line: usize,
 }
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
@@ -178,8 +176,10 @@ impl CallGraph {
         for property_caller in property_callers {
             let module_level = property_caller.caller == "<module>";
             let caller = if module_level {
-                let caller =
-                    module_caller_function(&property_caller.file, property_caller.start_line);
+                let caller = module_caller_function(
+                    &property_caller.location.file,
+                    property_caller.location.start_line,
+                );
                 let module_key = FunctionKey::from(&caller);
                 functions_by_key
                     .entry(module_key)
@@ -189,10 +189,10 @@ impl CallGraph {
                 let Some(caller) = resolve_enclosing_function(
                     &functions_by_file_context,
                     &functions_by_file_name,
-                    &property_caller.file,
+                    &property_caller.location.file,
                     Some(&property_caller.caller),
                     property_caller.caller_class_name.as_deref(),
-                    property_caller.start_line,
+                    property_caller.location.start_line,
                     &mut resolution_cache,
                 ) else {
                     continue;
@@ -232,8 +232,8 @@ impl CallGraph {
                 let caller_key = FunctionKey::from(&caller);
                 let property_key = FunctionKey::from(&property);
                 let call_site = CallSite {
-                    file: property_caller.file.clone(),
-                    line: property_caller.start_line,
+                    file: property_caller.location.file.clone(),
+                    line: property_caller.location.start_line,
                 };
                 forward_edge_sets
                     .entry(caller_key)
@@ -252,8 +252,8 @@ impl CallGraph {
                     .or_insert_with(|| unresolved_property_function(&property_caller));
                 let caller_key = FunctionKey::from(&caller);
                 let call_site = CallSite {
-                    file: property_caller.file.clone(),
-                    line: property_caller.start_line,
+                    file: property_caller.location.file.clone(),
+                    line: property_caller.location.start_line,
                 };
                 forward_edge_sets
                     .entry(caller_key)
@@ -358,7 +358,7 @@ impl CallGraph {
                         .edge
                         .as_ref()
                         .map(|call_site| (call_site.file.as_str(), call_site.line))
-                        .unwrap_or((node.file.as_str(), node.start_line));
+                        .unwrap_or((node.location.file.as_str(), node.location.start_line));
                     node.stacktrace_name(file, line)
                 })
                 .collect(),
@@ -540,10 +540,11 @@ fn resolve_call_targets(
 }
 
 fn compare_keys(left: &FunctionKey, right: &FunctionKey) -> std::cmp::Ordering {
-    left.file
-        .cmp(&right.file)
-        .then(left.start_line.cmp(&right.start_line))
-        .then(left.end_line.cmp(&right.end_line))
+    left.location
+        .file
+        .cmp(&right.location.file)
+        .then(left.location.start_line.cmp(&right.location.start_line))
+        .then(left.location.end_line.cmp(&right.location.end_line))
         .then(left.class_name.cmp(&right.class_name))
         .then(left.name.cmp(&right.name))
 }
@@ -562,11 +563,13 @@ fn compare_graphs(left: &CallGraphPath, right: &CallGraphPath) -> std::cmp::Orde
 fn unresolved_call_key(call: &CallInfo) -> FunctionKey {
     let name = unresolved_call_name(call);
     FunctionKey {
-        file: call.location.file.clone(),
+        location: Location {
+            file: call.location.file.clone(),
+            start_line: call.location.start_line,
+            end_line: call.location.start_line,
+        },
         name: name.clone(),
         class_name: None,
-        start_line: call.location.start_line,
-        end_line: call.location.start_line,
     }
 }
 
@@ -594,11 +597,13 @@ fn unresolved_property_key(property_caller: &RawPropertyCaller) -> FunctionKey {
         &property_caller.property_name,
     );
     FunctionKey {
-        file: property_caller.file.clone(),
+        location: Location {
+            file: property_caller.location.file.clone(),
+            start_line: property_caller.location.start_line,
+            end_line: property_caller.location.end_line,
+        },
         name: name.clone(),
         class_name: None,
-        start_line: property_caller.start_line,
-        end_line: property_caller.end_line,
     }
 }
 
@@ -609,9 +614,9 @@ fn unresolved_property_function(property_caller: &RawPropertyCaller) -> Function
             &property_caller.property_name,
         ),
         location: Location {
-            file: property_caller.file.clone(),
-            start_line: property_caller.start_line,
-            end_line: property_caller.end_line,
+            file: property_caller.location.file.clone(),
+            start_line: property_caller.location.start_line,
+            end_line: property_caller.location.end_line,
         },
         body: String::new(),
         class_name: None,

@@ -137,18 +137,14 @@ fn graph(item: &CallGraphPath) -> Value {
         "nodes": item.path.iter().map(|node| json!({
             "name": node.name,
             "class_name": node.class_name,
-            "location": {
-                "path": node.file,
-                "start_line": node.start_line,
-                "end_line": node.end_line,
-            }
+            "location": location(&node.location)
         })).collect::<Vec<_>>(),
     })
 }
 
 fn location(item: &Location) -> Value {
     json!({
-        "path": item.file,
+        "file": item.file,
         "start_line": item.start_line,
         "end_line": item.end_line,
     })

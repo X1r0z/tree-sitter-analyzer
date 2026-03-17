@@ -420,14 +420,12 @@ impl SourceAnalyzer {
             python_properties.extend(snapshot.python_properties);
             property_callers.extend(snapshot.python_property_callers.into_iter().map(|caller| {
                 RawPropertyCaller {
-                    file: caller.file,
+                    location: caller.location,
                     property_name: caller.property_name,
                     caller: caller.caller,
                     caller_class_name: caller.caller_class_name,
                     object_name: caller.object_name,
                     object_type: caller.object_type,
-                    start_line: caller.start_line,
-                    end_line: caller.end_line,
                 }
             }));
         }

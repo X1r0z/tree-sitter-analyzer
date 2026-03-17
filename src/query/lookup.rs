@@ -26,6 +26,7 @@ struct ClassRow {
     file_id: i64,
     file: String,
     name: String,
+    kind: String,
     start_line: i64,
     end_line: i64,
 }
@@ -119,7 +120,7 @@ impl<'a> LookupQuery<'a> {
         let prefilter = RegexPrefilter::new(query);
         let mut sql = String::from(
             "
-            SELECT c.id, c.file_id, f.path, c.name, c.start_line, c.end_line
+            SELECT c.id, c.file_id, f.path, c.name, c.kind, c.start_line, c.end_line
             FROM classes c
             JOIN files f ON f.id = c.file_id
             ",
@@ -149,8 +150,9 @@ impl<'a> LookupQuery<'a> {
                 file_id: row.get(1)?,
                 file: row.get(2)?,
                 name: row.get(3)?,
-                start_line: row.get(4)?,
-                end_line: row.get(5)?,
+                kind: row.get(4)?,
+                start_line: row.get(5)?,
+                end_line: row.get(6)?,
             })
         })?;
         self.hydrate_class_rows(rows.collect::<Result<Vec<_>, _>>()?)
@@ -459,7 +461,7 @@ impl<'a> LookupQuery<'a> {
             let placeholders = repeat_placeholders(chunk.len());
             let sql = format!(
                 "
-                SELECT c.id, c.file_id, f.path, c.name, c.start_line, c.end_line
+                SELECT c.id, c.file_id, f.path, c.name, c.kind, c.start_line, c.end_line
                 FROM classes c
                 JOIN files f ON f.id = c.file_id
                 WHERE c.id IN ({placeholders})
@@ -473,8 +475,9 @@ impl<'a> LookupQuery<'a> {
                     file_id: row.get(1)?,
                     file: row.get(2)?,
                     name: row.get(3)?,
-                    start_line: row.get(4)?,
-                    end_line: row.get(5)?,
+                    kind: row.get(4)?,
+                    start_line: row.get(5)?,
+                    end_line: row.get(6)?,
                 })
             })?;
             class_rows.extend(rows.collect::<Result<Vec<_>, _>>()?);
@@ -497,6 +500,7 @@ impl<'a> LookupQuery<'a> {
             .into_iter()
             .map(|row| ClassInfo {
                 name: row.name.clone(),
+                kind: row.kind,
                 location: Location {
                     file: row.file,
                     start_line: row.start_line as usize,

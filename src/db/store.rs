@@ -102,6 +102,7 @@ impl IndexStore {
                 id INTEGER PRIMARY KEY,
                 file_id INTEGER NOT NULL,
                 name TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'class',
                 start_line INTEGER NOT NULL,
                 end_line INTEGER NOT NULL,
                 FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
@@ -252,6 +253,13 @@ impl IndexStore {
         if !columns.contains("content_hash") {
             conn.execute(
                 "ALTER TABLE files ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
+        let class_columns = Self::table_columns(conn, "classes")?;
+        if !class_columns.contains("kind") {
+            conn.execute(
+                "ALTER TABLE classes ADD COLUMN kind TEXT NOT NULL DEFAULT 'class'",
                 [],
             )?;
         }

@@ -70,7 +70,7 @@ fn function(item: &FunctionInfo, view: FunctionView) -> Value {
 fn class(item: &ClassInfo) -> Value {
     json!({
         "name": item.name,
-        "kind": "class",
+        "kind": item.kind,
         "location": location(&item.location),
         "methods": item.methods,
         "fields": item.fields,

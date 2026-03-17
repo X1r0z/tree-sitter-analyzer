@@ -47,8 +47,8 @@ impl<'tx> SnapshotWriter<'tx> {
             )?,
             insert_class: tx.prepare_cached(
                 "
-                INSERT INTO classes(file_id, name, start_line, end_line)
-                VALUES (?1, ?2, ?3, ?4)
+                INSERT INTO classes(file_id, name, kind, start_line, end_line)
+                VALUES (?1, ?2, ?3, ?4, ?5)
                 ",
             )?,
             insert_class_fts: tx.prepare_cached(
@@ -140,6 +140,7 @@ impl<'tx> SnapshotWriter<'tx> {
             self.insert_class.execute(params![
                 file_id,
                 class.name,
+                class.kind,
                 class.location.start_line as i64,
                 class.location.end_line as i64
             ])?;

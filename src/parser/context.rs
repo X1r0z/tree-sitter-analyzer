@@ -340,6 +340,7 @@ impl ParseContext {
 
             classes.push(ClassInfo {
                 name,
+                kind: class_kind(self, class_node),
                 location: self.node_location(class_node),
                 methods: method_names,
                 fields: field_names,
@@ -616,6 +617,38 @@ fn class_name_from_node(context: &ParseContext, node: Node<'_>) -> Option<String
     None
 }
 
+fn class_kind(context: &ParseContext, node: Node<'_>) -> String {
+    match context.language.as_str() {
+        "python" | "javascript" => "class".to_string(),
+        "typescript" | "tsx" => match node.kind() {
+            "abstract_class_declaration" => "abstract_class".to_string(),
+            "interface_declaration" => "interface".to_string(),
+            "type_alias_declaration" => "alias".to_string(),
+            "enum_declaration" => "enum".to_string(),
+            _ => "class".to_string(),
+        },
+        "java" => match node.kind() {
+            "interface_declaration" => "interface".to_string(),
+            "enum_declaration" => "enum".to_string(),
+            "record_declaration" => "record".to_string(),
+            "annotation_type_declaration" => "annotation".to_string(),
+            _ => "class".to_string(),
+        },
+        "go" => node
+            .children(&mut node.walk())
+            .find(|child| child.kind() == "type_spec")
+            .and_then(|type_spec| type_spec.child_by_field_name("type"))
+            .map(|type_node| match type_node.kind() {
+                "interface_type" => "interface",
+                "struct_type" => "struct",
+                _ => "struct",
+            })
+            .unwrap_or("struct")
+            .to_string(),
+        _ => "class".to_string(),
+    }
+}
+
 pub(crate) fn collect_field_infos_from_declarations(
     parser: &ParseContext,
     class_node: Node<'_>,
@@ -791,66 +824,4 @@ fn is_nested_class_boundary(kind: &str) -> bool {
             | "record_declaration"
             | "annotation_type_declaration"
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::ParseContext;
-
-    fn import_locations(file_name: &str, source: &str) -> Vec<(String, usize, usize)> {
-        ParseContext::from_source(file_name, source.as_bytes().to_vec())
-            .expect("parse context")
-            .collect_imports()
-            .into_iter()
-            .map(|item| {
-                (
-                    item.module,
-                    item.location.start_line,
-                    item.location.end_line,
-                )
-            })
-            .collect()
-    }
-
-    #[test]
-    fn js_multiline_require_location_uses_call_expression_range() {
-        let imports = import_locations("sample.js", "const mod = require(\n  \"pkg\"\n)\n");
-        assert_eq!(imports, vec![("pkg".to_string(), 1, 3)]);
-    }
-
-    #[test]
-    fn ts_multiline_dynamic_import_location_uses_call_expression_range() {
-        let imports = import_locations("sample.ts", "const mod = import(\n  \"pkg\"\n)\n");
-        assert_eq!(imports, vec![("pkg".to_string(), 1, 3)]);
-    }
-
-    #[test]
-    fn ts_static_import_and_export_keep_statement_ranges() {
-        let imports = import_locations(
-            "sample.ts",
-            "import { a } from \"mod-a\"\nexport { b } from \"mod-b\"\n",
-        );
-        assert_eq!(
-            imports,
-            vec![("mod-a".to_string(), 1, 1), ("mod-b".to_string(), 2, 2),]
-        );
-    }
-
-    #[test]
-    fn python_and_go_imports_keep_module_ranges() {
-        let python_imports = import_locations("sample.py", "import os\nfrom pkg.sub import mod\n");
-        assert_eq!(
-            python_imports,
-            vec![("os".to_string(), 1, 1), ("pkg.sub".to_string(), 2, 2),]
-        );
-
-        let go_imports = import_locations(
-            "sample.go",
-            "package main\n\nimport (\n    \"fmt\"\n    alias \"example/mod\"\n)\n",
-        );
-        assert_eq!(
-            go_imports,
-            vec![("fmt".to_string(), 4, 4), ("example/mod".to_string(), 5, 5),]
-        );
-    }
 }

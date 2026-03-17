@@ -105,6 +105,7 @@ impl From<&FunctionInfo> for GraphPathNode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClassInfo {
     pub name: String,
+    pub kind: String,
     pub location: Location,
     #[serde(default)]
     pub methods: Vec<String>,

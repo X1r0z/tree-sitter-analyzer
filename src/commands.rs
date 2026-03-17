@@ -572,7 +572,7 @@ fn build_file_index(
     let file_record = file_record_with_hash_from_source(file, &language, &source)?;
 
     let mut extractor = CodeExtractor::from_source(file, source)?;
-    let snapshot = extractor.snapshot_for_index();
+    let snapshot = extractor.build_snapshot();
     Ok((
         file_record.clone(),
         Some(FileIndexData {

@@ -316,7 +316,7 @@ impl CodeExtractor {
         self.cache.imports.as_deref().unwrap_or(&[]).to_vec()
     }
 
-    pub fn snapshot_for_index(&mut self) -> AnalyzerSnapshot {
+    pub fn build_snapshot(&mut self) -> FileSnapshot {
         let functions = self.collect_functions();
         let classes = self.collect_classes();
 
@@ -332,7 +332,7 @@ impl CodeExtractor {
         let python_properties = self.parser.collect_python_properties();
         let python_property_callers = self.parser.collect_python_property_callers(None);
 
-        AnalyzerSnapshot {
+        FileSnapshot {
             functions,
             classes,
             fields,

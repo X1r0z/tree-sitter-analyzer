@@ -1,4 +1,4 @@
-use crate::models::AnalyzerSnapshot;
+use crate::models::FileSnapshot;
 
 #[derive(Debug, Clone)]
 pub(crate) struct IndexedFileRecord {
@@ -12,7 +12,7 @@ pub(crate) struct IndexedFileRecord {
 #[derive(Debug, Clone)]
 pub(crate) struct FileIndexData {
     pub(crate) file: IndexedFileRecord,
-    pub(crate) snapshot: AnalyzerSnapshot,
+    pub(crate) snapshot: FileSnapshot,
 }
 
 #[derive(Debug, Clone)]

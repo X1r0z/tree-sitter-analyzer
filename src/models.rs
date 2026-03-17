@@ -248,7 +248,7 @@ pub struct PythonPropertyCallerInfo {
 }
 
 #[derive(Debug, Clone)]
-pub struct AnalyzerSnapshot {
+pub struct FileSnapshot {
     pub functions: Vec<FunctionInfo>,
     pub classes: Vec<ClassInfo>,
     pub fields: Vec<FieldInfo>,

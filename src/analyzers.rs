@@ -35,7 +35,7 @@ struct CallerFileResult {
 struct GraphFileResult {
     file: String,
     definitions: Vec<FunctionInfo>,
-    snapshot: AnalyzerSnapshot,
+    snapshot: FileSnapshot,
 }
 
 #[derive(Default)]
@@ -600,7 +600,7 @@ impl SourceAnalyzer {
                     file: file.clone(),
                     definitions: extractor
                         .find_function_signatures(&fn_name, class_name.as_deref()),
-                    snapshot: extractor.snapshot_for_index(),
+                    snapshot: extractor.build_snapshot(),
                 }),
                 Err(error) => Err(error),
             }]
@@ -620,7 +620,7 @@ impl SourceAnalyzer {
         &self,
         function_name: &str,
         class_name: Option<&str>,
-    ) -> anyhow::Result<Vec<AnalyzerSnapshot>> {
+    ) -> anyhow::Result<Vec<FileSnapshot>> {
         let base_function_name = split_function_target(function_name).0.to_string();
         let initial_candidate_files = self.search.filter_by_text(&base_function_name);
         let initial_results = self.collect_graph_file_results(

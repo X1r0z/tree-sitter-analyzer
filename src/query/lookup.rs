@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use rusqlite::{params_from_iter, ToSql};
 
@@ -405,15 +405,27 @@ impl<'a> LookupQuery<'a> {
 
         let mut map: HashMap<(i64, String), Vec<String>> = HashMap::new();
         for chunk in file_class_pairs.chunks(SQLITE_BATCH_SIZE) {
-            let predicates = std::iter::repeat_n("(file_id = ? AND class_name = ?)", chunk.len())
+            let unique_pairs: Vec<(i64, String)> = chunk
+                .iter()
+                .cloned()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            let values = std::iter::repeat_n("(?, ?)", unique_pairs.len())
                 .collect::<Vec<_>>()
-                .join(" OR ");
+                .join(", ");
             let sql = format!(
-                "SELECT file_id, class_name, name FROM fields WHERE {predicates} ORDER BY file_id, class_name, start_line"
+                "
+                WITH lookup(file_id, class_name) AS (VALUES {values})
+                SELECT fields.file_id, fields.class_name, fields.name
+                FROM fields
+                JOIN lookup USING (file_id, class_name)
+                ORDER BY fields.file_id, fields.class_name, fields.start_line
+                "
             );
 
-            let mut bind_values: Vec<&dyn ToSql> = Vec::with_capacity(chunk.len() * 2);
-            for (file_id, class_name) in chunk {
+            let mut bind_values: Vec<&dyn ToSql> = Vec::with_capacity(unique_pairs.len() * 2);
+            for (file_id, class_name) in &unique_pairs {
                 bind_values.push(file_id);
                 bind_values.push(class_name);
             }

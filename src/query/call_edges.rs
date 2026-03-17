@@ -1,4 +1,5 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::sync::Arc;
 
 use rusqlite::types::Value;
 use rusqlite::{params, params_from_iter, ToSql};
@@ -47,7 +48,8 @@ pub(crate) struct CallEdgeQuery<'a> {
 
 type IndexedFunctionCacheKey = (String, Option<String>);
 type IndexedResolutionCacheKey = (i64, String, String, Option<String>, usize);
-type IndexedFunctionCache = HashMap<IndexedFunctionCacheKey, Vec<IndexedFunction>>;
+type IndexedFunctionSlice = Arc<[IndexedFunction]>;
+type IndexedFunctionCache = HashMap<IndexedFunctionCacheKey, IndexedFunctionSlice>;
 type IndexedResolutionCache = HashMap<IndexedResolutionCacheKey, Option<IndexedFunction>>;
 
 pub(super) struct EnclosingFunctionCaches<'a> {
@@ -448,15 +450,70 @@ impl<'a> CallEdgeQuery<'a> {
         &self,
         function_name: &str,
         cache: &mut IndexedFunctionCache,
-    ) -> anyhow::Result<Vec<IndexedFunction>> {
+    ) -> anyhow::Result<IndexedFunctionSlice> {
         let key = (function_name.to_string(), None);
         if let Some(cached) = cache.get(&key) {
-            return Ok(cached.clone());
+            return Ok(Arc::clone(cached));
         }
 
-        let loaded = self.load_exact_functions(function_name, None)?;
-        cache.insert(key, loaded.clone());
+        let loaded = self.load_exact_functions_shared(function_name, None)?;
+        cache.insert(key, Arc::clone(&loaded));
         Ok(loaded)
+    }
+
+    pub(super) fn load_functions_by_names(
+        &self,
+        function_names: &BTreeSet<String>,
+        cache: &mut IndexedFunctionCache,
+    ) -> anyhow::Result<()> {
+        let missing_names: Vec<String> = function_names
+            .iter()
+            .filter(|function_name| !cache.contains_key(&((*function_name).clone(), None)))
+            .cloned()
+            .collect();
+        if missing_names.is_empty() {
+            return Ok(());
+        }
+
+        let placeholders = std::iter::repeat_n("?", missing_names.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut sql = format!(
+            "
+            SELECT fn.id, fn.file_id, f.path, fn.name, fn.class_name, fn.start_line, fn.end_line
+            FROM functions fn
+            JOIN files f ON f.id = fn.file_id
+            WHERE fn.name IN ({placeholders})
+            "
+        );
+
+        let mut params: Vec<&dyn ToSql> = missing_names
+            .iter()
+            .map(|name| name as &dyn ToSql)
+            .collect();
+        if let Some(language) = self.ctx.language.as_ref() {
+            sql.push_str(&format!(" AND f.language = ?{}", params.len() + 1));
+            params.push(language);
+        }
+        sql.push_str(" ORDER BY fn.name, f.path, fn.start_line");
+
+        let mut stmt = self.ctx.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(params), Self::function_from_row)?;
+
+        let mut grouped: HashMap<String, Vec<IndexedFunction>> = HashMap::new();
+        for row in rows {
+            let function = row?;
+            grouped
+                .entry(function.function.name.clone())
+                .or_default()
+                .push(function);
+        }
+
+        for function_name in missing_names {
+            let functions = grouped.remove(&function_name).unwrap_or_default();
+            cache.insert((function_name, None), functions.into());
+        }
+        Ok(())
     }
 
     pub(super) fn resolve_enclosing_function(
@@ -481,16 +538,25 @@ impl<'a> CallEdgeQuery<'a> {
 
         let cache_key = (function_name.to_string(), class_name.map(str::to_string));
         let candidates = if let Some(cached) = caches.candidates.get(&cache_key) {
-            cached.clone()
+            Arc::clone(cached)
         } else {
-            let loaded = self.load_exact_functions(function_name, class_name)?;
-            caches.candidates.insert(cache_key, loaded.clone());
+            let loaded = self.load_exact_functions_shared(function_name, class_name)?;
+            caches.candidates.insert(cache_key, Arc::clone(&loaded));
             loaded
         };
 
-        let resolved = resolve_enclosing_function_from_candidates(&candidates, file_id, file, line);
+        let resolved =
+            resolve_enclosing_function_from_candidates(candidates.as_ref(), file_id, file, line);
         caches.resolutions.insert(resolution_key, resolved.clone());
         Ok(resolved)
+    }
+
+    fn load_exact_functions_shared(
+        &self,
+        function_name: &str,
+        class_name: Option<&str>,
+    ) -> anyhow::Result<IndexedFunctionSlice> {
+        Ok(self.load_exact_functions(function_name, class_name)?.into())
     }
 
     fn function_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<IndexedFunction> {

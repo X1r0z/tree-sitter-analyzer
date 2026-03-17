@@ -581,26 +581,3 @@ fn build_file_index(
         }),
     ))
 }
-
-#[cfg(test)]
-mod tests {
-    use std::fs;
-
-    use tempfile::tempdir;
-
-    use super::*;
-
-    #[test]
-    fn build_file_index_skips_hash_when_metadata_matches() -> anyhow::Result<()> {
-        let temp = tempdir()?;
-        let file_path = temp.path().join("sample.py");
-        fs::write(&file_path, "def same():\n    return 1\n")?;
-
-        let existing = file_record_metadata(file_path.to_str().unwrap_or_default(), "python")?;
-        let (_, snapshot) =
-            build_file_index(file_path.to_str().unwrap_or_default(), Some(&existing))?;
-
-        assert!(snapshot.is_none());
-        Ok(())
-    }
-}

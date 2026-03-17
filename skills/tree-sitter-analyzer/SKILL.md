@@ -121,13 +121,13 @@ Pipe through `jq` to reduce context and extract only what you need:
 
 ```bash
 # Names only
-tsa functions ./src/ -l python | jq -r '.functions[].name'
+tsa functions ./src/ -l python | jq -r '.results[].name'
 
 # Location tuples
-tsa classes ./src/ | jq -r '.classes[] | "\(.name)\t\(.file):\(.start_line)"'
+tsa classes ./src/ | jq -r '.results[] | "\(.name)\t\(.location.file):\(.location.start_line)"'
 
 # Caller summary
-tsa callers ./src/ -f process_data | jq -r '.callers[] | "\(.caller)\t\(.file):\(.line)"'
+tsa callers ./src/ -f process_data | jq -r '.results[] | "\(.caller)\t\(.location.file):\(.location.start_line)"'
 ```
 
 Full JSON output schemas for each command: see `references/OUTPUT.md`.
@@ -357,10 +357,10 @@ tsa classes /path/to/project -q "Controller"
 ### Inventory a repository
 
 ```bash
-tsa functions /path/to/project | jq -r '.functions[] | "\(.name)\t\(.file):\(.start_line)"'
-tsa classes /path/to/project | jq -r '.classes[] | "\(.name)\t\(.file):\(.start_line)"'
-tsa imports /path/to/project | jq -r '.imports[] | "\(.module)\t\(.file):\(.line)"'
-tsa annotations /path/to/project | jq -r '.annotations[] | "\(.name)\t\(.target_type) \(.target_name)\t\(.file):\(.line)"'
+tsa functions /path/to/project | jq -r '.results[] | "\(.name)\t\(.location.file):\(.location.start_line)"'
+tsa classes /path/to/project | jq -r '.results[] | "\(.name)\t\(.location.file):\(.location.start_line)"'
+tsa imports /path/to/project | jq -r '.results[] | "\(.module)\t\(.location.file):\(.location.start_line)"'
+tsa annotations /path/to/project | jq -r '.results[] | "\(.name)\t\(.target.kind) \(.target.name)\t\(.location.file):\(.location.start_line)"'
 ```
 
 ### Impact analysis (who calls X / what does X call)
@@ -380,7 +380,7 @@ tsa graph /path/to/project -f main -d 3 --forward
 tsa graph /path/to/project -f execute_query -d 4 --backward
 
 # Extract just the stacktraces for quick scanning
-tsa graph /path/to/project -f handle_request -d 3 --forward | jq -r '.graphs[].stacktrace | join(" -> ")'
+tsa graph /path/to/project -f handle_request -d 3 --forward | jq -r '.results[].stacktrace | join(" -> ")'
 ```
 
 ### Trace a reference through a project

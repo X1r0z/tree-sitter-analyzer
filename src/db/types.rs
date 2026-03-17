@@ -18,7 +18,7 @@ pub(crate) struct FileIndexData {
 #[derive(Debug, Clone)]
 pub(crate) struct IndexSyncPlan {
     pub(crate) current_files: Vec<IndexedFileRecord>,
-    pub(crate) changed_snapshots: Vec<FileIndexData>,
+    pub(crate) changed_files: Vec<FileIndexData>,
 }
 
 #[derive(Debug, Clone)]

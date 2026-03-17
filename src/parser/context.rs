@@ -466,11 +466,11 @@ impl ParseContext {
     }
 
     pub(crate) fn collect_imports(&self) -> Vec<ImportInfo> {
-        capture::collect_capture_nodes(self, QueryKind::Import, "module")
+        capture::collect_import_capture_matches(self, QueryKind::Import)
             .into_iter()
-            .map(|module_node| ImportInfo {
-                module: self.node_text_unquoted(module_node).into_owned(),
-                location: self.node_location(import_location_node(module_node)),
+            .map(|import_match| ImportInfo {
+                module: self.node_text_unquoted(import_match.module).into_owned(),
+                location: self.node_location(import_match.import.unwrap_or(import_match.module)),
             })
             .collect()
     }
@@ -580,25 +580,6 @@ impl ParseContext {
         }
         refs
     }
-}
-
-fn import_location_node(mut node: Node<'_>) -> Node<'_> {
-    while let Some(parent) = node.parent() {
-        if matches!(
-            parent.kind(),
-            "import_statement"
-                | "import_from_statement"
-                | "import_declaration"
-                | "import_spec"
-                | "export_statement"
-                | "call_expression"
-        ) {
-            node = parent;
-            continue;
-        }
-        break;
-    }
-    node
 }
 
 fn is_function_like(node_kind: &str) -> bool {
@@ -810,4 +791,66 @@ fn is_nested_class_boundary(kind: &str) -> bool {
             | "record_declaration"
             | "annotation_type_declaration"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ParseContext;
+
+    fn import_locations(file_name: &str, source: &str) -> Vec<(String, usize, usize)> {
+        ParseContext::from_source(file_name, source.as_bytes().to_vec())
+            .expect("parse context")
+            .collect_imports()
+            .into_iter()
+            .map(|item| {
+                (
+                    item.module,
+                    item.location.start_line,
+                    item.location.end_line,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn js_multiline_require_location_uses_call_expression_range() {
+        let imports = import_locations("sample.js", "const mod = require(\n  \"pkg\"\n)\n");
+        assert_eq!(imports, vec![("pkg".to_string(), 1, 3)]);
+    }
+
+    #[test]
+    fn ts_multiline_dynamic_import_location_uses_call_expression_range() {
+        let imports = import_locations("sample.ts", "const mod = import(\n  \"pkg\"\n)\n");
+        assert_eq!(imports, vec![("pkg".to_string(), 1, 3)]);
+    }
+
+    #[test]
+    fn ts_static_import_and_export_keep_statement_ranges() {
+        let imports = import_locations(
+            "sample.ts",
+            "import { a } from \"mod-a\"\nexport { b } from \"mod-b\"\n",
+        );
+        assert_eq!(
+            imports,
+            vec![("mod-a".to_string(), 1, 1), ("mod-b".to_string(), 2, 2),]
+        );
+    }
+
+    #[test]
+    fn python_and_go_imports_keep_module_ranges() {
+        let python_imports = import_locations("sample.py", "import os\nfrom pkg.sub import mod\n");
+        assert_eq!(
+            python_imports,
+            vec![("os".to_string(), 1, 1), ("pkg.sub".to_string(), 2, 2),]
+        );
+
+        let go_imports = import_locations(
+            "sample.go",
+            "package main\n\nimport (\n    \"fmt\"\n    alias \"example/mod\"\n)\n",
+        );
+        assert_eq!(
+            go_imports,
+            vec![("fmt".to_string(), 4, 4), ("example/mod".to_string(), 5, 5),]
+        );
+    }
 }

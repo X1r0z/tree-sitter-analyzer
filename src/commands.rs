@@ -109,7 +109,7 @@ pub(crate) fn index(path: &str, language: Option<&str>) -> Value {
 
     let plan = IndexSyncPlan {
         current_files,
-        changed_snapshots: snapshots,
+        changed_files: snapshots,
     };
 
     let db_progress = progress_bar(0, "steps", "green/blue", "Persisting index data");
@@ -125,7 +125,7 @@ pub(crate) fn index(path: &str, language: Option<&str>) -> Value {
         database: db_path.to_string_lossy().to_string(),
         candidates: total_files,
         indexed: plan.current_files.len(),
-        reparsed: plan.changed_snapshots.len(),
+        reparsed: plan.changed_files.len(),
         failed: errors.len(),
         errors,
     };

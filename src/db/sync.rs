@@ -40,7 +40,7 @@ impl IndexSynchronizer {
         let total_steps = 1
             + 3
             + 1
-            + plan.changed_snapshots.len() as u64
+            + plan.changed_files.len() as u64
             + deleted_files as u64
             + u64::from(!compatible);
         progress.set_length(total_steps);
@@ -58,10 +58,10 @@ impl IndexSynchronizer {
         progress.inc(1);
 
         if compatible {
-            Self::sync_snapshots(&tx, &plan.changed_snapshots, progress)?;
+            Self::sync_snapshots(&tx, &plan.changed_files, progress)?;
         } else {
             let mut writer = SnapshotWriter::new(&tx)?;
-            for snapshot in &plan.changed_snapshots {
+            for snapshot in &plan.changed_files {
                 writer.insert_snapshot(snapshot)?;
                 progress.inc(1);
             }
@@ -73,7 +73,7 @@ impl IndexSynchronizer {
 
     fn sync_snapshots(
         tx: &Transaction<'_>,
-        changed_snapshots: &[FileIndexData],
+        changed_files: &[FileIndexData],
         progress: &ProgressBar,
     ) -> anyhow::Result<()> {
         for file_id in IndexStore::deleted_file_ids_against_temp(tx)? {
@@ -81,13 +81,13 @@ impl IndexSynchronizer {
             progress.inc(1);
         }
 
-        let changed_paths: Vec<String> = changed_snapshots
+        let changed_paths: Vec<String> = changed_files
             .iter()
             .map(|snapshot| snapshot.file.path.clone())
             .collect();
         let existing = IndexStore::indexed_file_entries_by_paths(tx, &changed_paths)?;
         let mut writer = SnapshotWriter::new(tx)?;
-        for snapshot in changed_snapshots {
+        for snapshot in changed_files {
             match existing.get(snapshot.file.path.as_str()) {
                 Some(record)
                     if record.language == snapshot.file.language

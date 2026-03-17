@@ -41,6 +41,10 @@ struct GraphFileResult {
 #[derive(Default)]
 struct ClassHierarchyCache {
     parsed_files: HashMap<String, Vec<ClassInfo>>,
+    classes_by_name: HashMap<String, Vec<ClassInfo>>,
+    class_keys_by_name: HashMap<String, HashSet<ClassInstanceKey>>,
+    direct_subclasses_by_parent: HashMap<String, Vec<ClassInfo>>,
+    direct_subclass_keys_by_parent: HashMap<String, HashSet<ClassInstanceKey>>,
     candidate_files_by_name: HashMap<String, Vec<String>>,
 }
 
@@ -671,12 +675,7 @@ impl SourceAnalyzer {
     }
 
     fn ensure_files_parsed_for_name(&self, cache: &mut ClassHierarchyCache, class_name: &str) {
-        let candidate_files = cache.candidate_files_for_name(class_name, &self.search);
-        let new_files: Vec<_> = candidate_files
-            .iter()
-            .filter(|file| !cache.parsed_files.contains_key(file.as_str()))
-            .cloned()
-            .collect();
+        let new_files = cache.unparsed_candidate_files_for_name(class_name, &self.search);
         if new_files.is_empty() {
             return;
         }
@@ -694,64 +693,89 @@ impl SourceAnalyzer {
 }
 
 impl ClassHierarchyCache {
-    fn candidate_files_for_name(&mut self, class_name: &str, search: &FileSearch) -> Vec<String> {
-        self.candidate_files_by_name
+    fn unparsed_candidate_files_for_name(
+        &mut self,
+        class_name: &str,
+        search: &FileSearch,
+    ) -> Vec<String> {
+        let candidate_files = self
+            .candidate_files_by_name
             .entry(class_name.to_string())
-            .or_insert_with(|| search.filter_by_text(class_name))
-            .clone()
+            .or_insert_with(|| search.filter_by_text(class_name));
+
+        candidate_files
+            .iter()
+            .filter(|file| !self.parsed_files.contains_key(file.as_str()))
+            .cloned()
+            .collect()
     }
 
-    fn insert_file_classes(&mut self, file: String, mut classes: Vec<ClassInfo>) {
-        dedup_classes(&mut classes);
-        self.parsed_files.insert(file, classes);
+    fn insert_file_classes(&mut self, file: String, classes: Vec<ClassInfo>) {
+        let mut deduped_classes = Vec::new();
+        let mut file_seen = HashSet::new();
+        for class_info in classes {
+            let key = ClassInstanceKey::from(&class_info);
+            if file_seen.insert(key) {
+                deduped_classes.push(class_info);
+            }
+        }
+
+        for class_info in &deduped_classes {
+            let key = ClassInstanceKey::from(class_info);
+            if self
+                .class_keys_by_name
+                .entry(class_info.name.clone())
+                .or_default()
+                .insert(key.clone())
+            {
+                self.classes_by_name
+                    .entry(class_info.name.clone())
+                    .or_default()
+                    .push(class_info.clone());
+            }
+
+            for parent_name in &class_info.super_classes {
+                if self
+                    .direct_subclass_keys_by_parent
+                    .entry(parent_name.clone())
+                    .or_default()
+                    .insert(key.clone())
+                {
+                    self.direct_subclasses_by_parent
+                        .entry(parent_name.clone())
+                        .or_default()
+                        .push(class_info.clone());
+                }
+            }
+        }
+
+        self.parsed_files.insert(file, deduped_classes);
     }
 
     fn find_classes_by_name(&self, class_name: &str) -> Vec<ClassInfo> {
-        let mut classes: Vec<_> = self
-            .parsed_files
-            .values()
-            .flat_map(|classes| {
-                classes
-                    .iter()
-                    .filter(|class| class.name == class_name)
-                    .cloned()
-            })
-            .collect();
-        dedup_classes(&mut classes);
-        classes
+        self.classes_by_name
+            .get(class_name)
+            .cloned()
+            .unwrap_or_default()
     }
 
     fn find_direct_subclasses(&self, class_name: &str) -> Vec<ClassInfo> {
-        let mut classes: Vec<_> = self
-            .parsed_files
-            .values()
-            .flat_map(|classes| {
-                classes
-                    .iter()
-                    .filter(|class| {
-                        class
-                            .super_classes
-                            .iter()
-                            .any(|parent| parent == class_name)
-                    })
-                    .cloned()
-            })
-            .collect();
-        dedup_classes(&mut classes);
-        classes
+        self.direct_subclasses_by_parent
+            .get(class_name)
+            .cloned()
+            .unwrap_or_default()
     }
 }
 
-fn dedup_classes(classes: &mut Vec<ClassInfo>) {
-    let mut seen = HashSet::new();
-    classes.retain(|class_info| {
-        seen.insert(ClassInstanceKey {
+impl From<&ClassInfo> for ClassInstanceKey {
+    fn from(class_info: &ClassInfo) -> Self {
+        Self {
             file: class_info.location.file.clone(),
             name: class_info.name.clone(),
             start_line: class_info.location.start_line,
             end_line: class_info.location.end_line,
-        })
-    });
+        }
+    }
 }
 
 impl StoreAnalyzer {
@@ -856,14 +880,15 @@ mod tests {
     use indicatif::ProgressBar;
     use tempfile::TempDir;
 
-    use super::{SourceAnalyzer, StoreAnalyzer};
+    use super::{ClassHierarchyCache, SourceAnalyzer, StoreAnalyzer};
     use crate::db::{
         file_record_with_hash_from_source, FileIndexData, IndexStore, IndexSyncPlan,
         IndexSynchronizer,
     };
     use crate::extractor::CodeExtractor;
     use crate::languages::detect_language;
-    use crate::models::{CallGraphPath, CallerInfo, ClassInfo, GraphDirection};
+    use crate::models::{CallGraphPath, CallerInfo, ClassInfo, GraphDirection, Location};
+    use crate::search::FileSearch;
 
     fn write_fixture(root: &TempDir, relative_path: &str, source: &str) {
         let path = root.path().join(relative_path);
@@ -935,6 +960,29 @@ mod tests {
         let mut names: Vec<_> = classes.iter().map(|class| class.name.clone()).collect();
         names.sort();
         names
+    }
+
+    fn class_info(
+        file: &str,
+        name: &str,
+        start_line: usize,
+        end_line: usize,
+        super_classes: &[&str],
+    ) -> ClassInfo {
+        ClassInfo {
+            name: name.to_string(),
+            location: Location {
+                file: file.to_string(),
+                start_line,
+                end_line,
+            },
+            methods: Vec::new(),
+            fields: Vec::new(),
+            super_classes: super_classes
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect(),
+        }
     }
 
     fn caller_names(callers: &[CallerInfo]) -> Vec<String> {
@@ -1364,5 +1412,85 @@ class Leaf(Left, Right):
                 .count(),
             2
         );
+    }
+
+    #[test]
+    fn class_hierarchy_cache_dedups_name_and_subclass_indexes_on_insert() {
+        let mut cache = ClassHierarchyCache::default();
+        let file = "/tmp/example.py".to_string();
+        let duplicate = class_info(&file, "Child", 10, 20, &["Base", "Mixin"]);
+
+        cache.insert_file_classes(file.clone(), vec![duplicate.clone(), duplicate.clone()]);
+        cache.insert_file_classes(file, vec![duplicate.clone()]);
+
+        assert_eq!(
+            class_labels(&cache.find_classes_by_name("Child")),
+            vec!["Child@/tmp/example.py:10"]
+        );
+        assert_eq!(
+            class_labels(&cache.find_direct_subclasses("Base")),
+            vec!["Child@/tmp/example.py:10"]
+        );
+        assert_eq!(
+            class_labels(&cache.find_direct_subclasses("Mixin")),
+            vec!["Child@/tmp/example.py:10"]
+        );
+    }
+
+    #[test]
+    fn class_hierarchy_cache_keeps_distinct_duplicate_name_roots() {
+        let mut cache = ClassHierarchyCache::default();
+        cache.insert_file_classes(
+            "/tmp/left.py".to_string(),
+            vec![class_info("/tmp/left.py", "Base", 1, 2, &[])],
+        );
+        cache.insert_file_classes(
+            "/tmp/right.py".to_string(),
+            vec![class_info("/tmp/right.py", "Base", 1, 2, &[])],
+        );
+
+        assert_eq!(
+            class_labels(&cache.find_classes_by_name("Base")),
+            vec!["Base@/tmp/left.py:1", "Base@/tmp/right.py:1"]
+        );
+    }
+
+    #[test]
+    fn class_hierarchy_cache_returns_only_unparsed_candidate_files() {
+        let mut cache = ClassHierarchyCache::default();
+        let search = FileSearch::new(
+            "/unused",
+            vec![
+                "/tmp/a.py".to_string(),
+                "/tmp/b.py".to_string(),
+                "/tmp/c.py".to_string(),
+            ],
+        );
+        cache.candidate_files_by_name.insert(
+            "Base".to_string(),
+            vec!["/tmp/a.py".to_string(), "/tmp/b.py".to_string()],
+        );
+
+        assert_eq!(
+            cache.unparsed_candidate_files_for_name("Base", &search),
+            vec!["/tmp/a.py".to_string(), "/tmp/b.py".to_string()]
+        );
+
+        cache.insert_file_classes(
+            "/tmp/a.py".to_string(),
+            vec![class_info("/tmp/a.py", "Base", 1, 2, &[])],
+        );
+        assert_eq!(
+            cache.unparsed_candidate_files_for_name("Base", &search),
+            vec!["/tmp/b.py".to_string()]
+        );
+
+        cache.insert_file_classes(
+            "/tmp/b.py".to_string(),
+            vec![class_info("/tmp/b.py", "Base", 1, 2, &[])],
+        );
+        assert!(cache
+            .unparsed_candidate_files_for_name("Base", &search)
+            .is_empty());
     }
 }

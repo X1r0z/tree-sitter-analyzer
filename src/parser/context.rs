@@ -736,6 +736,9 @@ fn class_method_names(parser: &ParseContext, class_node: Node<'_>) -> Vec<String
     let mut methods = Vec::new();
     let mut stack = vec![class_node];
     while let Some(node) = stack.pop() {
+        if node.id() != class_node.id() && is_nested_class_boundary(node.kind()) {
+            continue;
+        }
         if matches!(
             node.kind(),
             "function_definition"
@@ -776,4 +779,16 @@ fn class_field_names(parser: &ParseContext, class_node: Node<'_>) -> Vec<String>
         .into_iter()
         .map(|field| field.name)
         .collect()
+}
+
+fn is_nested_class_boundary(kind: &str) -> bool {
+    matches!(
+        kind,
+        "class_definition"
+            | "class_declaration"
+            | "interface_declaration"
+            | "enum_declaration"
+            | "record_declaration"
+            | "annotation_type_declaration"
+    )
 }

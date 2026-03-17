@@ -28,7 +28,7 @@ anyhow = "1"
 which = "8.0.1"
 streaming-iterator = "0.1"
 indicatif = "0.18.4"
-rusqlite = { version = "0.38.0", features = ["bundled", "functions"] }
+rusqlite = { version = "0.39.0", features = ["bundled", "functions"] }
 blake3 = "1"
 
 [dev-dependencies]

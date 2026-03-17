@@ -58,7 +58,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Build a persistent project index in ./tsa.db
+    /// Build a persistent project index cache
     Index {
         /// Directory path
         path: String,
@@ -355,7 +355,10 @@ fn run() -> i32 {
     };
 
     if result.get("error").is_none() {
-        let root_path = result["path"].as_str().unwrap_or_default().to_string();
+        let root_path = result["meta"]["root"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
         relativize_json_file_paths(&mut result, &root_path);
     }
 

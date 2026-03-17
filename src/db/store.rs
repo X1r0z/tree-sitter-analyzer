@@ -147,6 +147,7 @@ impl IndexStore {
                 file_id INTEGER NOT NULL,
                 module TEXT NOT NULL,
                 start_line INTEGER NOT NULL,
+                end_line INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
             );
 
@@ -191,7 +192,8 @@ impl IndexStore {
                 caller_class_name TEXT,
                 object_name TEXT,
                 object_type TEXT,
-                line INTEGER NOT NULL,
+                start_line INTEGER NOT NULL DEFAULT 0,
+                end_line INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
             );
 
@@ -230,9 +232,9 @@ impl IndexStore {
             CREATE INDEX IF NOT EXISTS idx_python_properties_file_name_class ON python_properties(file_id, property_name, class_name);
             CREATE INDEX IF NOT EXISTS idx_python_property_callers_name ON python_property_callers(property_name);
             CREATE INDEX IF NOT EXISTS idx_python_property_callers_name_caller_class ON python_property_callers(property_name, caller_class_name);
-            CREATE INDEX IF NOT EXISTS idx_python_property_callers_caller_class_file_line ON python_property_callers(caller, caller_class_name, file_id, line);
-            CREATE INDEX IF NOT EXISTS idx_python_property_callers_file_name_line ON python_property_callers(file_id, property_name, line);
-            CREATE INDEX IF NOT EXISTS idx_python_property_callers_file_caller_class_line ON python_property_callers(file_id, caller, caller_class_name, line);
+            CREATE INDEX IF NOT EXISTS idx_python_property_callers_caller_class_file_line ON python_property_callers(caller, caller_class_name, file_id, start_line);
+            CREATE INDEX IF NOT EXISTS idx_python_property_callers_file_name_line ON python_property_callers(file_id, property_name, start_line);
+            CREATE INDEX IF NOT EXISTS idx_python_property_callers_file_caller_class_line ON python_property_callers(file_id, caller, caller_class_name, start_line);
         ",
         )?;
         Self::apply_migrations(conn)?;
@@ -266,6 +268,17 @@ impl IndexStore {
                 [],
             )?;
         }
+        let import_columns = Self::table_columns(conn, "imports")?;
+        if !import_columns.contains("end_line") {
+            conn.execute(
+                "ALTER TABLE imports ADD COLUMN end_line INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+            conn.execute(
+                "UPDATE imports SET end_line = start_line WHERE end_line = 0",
+                [],
+            )?;
+        }
         let property_caller_columns = Self::table_columns(conn, "python_property_callers")?;
         if !property_caller_columns.contains("caller_class_name") {
             conn.execute(
@@ -285,16 +298,51 @@ impl IndexStore {
                 [],
             )?;
         }
+        if !property_caller_columns.contains("start_line") {
+            conn.execute(
+                "ALTER TABLE python_property_callers ADD COLUMN start_line INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+            let line_column =
+                Self::table_columns(conn, "python_property_callers")?.contains("line");
+            if line_column {
+                conn.execute(
+                    "UPDATE python_property_callers SET start_line = line WHERE start_line = 0",
+                    [],
+                )?;
+            }
+        }
+        if !property_caller_columns.contains("end_line") {
+            conn.execute(
+                "ALTER TABLE python_property_callers ADD COLUMN end_line INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+            if Self::table_columns(conn, "python_property_callers")?.contains("line") {
+                conn.execute(
+                    "UPDATE python_property_callers SET end_line = line WHERE end_line = 0",
+                    [],
+                )?;
+            } else {
+                conn.execute(
+                    "UPDATE python_property_callers SET end_line = start_line WHERE end_line = 0",
+                    [],
+                )?;
+            }
+        }
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_python_property_callers_name_caller_class ON python_property_callers(property_name, caller_class_name)",
             [],
         )?;
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_python_property_callers_caller_class_file_line ON python_property_callers(caller, caller_class_name, file_id, line)",
+            "CREATE INDEX IF NOT EXISTS idx_python_property_callers_caller_class_file_line ON python_property_callers(caller, caller_class_name, file_id, start_line)",
             [],
         )?;
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_python_property_callers_file_caller_class_line ON python_property_callers(file_id, caller, caller_class_name, line)",
+            "CREATE INDEX IF NOT EXISTS idx_python_property_callers_file_name_line ON python_property_callers(file_id, property_name, start_line)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_python_property_callers_file_caller_class_line ON python_property_callers(file_id, caller, caller_class_name, start_line)",
             [],
         )?;
         Self::ensure_trigram_fts(conn, "functions_fts", "name", "functions", "id", "name")?;

@@ -19,14 +19,14 @@ pub(super) struct CallerRow {
     caller: Option<String>,
     caller_class_name: Option<String>,
     object_name: Option<String>,
-    line: usize,
+    start_line: usize,
+    end_line: usize,
 }
 
 #[derive(Debug)]
 pub(super) struct CalleeRow {
-    file: String,
+    location: Location,
     callee: String,
-    line: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -71,7 +71,7 @@ impl<'a> CallEdgeQuery<'a> {
         let (target_function, target_object) = split_function_target(function_name);
         let mut sql = String::from(
             "
-            SELECT c.file_id, f.path, c.caller, c.caller_class_name, c.object_name, c.start_line
+            SELECT c.file_id, f.path, c.caller, c.caller_class_name, c.object_name, c.start_line, c.end_line
             FROM calls c
             JOIN files f ON f.id = c.file_id
             WHERE c.callee = ?1
@@ -92,7 +92,8 @@ impl<'a> CallEdgeQuery<'a> {
                 caller: row.get(2)?,
                 caller_class_name: row.get(3)?,
                 object_name: row.get(4)?,
-                line: row.get::<_, i64>(5)? as usize,
+                start_line: row.get::<_, i64>(5)? as usize,
+                end_line: row.get::<_, i64>(6)? as usize,
             })
         })?;
 
@@ -124,7 +125,7 @@ impl<'a> CallEdgeQuery<'a> {
                         &row.file,
                         caller_name,
                         row.caller_class_name.as_deref(),
-                        row.line,
+                        row.start_line,
                         &mut enclosing_caches,
                     )?
                     else {
@@ -152,12 +153,20 @@ impl<'a> CallEdgeQuery<'a> {
                 }
             }
             let caller = row.caller.unwrap_or_else(|| "<module>".to_string());
-            let key = (row.file.clone(), caller.clone(), row.line);
+            let key = (
+                row.file.clone(),
+                caller.clone(),
+                row.start_line,
+                row.end_line,
+            );
             if seen.insert(key) {
                 results.push(CallerInfo {
                     caller,
-                    line: row.line,
-                    file: row.file,
+                    location: Location {
+                        file: row.file,
+                        start_line: row.start_line,
+                        end_line: row.end_line,
+                    },
                 });
             }
         }
@@ -165,7 +174,7 @@ impl<'a> CallEdgeQuery<'a> {
         if resolver.is_python_property(function_name, class_name)? {
             let mut property_sql = String::from(
                 "
-                SELECT ppc.file_id, f.path, ppc.caller, ppc.caller_class_name, ppc.object_name, ppc.object_type, ppc.line
+                SELECT ppc.file_id, f.path, ppc.caller, ppc.caller_class_name, ppc.object_name, ppc.object_type, ppc.start_line, ppc.end_line
                 FROM python_property_callers ppc
                 JOIN files f ON f.id = ppc.file_id
                 WHERE ppc.property_name = ?1
@@ -176,7 +185,7 @@ impl<'a> CallEdgeQuery<'a> {
                 property_sql.push_str(" AND f.language = ?2");
                 property_params.push(language);
             }
-            property_sql.push_str(" ORDER BY f.path, ppc.line");
+            property_sql.push_str(" ORDER BY f.path, ppc.start_line");
             let mut property_stmt = self.ctx.conn.prepare(&property_sql)?;
             let property_rows =
                 property_stmt.query_map(params_from_iter(property_params), |row| {
@@ -188,11 +197,20 @@ impl<'a> CallEdgeQuery<'a> {
                         row.get::<_, Option<String>>(4)?,
                         row.get::<_, Option<String>>(5)?,
                         row.get::<_, i64>(6)? as usize,
+                        row.get::<_, i64>(7)? as usize,
                     ))
                 })?;
             for row in property_rows {
-                let (file_id, file, caller_name, caller_class_name, object_name, object_type, line) =
-                    row?;
+                let (
+                    file_id,
+                    file,
+                    caller_name,
+                    caller_class_name,
+                    object_name,
+                    object_type,
+                    start_line,
+                    end_line,
+                ) = row?;
                 if let Some(class_name) = class_name {
                     if caller_name == "<module>" {
                         if !resolver.matches_property_target_without_enclosing_function(
@@ -208,7 +226,7 @@ impl<'a> CallEdgeQuery<'a> {
                             &file,
                             &caller_name,
                             caller_class_name.as_deref(),
-                            line,
+                            start_line,
                             &mut enclosing_caches,
                         )?;
                         if !resolver.matches_property_target(
@@ -222,12 +240,15 @@ impl<'a> CallEdgeQuery<'a> {
                         }
                     }
                 }
-                let key = (file.clone(), caller_name.clone(), line);
+                let key = (file.clone(), caller_name.clone(), start_line, end_line);
                 if seen.insert(key) {
                     results.push(CallerInfo {
                         caller: caller_name,
-                        line,
-                        file,
+                        location: Location {
+                            file,
+                            start_line,
+                            end_line,
+                        },
                     });
                 }
             }
@@ -244,7 +265,7 @@ impl<'a> CallEdgeQuery<'a> {
     ) -> anyhow::Result<Vec<CalleeInfo>> {
         let mut sql = String::from(
             "
-            SELECT c.file_id, f.path, c.callee, c.object_name, c.caller_class_name, c.start_line
+            SELECT c.file_id, f.path, c.callee, c.object_name, c.caller_class_name, c.start_line, c.end_line
             FROM calls c
             JOIN files f ON f.id = c.file_id
             WHERE c.caller = ?1
@@ -290,7 +311,6 @@ impl<'a> CallEdgeQuery<'a> {
         let rows: Vec<CalleeRow> = stmt
             .query_map(params_from_iter(params.iter()), |row| {
                 Ok(CalleeRow {
-                    file: row.get(1)?,
                     callee: {
                         let callee: String = row.get(2)?;
                         let object_name: Option<String> = row.get(3)?;
@@ -299,7 +319,11 @@ impl<'a> CallEdgeQuery<'a> {
                             None => callee,
                         }
                     },
-                    line: row.get::<_, i64>(5)? as usize,
+                    location: Location {
+                        file: row.get(1)?,
+                        start_line: row.get::<_, i64>(5)? as usize,
+                        end_line: row.get::<_, i64>(6)? as usize,
+                    },
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -307,19 +331,23 @@ impl<'a> CallEdgeQuery<'a> {
         let mut results = Vec::new();
         let mut seen = HashSet::new();
         for row in rows {
-            let key = (row.file.clone(), row.callee.clone(), row.line);
+            let key = (
+                row.location.file.clone(),
+                row.callee.clone(),
+                row.location.start_line,
+                row.location.end_line,
+            );
             if seen.insert(key) {
                 results.push(CalleeInfo {
                     callee: row.callee,
-                    line: row.line,
-                    file: row.file,
+                    location: row.location,
                 });
             }
         }
 
         let mut property_sql = String::from(
             "
-            SELECT f.path, ppc.property_name, ppc.object_name, ppc.line
+            SELECT f.path, ppc.property_name, ppc.object_name, ppc.start_line, ppc.end_line
             FROM python_property_callers ppc
             JOIN files f ON f.id = ppc.file_id
             WHERE ppc.caller = ?1
@@ -367,7 +395,7 @@ impl<'a> CallEdgeQuery<'a> {
         property_sql.push_str(" )");
         property_sql.push_str(
             "
-            ORDER BY f.path, ppc.line
+            ORDER BY f.path, ppc.start_line
             ",
         );
 
@@ -379,17 +407,25 @@ impl<'a> CallEdgeQuery<'a> {
                     row.get::<_, String>(1)?,
                     row.get::<_, Option<String>>(2)?,
                     row.get::<_, i64>(3)? as usize,
+                    row.get::<_, i64>(4)? as usize,
                 ))
             })?;
         for row in property_rows {
-            let (file, property_name, object_name, line) = row?;
+            let (file, property_name, object_name, start_line, end_line) = row?;
             let callee = match object_name {
                 Some(object_name) => format!("{}.{}", object_name, property_name),
                 None => property_name,
             };
-            let key = (file.clone(), callee.clone(), line);
+            let key = (file.clone(), callee.clone(), start_line, end_line);
             if seen.insert(key) {
-                results.push(CalleeInfo { callee, line, file });
+                results.push(CalleeInfo {
+                    callee,
+                    location: Location {
+                        file,
+                        start_line,
+                        end_line,
+                    },
+                });
             }
         }
         sort_callees_by_file_line(&mut results);

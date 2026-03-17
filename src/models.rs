@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Location {
+    #[serde(rename = "path")]
     pub file: String,
     pub start_line: usize,
     pub end_line: usize,
@@ -56,13 +57,6 @@ pub enum GraphDirection {
 }
 
 impl GraphDirection {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Backward => "backward",
-            Self::Forward => "forward",
-        }
-    }
-
     pub fn order_stacktrace<T>(self, mut frames: Vec<T>) -> Vec<T> {
         if matches!(self, Self::Forward) {
             frames.reverse();
@@ -184,23 +178,25 @@ pub struct RefInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallerInfo {
     pub caller: String,
-    pub line: usize,
-    pub file: String,
+    pub location: Location,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CalleeInfo {
     pub callee: String,
-    pub line: usize,
-    pub file: String,
+    pub location: Location,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexInfo {
     pub database: String,
+    #[serde(rename = "candidates")]
     pub discovered_files: usize,
+    #[serde(rename = "indexed")]
     pub indexed_files: usize,
+    #[serde(rename = "reparsed")]
     pub reparsed_files: usize,
+    #[serde(rename = "failed")]
     pub failed_files: usize,
     pub errors: Vec<String>,
 }
@@ -244,7 +240,8 @@ pub struct PythonPropertyCallerInfo {
     pub caller_class_name: Option<String>,
     pub object_name: Option<String>,
     pub object_type: Option<String>,
-    pub line: usize,
+    pub start_line: usize,
+    pub end_line: usize,
 }
 
 #[derive(Debug, Clone)]

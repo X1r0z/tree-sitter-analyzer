@@ -73,7 +73,7 @@ impl<'tx> SnapshotWriter<'tx> {
                 ",
             )?,
             insert_import: tx.prepare_cached(
-                "INSERT INTO imports(file_id, module, start_line) VALUES (?1, ?2, ?3)",
+                "INSERT INTO imports(file_id, module, start_line, end_line) VALUES (?1, ?2, ?3, ?4)",
             )?,
             insert_import_fts: tx.prepare_cached(
                 "INSERT INTO imports_fts(rowid, module) VALUES (?1, ?2)",
@@ -98,8 +98,8 @@ impl<'tx> SnapshotWriter<'tx> {
             )?,
             insert_python_property_caller: tx.prepare_cached(
                 "
-                INSERT INTO python_property_callers(file_id, property_name, caller, caller_class_name, object_name, object_type, line)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                INSERT INTO python_property_callers(file_id, property_name, caller, caller_class_name, object_name, object_type, start_line, end_line)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
                 ",
             )?,
         })
@@ -183,7 +183,8 @@ impl<'tx> SnapshotWriter<'tx> {
             self.insert_import.execute(params![
                 file_id,
                 import.module,
-                import.location.start_line as i64
+                import.location.start_line as i64,
+                import.location.end_line as i64
             ])?;
             let import_id = self.tx.last_insert_rowid();
             self.insert_import_fts
@@ -234,7 +235,8 @@ impl<'tx> SnapshotWriter<'tx> {
                 caller.caller_class_name,
                 caller.object_name,
                 caller.object_type,
-                caller.line as i64
+                caller.start_line as i64,
+                caller.end_line as i64
             ])?;
         }
 

@@ -192,7 +192,7 @@ impl<'a> LookupQuery<'a> {
         let prefilter = RegexPrefilter::new(query);
         let mut sql = String::from(
             "
-            SELECT f.path, i.module, i.start_line
+            SELECT f.path, i.module, i.start_line, i.end_line
             FROM imports i
             JOIN files f ON f.id = i.file_id
             ",
@@ -222,7 +222,7 @@ impl<'a> LookupQuery<'a> {
                 location: Location {
                     file: row.get(0)?,
                     start_line: row.get::<_, i64>(2)? as usize,
-                    end_line: row.get::<_, i64>(2)? as usize,
+                    end_line: row.get::<_, i64>(3)? as usize,
                 },
             })
         })?;

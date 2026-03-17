@@ -468,9 +468,9 @@ impl ParseContext {
     pub(crate) fn collect_imports(&self) -> Vec<ImportInfo> {
         capture::collect_capture_nodes(self, QueryKind::Import, "module")
             .into_iter()
-            .map(|node| ImportInfo {
-                module: self.node_text_unquoted(node).into_owned(),
-                location: self.node_location(node),
+            .map(|module_node| ImportInfo {
+                module: self.node_text_unquoted(module_node).into_owned(),
+                location: self.node_location(import_location_node(module_node)),
             })
             .collect()
     }
@@ -580,6 +580,25 @@ impl ParseContext {
         }
         refs
     }
+}
+
+fn import_location_node(mut node: Node<'_>) -> Node<'_> {
+    while let Some(parent) = node.parent() {
+        if matches!(
+            parent.kind(),
+            "import_statement"
+                | "import_from_statement"
+                | "import_declaration"
+                | "import_spec"
+                | "export_statement"
+                | "call_expression"
+        ) {
+            node = parent;
+            continue;
+        }
+        break;
+    }
+    node
 }
 
 fn is_function_like(node_kind: &str) -> bool {

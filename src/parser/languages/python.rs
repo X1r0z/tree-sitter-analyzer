@@ -9,7 +9,7 @@ use crate::models::{
     AnnotationInfo, FieldInfo, FunctionParamInfo, PythonPropertyCallerInfo, PythonPropertyInfo,
 };
 
-type PythonPropertyCallerKey = (String, String, Option<String>, Option<String>, usize);
+type PythonPropertyCallerKey = (String, String, Option<String>, Option<String>, usize, usize);
 
 fn ensure_property_indexes_cached(parser: &ParseContext) {
     if parser.language != "python" {
@@ -361,7 +361,8 @@ pub(crate) fn collect_property_indexes(
                 let caller = enclosing
                     .function_name
                     .unwrap_or_else(|| "<module>".to_string());
-                let line = node.start_position().row + 1;
+                let start_line = node.start_position().row + 1;
+                let end_line = node.end_position().row + 1;
                 let object_type = if caller == "<module>" {
                     object_name
                         .as_deref()
@@ -375,7 +376,8 @@ pub(crate) fn collect_property_indexes(
                     caller.clone(),
                     enclosing.class_name.clone(),
                     object_name.clone(),
-                    line,
+                    start_line,
+                    end_line,
                 );
                 if seen_callers.insert(seen_key) {
                     callers_by_property
@@ -388,7 +390,8 @@ pub(crate) fn collect_property_indexes(
                             caller_class_name: enclosing.class_name.clone(),
                             object_name,
                             object_type,
-                            line,
+                            start_line,
+                            end_line,
                         });
                 }
             }
@@ -544,7 +547,7 @@ pub(crate) fn collect_property_callers(
             left.property_name
                 .cmp(&right.property_name)
                 .then_with(|| left.caller.cmp(&right.caller))
-                .then_with(|| left.line.cmp(&right.line))
+                .then_with(|| left.start_line.cmp(&right.start_line))
         });
         values
     })

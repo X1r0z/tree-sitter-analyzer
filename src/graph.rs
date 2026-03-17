@@ -20,7 +20,8 @@ pub(crate) struct RawPropertyCaller {
     pub(crate) caller_class_name: Option<String>,
     pub(crate) object_name: Option<String>,
     pub(crate) object_type: Option<String>,
-    pub(crate) line: usize,
+    pub(crate) start_line: usize,
+    pub(crate) end_line: usize,
 }
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
@@ -177,7 +178,8 @@ impl CallGraph {
         for property_caller in property_callers {
             let module_level = property_caller.caller == "<module>";
             let caller = if module_level {
-                let caller = module_caller_function(&property_caller.file, property_caller.line);
+                let caller =
+                    module_caller_function(&property_caller.file, property_caller.start_line);
                 let module_key = FunctionKey::from(&caller);
                 functions_by_key
                     .entry(module_key)
@@ -190,7 +192,7 @@ impl CallGraph {
                     &property_caller.file,
                     Some(&property_caller.caller),
                     property_caller.caller_class_name.as_deref(),
-                    property_caller.line,
+                    property_caller.start_line,
                     &mut resolution_cache,
                 ) else {
                     continue;
@@ -231,7 +233,7 @@ impl CallGraph {
                 let property_key = FunctionKey::from(&property);
                 let call_site = CallSite {
                     file: property_caller.file.clone(),
-                    line: property_caller.line,
+                    line: property_caller.start_line,
                 };
                 forward_edge_sets
                     .entry(caller_key)
@@ -251,7 +253,7 @@ impl CallGraph {
                 let caller_key = FunctionKey::from(&caller);
                 let call_site = CallSite {
                     file: property_caller.file.clone(),
-                    line: property_caller.line,
+                    line: property_caller.start_line,
                 };
                 forward_edge_sets
                     .entry(caller_key)
@@ -595,8 +597,8 @@ fn unresolved_property_key(property_caller: &RawPropertyCaller) -> FunctionKey {
         file: property_caller.file.clone(),
         name: name.clone(),
         class_name: None,
-        start_line: property_caller.line,
-        end_line: property_caller.line,
+        start_line: property_caller.start_line,
+        end_line: property_caller.end_line,
     }
 }
 
@@ -608,8 +610,8 @@ fn unresolved_property_function(property_caller: &RawPropertyCaller) -> Function
         ),
         location: Location {
             file: property_caller.file.clone(),
-            start_line: property_caller.line,
-            end_line: property_caller.line,
+            start_line: property_caller.start_line,
+            end_line: property_caller.end_line,
         },
         body: String::new(),
         class_name: None,

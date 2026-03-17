@@ -29,7 +29,7 @@ pub(crate) struct StoreAnalyzer {
 #[derive(Clone)]
 struct CallerFileResult {
     file: String,
-    callers: Vec<(String, usize)>,
+    callers: Vec<(String, Location)>,
 }
 
 struct GraphFileResult {
@@ -318,16 +318,24 @@ impl SourceAnalyzer {
                 result
                     .callers
                     .into_iter()
-                    .map(move |(caller, line)| CallerInfo {
+                    .map(move |(caller, location)| CallerInfo {
                         caller,
-                        line,
-                        file: result.file.clone(),
+                        location: Location {
+                            file: result.file.clone(),
+                            start_line: location.start_line,
+                            end_line: location.end_line,
+                        },
                     })
             })
             .collect();
         let mut seen = HashSet::new();
         callers.retain(|caller| {
-            seen.insert((caller.file.clone(), caller.caller.clone(), caller.line))
+            seen.insert((
+                caller.location.file.clone(),
+                caller.caller.clone(),
+                caller.location.start_line,
+                caller.location.end_line,
+            ))
         });
         sort_callers_by_file_line(&mut callers);
         callers
@@ -352,11 +360,7 @@ impl SourceAnalyzer {
                 })
                 .unwrap_or_default()
                 .into_iter()
-                .map(|(callee, line)| CalleeInfo {
-                    callee,
-                    line,
-                    file: f.clone(),
-                })
+                .map(|(callee, location)| CalleeInfo { callee, location })
                 .collect::<Vec<_>>()
             });
         sort_callees_by_file_line(&mut results);
@@ -422,7 +426,8 @@ impl SourceAnalyzer {
                     caller_class_name: caller.caller_class_name,
                     object_name: caller.object_name,
                     object_type: caller.object_type,
-                    line: caller.line,
+                    start_line: caller.start_line,
+                    end_line: caller.end_line,
                 }
             }));
         }

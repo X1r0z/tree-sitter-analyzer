@@ -335,11 +335,11 @@ impl<'a> CallGraphQuery<'a> {
             Some(class_name) => {
                 let mut stmt = self.ctx.conn.prepare_cached(
                     "
-                    SELECT property_name, object_name, line
+                    SELECT property_name, object_name, start_line
                     FROM python_property_callers
-                    WHERE file_id = ?1 AND caller = ?2 AND line >= ?3 AND line <= ?4
+                    WHERE file_id = ?1 AND caller = ?2 AND start_line >= ?3 AND start_line <= ?4
                       AND caller_class_name = ?5
-                    ORDER BY line
+                    ORDER BY start_line
                     ",
                 )?;
                 let rows = stmt.query_map(
@@ -363,11 +363,11 @@ impl<'a> CallGraphQuery<'a> {
             None => {
                 let mut stmt = self.ctx.conn.prepare_cached(
                     "
-                    SELECT property_name, object_name, line
+                    SELECT property_name, object_name, start_line
                     FROM python_property_callers
-                    WHERE file_id = ?1 AND caller = ?2 AND line >= ?3 AND line <= ?4
+                    WHERE file_id = ?1 AND caller = ?2 AND start_line >= ?3 AND start_line <= ?4
                       AND caller_class_name IS NULL
-                    ORDER BY line
+                    ORDER BY start_line
                     ",
                 )?;
                 let rows = stmt.query_map(
@@ -681,11 +681,11 @@ impl<'a> CallGraphQuery<'a> {
             Some(language) => {
                 let mut stmt = self.ctx.conn.prepare_cached(
                     "
-                    SELECT ppc.file_id, f.path, ppc.caller, ppc.caller_class_name, ppc.object_name, ppc.object_type, ppc.line
+                    SELECT ppc.file_id, f.path, ppc.caller, ppc.caller_class_name, ppc.object_name, ppc.object_type, ppc.start_line
                     FROM python_property_callers ppc
                     JOIN files f ON f.id = ppc.file_id
                     WHERE ppc.property_name = ?1 AND f.language = ?2
-                    ORDER BY f.path, ppc.line
+                    ORDER BY f.path, ppc.start_line
                     ",
                 )?;
                 let rows = stmt.query_map(params![property_name, language], |row| {
@@ -704,11 +704,11 @@ impl<'a> CallGraphQuery<'a> {
             None => {
                 let mut stmt = self.ctx.conn.prepare_cached(
                     "
-                    SELECT ppc.file_id, f.path, ppc.caller, ppc.caller_class_name, ppc.object_name, ppc.object_type, ppc.line
+                    SELECT ppc.file_id, f.path, ppc.caller, ppc.caller_class_name, ppc.object_name, ppc.object_type, ppc.start_line
                     FROM python_property_callers ppc
                     JOIN files f ON f.id = ppc.file_id
                     WHERE ppc.property_name = ?1
-                    ORDER BY f.path, ppc.line
+                    ORDER BY f.path, ppc.start_line
                     ",
                 )?;
                 let rows = stmt.query_map(params![property_name], |row| {

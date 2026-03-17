@@ -350,7 +350,7 @@ impl CodeExtractor {
         function_name: &str,
         class_name: Option<&str>,
         allow_unique_method_target: bool,
-    ) -> Vec<(String, usize)> {
+    ) -> Vec<(String, Location)> {
         self.ensure_calls_by_callee();
 
         let (target_function, target_object) = split_function_target(function_name);
@@ -373,7 +373,7 @@ impl CodeExtractor {
             .collect();
 
         let mut callers = Vec::new();
-        let mut seen: HashSet<(String, usize)> = HashSet::new();
+        let mut seen: HashSet<(String, usize, usize)> = HashSet::new();
         for call in candidate_calls {
             if let Some(to) = target_object {
                 if call.object_name.as_deref() != Some(to) {
@@ -392,10 +392,10 @@ impl CodeExtractor {
                 .caller
                 .clone()
                 .unwrap_or_else(|| "<module>".to_string());
-            let line = call.location.start_line;
-            let key = (caller.clone(), line);
+            let location = call.location.clone();
+            let key = (caller.clone(), location.start_line, location.end_line);
             if seen.insert(key) {
-                callers.push((caller, line));
+                callers.push((caller, location));
             }
         }
 
@@ -413,15 +413,22 @@ impl CodeExtractor {
                         caller.caller_class_name.as_deref(),
                         caller.object_name.as_deref(),
                         caller.object_type.as_deref(),
-                        caller.line,
+                        caller.start_line,
                         class_name,
                     ) {
                         continue;
                     }
                 }
-                let key = (caller.caller.clone(), caller.line);
+                let key = (caller.caller.clone(), caller.start_line, caller.end_line);
                 if seen.insert(key) {
-                    callers.push((caller.caller, caller.line));
+                    callers.push((
+                        caller.caller,
+                        Location {
+                            file: caller.file,
+                            start_line: caller.start_line,
+                            end_line: caller.end_line,
+                        },
+                    ));
                 }
             }
         }
@@ -432,7 +439,7 @@ impl CodeExtractor {
         &mut self,
         function_name: &str,
         class_name: Option<&str>,
-    ) -> Vec<(String, usize)> {
+    ) -> Vec<(String, Location)> {
         self.ensure_calls_by_caller();
         let candidate_calls: Vec<CallInfo> = self
             .cache
@@ -451,7 +458,7 @@ impl CodeExtractor {
             .collect();
 
         let mut callees = Vec::new();
-        let mut seen: HashSet<(String, usize)> = HashSet::new();
+        let mut seen: HashSet<(String, usize, usize)> = HashSet::new();
         for call in candidate_calls {
             let Some(_caller) = self.enclosing_function_info_at_line(
                 function_name,
@@ -464,9 +471,13 @@ impl CodeExtractor {
             if let Some(ref obj) = call.object_name {
                 callee_name = format!("{}.{}", obj, callee_name);
             }
-            let key = (callee_name.clone(), call.location.start_line);
+            let key = (
+                callee_name.clone(),
+                call.location.start_line,
+                call.location.end_line,
+            );
             if seen.insert(key) {
-                callees.push((callee_name, call.location.start_line));
+                callees.push((callee_name, call.location));
             }
         }
 
@@ -474,7 +485,7 @@ impl CodeExtractor {
             let Some(_caller) = self.enclosing_function_info_at_line(
                 function_name,
                 class_name,
-                property_caller.line,
+                property_caller.start_line,
             ) else {
                 continue;
             };
@@ -482,9 +493,20 @@ impl CodeExtractor {
             if let Some(ref obj) = property_caller.object_name {
                 callee_name = format!("{}.{}", obj, callee_name);
             }
-            let key = (callee_name.clone(), property_caller.line);
+            let key = (
+                callee_name.clone(),
+                property_caller.start_line,
+                property_caller.end_line,
+            );
             if seen.insert(key) {
-                callees.push((callee_name, property_caller.line));
+                callees.push((
+                    callee_name,
+                    Location {
+                        file: property_caller.file,
+                        start_line: property_caller.start_line,
+                        end_line: property_caller.end_line,
+                    },
+                ));
             }
         }
         callees
@@ -494,7 +516,7 @@ impl CodeExtractor {
         &mut self,
         function_name: &str,
         class_name: Option<&str>,
-    ) -> Vec<(String, usize)> {
+    ) -> Vec<(String, Location)> {
         let has_target = self.collect_functions_with_bodies().iter().any(|function| {
             function.name == function_name
                 && (class_name.is_none() || function.class_name.as_deref() == class_name)

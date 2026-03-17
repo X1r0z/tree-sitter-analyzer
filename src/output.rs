@@ -1,7 +1,8 @@
 use serde_json::{json, Value};
 
 use crate::models::{
-    AnnotationInfo, CalleeInfo, CallerInfo, ClassInfo, FieldInfo, FunctionInfo, ImportInfo, RefInfo,
+    AnnotationInfo, CallGraphPath, CalleeInfo, CallerInfo, ClassInfo, FieldInfo, FunctionInfo,
+    ImportInfo, IndexInfo, Location, RefInfo,
 };
 
 #[derive(Clone, Copy)]
@@ -42,38 +43,44 @@ pub fn callees(items: &[CalleeInfo]) -> Value {
     Value::Array(items.iter().map(callee).collect())
 }
 
+pub fn graphs(items: &[CallGraphPath]) -> Value {
+    Value::Array(items.iter().map(graph).collect())
+}
+
+pub fn index(item: &IndexInfo) -> Value {
+    Value::Array(vec![
+        serde_json::to_value(item).expect("index info should serialize")
+    ])
+}
+
 fn function(item: &FunctionInfo, view: FunctionView) -> Value {
     let mut map = serde_json::Map::new();
     map.insert("name".into(), json!(item.name));
-    map.insert("start_line".into(), json!(item.location.start_line));
-    map.insert("end_line".into(), json!(item.location.end_line));
-    map.insert("file".into(), json!(item.location.file));
+    map.insert("location".into(), location(&item.location));
     if let Some(class_name) = item.class_name.as_ref() {
         map.insert("class_name".into(), json!(class_name));
     }
     map.insert("params".into(), json!(item.params));
     if matches!(view, FunctionView::Definition) && !item.body.is_empty() {
-        map.insert("body".into(), json!(item.body));
+        map.insert("source".into(), json!(item.body));
     }
     Value::Object(map)
 }
 
 fn class(item: &ClassInfo) -> Value {
-    let mut map = serde_json::Map::new();
-    map.insert("name".into(), json!(item.name));
-    map.insert("start_line".into(), json!(item.location.start_line));
-    map.insert("end_line".into(), json!(item.location.end_line));
-    map.insert("methods".into(), json!(item.methods));
-    map.insert("fields".into(), json!(item.fields));
-    map.insert("file".into(), json!(item.location.file));
-    Value::Object(map)
+    json!({
+        "name": item.name,
+        "kind": "class",
+        "location": location(&item.location),
+        "methods": item.methods,
+        "fields": item.fields,
+    })
 }
 
 fn field(item: &FieldInfo) -> Value {
     let mut map = serde_json::Map::new();
     map.insert("name".into(), json!(item.name));
-    map.insert("line".into(), json!(item.location.start_line));
-    map.insert("file".into(), json!(item.location.file));
+    map.insert("location".into(), location(&item.location));
     if let Some(field_type) = item.field_type.as_ref() {
         map.insert("type".into(), json!(field_type));
     }
@@ -81,45 +88,68 @@ fn field(item: &FieldInfo) -> Value {
 }
 
 fn import(item: &ImportInfo) -> Value {
-    let mut map = serde_json::Map::new();
-    map.insert("module".into(), json!(item.module));
-    map.insert("line".into(), json!(item.location.start_line));
-    map.insert("file".into(), json!(item.location.file));
-    Value::Object(map)
+    json!({
+        "module": item.module,
+        "location": location(&item.location),
+    })
 }
 
 fn annotation(item: &AnnotationInfo) -> Value {
-    let mut map = serde_json::Map::new();
-    map.insert("name".into(), json!(item.name));
-    map.insert("signature".into(), json!(item.signature));
-    map.insert("line".into(), json!(item.location.start_line));
-    map.insert("file".into(), json!(item.location.file));
-    map.insert("target_name".into(), json!(item.target_name));
-    map.insert("target_type".into(), json!(item.target_type));
-    map.insert("target_signature".into(), json!(item.target_signature));
-    Value::Object(map)
+    json!({
+        "name": item.name,
+        "source": item.signature,
+        "location": location(&item.location),
+        "target": {
+            "name": item.target_name,
+            "kind": item.target_type,
+            "source": item.target_signature,
+        }
+    })
 }
 
 fn ref_item(item: &RefInfo) -> Value {
     json!({
-        "type": item.node_type,
-        "location": item.location,
-        "context": item.context,
+        "name": item.name,
+        "kind": item.node_type,
+        "location": location(&item.location),
+        "source": item.context,
     })
 }
 
 fn caller(item: &CallerInfo) -> Value {
     json!({
         "caller": item.caller,
-        "line": item.line,
-        "file": item.file,
+        "location": location(&item.location),
     })
 }
 
 fn callee(item: &CalleeInfo) -> Value {
     json!({
         "callee": item.callee,
-        "line": item.line,
-        "file": item.file,
+        "location": location(&item.location),
+    })
+}
+
+fn graph(item: &CallGraphPath) -> Value {
+    json!({
+        "depth": item.depth,
+        "stacktrace": item.stacktrace,
+        "nodes": item.path.iter().map(|node| json!({
+            "name": node.name,
+            "class_name": node.class_name,
+            "location": {
+                "path": node.file,
+                "start_line": node.start_line,
+                "end_line": node.end_line,
+            }
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn location(item: &Location) -> Value {
+    json!({
+        "path": item.file,
+        "start_line": item.start_line,
+        "end_line": item.end_line,
     })
 }

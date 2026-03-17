@@ -111,18 +111,20 @@ pub fn print_warning(message: &str) {
 
 pub fn sort_callers_by_file_line(results: &mut [CallerInfo]) {
     results.sort_by(|left, right| {
-        left.file
-            .cmp(&right.file)
-            .then(left.line.cmp(&right.line))
+        left.location
+            .file
+            .cmp(&right.location.file)
+            .then(left.location.start_line.cmp(&right.location.start_line))
             .then(left.caller.cmp(&right.caller))
     });
 }
 
 pub fn sort_callees_by_file_line(results: &mut [CalleeInfo]) {
     results.sort_by(|left, right| {
-        left.file
-            .cmp(&right.file)
-            .then(left.line.cmp(&right.line))
+        left.location
+            .file
+            .cmp(&right.location.file)
+            .then(left.location.start_line.cmp(&right.location.start_line))
             .then(left.callee.cmp(&right.callee))
     });
 }
@@ -184,11 +186,12 @@ pub fn relativize_json_file_paths(value: &mut Value, root: &str) {
     match value {
         Value::Object(map) => {
             for (key, nested) in map.iter_mut() {
-                if key == "file" {
-                    if let Some(file) = nested.as_str() {
-                        *nested = Value::String(relative_path(file, root));
+                if key == "location" {
+                    if let Value::Object(location) = nested {
+                        if let Some(Value::String(path)) = location.get_mut("path") {
+                            *path = relative_path(path, root);
+                        }
                     }
-                    continue;
                 }
                 relativize_json_file_paths(nested, root);
             }

@@ -43,6 +43,13 @@ impl CommandContext {
             AnalyzerBackend::Source(source_backend) => source_backend.file_count(),
         }
     }
+
+    fn backend_name(&self) -> &'static str {
+        match self.backend {
+            AnalyzerBackend::Store(_) => "store",
+            AnalyzerBackend::Source(_) => "source",
+        }
+    }
 }
 
 pub(crate) fn index(path: &str, language: Option<&str>) -> Value {
@@ -123,14 +130,7 @@ pub(crate) fn index(path: &str, language: Option<&str>) -> Value {
         errors,
     };
 
-    success_response(
-        &real_path,
-        total_files,
-        [(
-            "index",
-            serde_json::to_value(index).expect("index info should serialize"),
-        )],
-    )
+    success_response(&real_path, "source", total_files, output::index(&index))
 }
 
 pub(crate) fn functions(path: &str, language: Option<&str>, query: &str) -> Value {
@@ -150,11 +150,9 @@ pub(crate) fn functions(path: &str, language: Option<&str>, query: &str) -> Valu
     };
     success_response(
         &context.real_path,
+        context.backend_name(),
         context.searched_files(),
-        [(
-            "functions",
-            output::functions(&functions, FunctionView::Summary),
-        )],
+        output::functions(&functions, FunctionView::Summary),
     )
 }
 
@@ -175,8 +173,9 @@ pub(crate) fn classes(path: &str, language: Option<&str>, query: &str) -> Value 
     };
     success_response(
         &context.real_path,
+        context.backend_name(),
         context.searched_files(),
-        [("classes", output::classes(&classes))],
+        output::classes(&classes),
     )
 }
 
@@ -194,11 +193,9 @@ pub(crate) fn fields(path: &str, language: Option<&str>, class_name: &str) -> Va
     };
     success_response(
         &context.real_path,
+        context.backend_name(),
         context.searched_files(),
-        [
-            ("class_name", json!(class_name)),
-            ("fields", output::fields(&fields)),
-        ],
+        output::fields(&fields),
     )
 }
 
@@ -219,8 +216,9 @@ pub(crate) fn imports(path: &str, language: Option<&str>, query: &str) -> Value 
     };
     success_response(
         &context.real_path,
+        context.backend_name(),
         context.searched_files(),
-        [("imports", output::imports(&imports))],
+        output::imports(&imports),
     )
 }
 
@@ -241,8 +239,9 @@ pub(crate) fn annotations(path: &str, language: Option<&str>, query: &str) -> Va
     };
     success_response(
         &context.real_path,
+        context.backend_name(),
         context.searched_files(),
-        [("annotations", output::annotations(&annotations))],
+        output::annotations(&annotations),
     )
 }
 
@@ -269,12 +268,9 @@ pub(crate) fn callers(
     };
     success_response(
         &context.real_path,
+        context.backend_name(),
         context.searched_files(),
-        [
-            ("function", json!(function_name)),
-            ("class_name", json!(class_name)),
-            ("callers", output::callers(&callers)),
-        ],
+        output::callers(&callers),
     )
 }
 
@@ -301,12 +297,9 @@ pub(crate) fn callees(
     };
     success_response(
         &context.real_path,
+        context.backend_name(),
         context.searched_files(),
-        [
-            ("function", json!(function_name)),
-            ("class_name", json!(class_name)),
-            ("callees", output::callees(&callees)),
-        ],
+        output::callees(&callees),
     )
 }
 
@@ -341,14 +334,9 @@ pub(crate) fn graph(
     };
     success_response(
         &context.real_path,
+        context.backend_name(),
         context.searched_files(),
-        [
-            ("function", json!(function_name)),
-            ("class_name", json!(class_name)),
-            ("direction", json!(direction.as_str())),
-            ("max_depth", json!(max_depth)),
-            ("graphs", json!(graphs)),
-        ],
+        output::graphs(&graphs),
     )
 }
 
@@ -361,16 +349,18 @@ pub(crate) fn refs(path: &str, language: Option<&str>, name: &str) -> Value {
         AnalyzerBackend::Store(store_backend) => match store_backend.find_refs(name) {
             Ok(refs) if refs.is_empty() => success_response(
                 &context.real_path,
+                context.backend_name(),
                 context.searched_files(),
-                [("name", json!(name)), ("refs", Value::Array(Vec::new()))],
+                Value::Array(Vec::new()),
             ),
             Ok(refs) => match SourceAnalyzer::new_with_language(&context.real_path, language) {
                 Ok(source_backend) => {
                     let refs = source_backend.hydrate_refs(refs);
                     success_response(
                         &context.real_path,
+                        context.backend_name(),
                         context.searched_files(),
-                        [("name", json!(name)), ("refs", output::refs(&refs))],
+                        output::refs(&refs),
                     )
                 }
                 Err(error) => error_response(error),
@@ -381,8 +371,9 @@ pub(crate) fn refs(path: &str, language: Option<&str>, name: &str) -> Value {
             let refs = source_backend.find_refs(name);
             success_response(
                 &context.real_path,
+                context.backend_name(),
                 context.searched_files(),
-                [("name", json!(name)), ("refs", output::refs(&refs))],
+                output::refs(&refs),
             )
         }
     }
@@ -423,14 +414,9 @@ pub(crate) fn definition(
                             let functions = source_backend.hydrate_function_bodies(functions);
                             success_response(
                                 &context.real_path,
+                                context.backend_name(),
                                 searched_files,
-                                [
-                                    ("class_name", json!(class_name)),
-                                    (
-                                        "functions",
-                                        output::functions(&functions, FunctionView::Definition),
-                                    ),
-                                ],
+                                output::functions(&functions, FunctionView::Definition),
                             )
                         }
                         Err(error) => error_response(error),
@@ -446,14 +432,9 @@ pub(crate) fn definition(
             }
             success_response(
                 &context.real_path,
+                context.backend_name(),
                 context.searched_files(),
-                [
-                    ("class_name", json!(class_name)),
-                    (
-                        "functions",
-                        output::functions(&functions, FunctionView::Definition),
-                    ),
-                ],
+                output::functions(&functions, FunctionView::Definition),
             )
         }
     }
@@ -475,11 +456,9 @@ pub(crate) fn super_classes(path: &str, language: Option<&str>, class_name: &str
     };
     success_response(
         &context.real_path,
+        context.backend_name(),
         context.searched_files(),
-        [
-            ("class_name", json!(class_name)),
-            ("super_classes", output::classes(&super_classes)),
-        ],
+        output::classes(&super_classes),
     )
 }
 
@@ -497,11 +476,9 @@ pub(crate) fn sub_classes(path: &str, language: Option<&str>, class_name: &str) 
     };
     success_response(
         &context.real_path,
+        context.backend_name(),
         context.searched_files(),
-        [
-            ("class_name", json!(class_name)),
-            ("sub_classes", output::classes(&sub_classes)),
-        ],
+        output::classes(&sub_classes),
     )
 }
 
@@ -521,30 +498,20 @@ fn resolve_path(path: &str) -> String {
     }
 }
 
-fn success_response<const N: usize>(
-    path: &str,
-    searched_files: usize,
-    payload: [(&str, Value); N],
-) -> Value {
-    let count = payload
-        .iter()
-        .find_map(|(key, value)| match (key.to_owned(), value) {
-            (
-                "functions" | "classes" | "fields" | "imports" | "annotations" | "callers"
-                | "callees" | "graphs" | "refs" | "super_classes" | "sub_classes",
-                Value::Array(items),
-            ) => Some(items.len()),
-            _ => None,
-        })
-        .unwrap_or(0);
-    let mut map = serde_json::Map::new();
-    map.insert("path".into(), json!(path));
-    map.insert("searched_files".into(), json!(searched_files));
-    map.insert("count".into(), json!(count));
-    for (key, value) in payload {
-        map.insert(key.into(), value);
-    }
-    Value::Object(map)
+fn success_response(path: &str, backend: &str, searched_files: usize, results: Value) -> Value {
+    let count = match &results {
+        Value::Array(items) => items.len(),
+        _ => 0,
+    };
+    json!({
+        "meta": {
+            "root": path,
+            "backend": backend,
+            "files": searched_files,
+            "count": count,
+        },
+        "results": results,
+    })
 }
 
 fn error_response(error: impl std::fmt::Display) -> Value {
@@ -580,4 +547,171 @@ fn build_file_index(
             snapshot,
         }),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::sync::{Mutex, OnceLock};
+
+    use serde_json::Value;
+    use tempfile::TempDir;
+
+    use crate::utils::relativize_json_file_paths;
+
+    fn cwd_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn test_project() -> TempDir {
+        let temp = tempfile::tempdir().expect("create tempdir");
+        fs::write(
+            temp.path().join("sample.py"),
+            r#"import os
+
+class User:
+    dsn: str
+
+    @property
+    def name(self):
+        return "x"
+
+def helper():
+    user = User()
+    user.name
+    return os.getenv("A")
+"#,
+        )
+        .expect("write python fixture");
+        fs::write(
+            temp.path().join("sample.js"),
+            "import {\n  readFile,\n  writeFile,\n} from \"fs\";\n",
+        )
+        .expect("write js fixture");
+        temp
+    }
+
+    fn assert_meta_shape(value: &Value, backend: &str, count: usize) {
+        assert_eq!(value["meta"]["backend"], backend);
+        assert!(value["meta"]["root"].as_str().is_some());
+        assert!(value["meta"]["files"].as_u64().is_some());
+        assert_eq!(value["meta"]["count"], count);
+        assert!(value.get("results").is_some());
+    }
+
+    fn cli_like_output(mut value: Value) -> Value {
+        assert!(
+            value.get("error").is_none(),
+            "unexpected error response: {value}"
+        );
+        let root = value["meta"]["root"]
+            .as_str()
+            .expect("meta.root")
+            .to_string();
+        relativize_json_file_paths(&mut value, &root);
+        value
+    }
+
+    #[test]
+    fn commands_emit_json_schema_v2_in_source_mode() {
+        let project = test_project();
+        let root = project.path().to_string_lossy().to_string();
+
+        let functions = cli_like_output(super::functions(&root, None, "helper"));
+        assert_meta_shape(&functions, "source", 1);
+        assert_eq!(functions["results"][0]["name"], "helper");
+        assert_eq!(functions["results"][0]["location"]["path"], "sample.py");
+        assert!(functions["results"][0].get("file").is_none());
+        assert!(functions.get("path").is_none());
+
+        let classes = cli_like_output(super::classes(&root, None, "User"));
+        assert_meta_shape(&classes, "source", 1);
+        assert_eq!(classes["results"][0]["kind"], "class");
+        assert_eq!(classes["results"][0]["location"]["path"], "sample.py");
+
+        let fields = cli_like_output(super::fields(&root, None, "User"));
+        assert_meta_shape(&fields, "source", 1);
+        assert_eq!(fields["results"][0]["name"], "dsn");
+        assert_eq!(fields["results"][0]["location"]["start_line"], 4);
+        assert_eq!(fields["results"][0]["location"]["end_line"], 4);
+
+        let imports = cli_like_output(super::imports(&root, None, "fs"));
+        assert_meta_shape(&imports, "source", 1);
+        assert_eq!(imports["results"][0]["module"], "fs");
+        assert_eq!(imports["results"][0]["location"]["path"], "sample.js");
+        assert_eq!(imports["results"][0]["location"]["start_line"], 1);
+        assert_eq!(imports["results"][0]["location"]["end_line"], 4);
+
+        let annotations = cli_like_output(super::annotations(&root, None, "property"));
+        assert_meta_shape(&annotations, "source", 1);
+        assert_eq!(annotations["results"][0]["name"], "property");
+        assert_eq!(annotations["results"][0]["source"], "@property");
+        assert_eq!(annotations["results"][0]["target"]["name"], "name");
+        assert_eq!(annotations["results"][0]["target"]["kind"], "method");
+        assert!(annotations["results"][0].get("signature").is_none());
+
+        let callers = cli_like_output(super::callers(&root, None, "User", None));
+        assert_meta_shape(&callers, "source", 1);
+        assert_eq!(callers["results"][0]["caller"], "helper");
+        assert_eq!(callers["results"][0]["location"]["path"], "sample.py");
+        assert_eq!(callers["results"][0]["location"]["start_line"], 11);
+        assert_eq!(callers["results"][0]["location"]["end_line"], 11);
+
+        let callees = cli_like_output(super::callees(&root, None, "helper", None));
+        assert_meta_shape(&callees, "source", 3);
+        assert_eq!(callees["results"][0]["location"]["path"], "sample.py");
+        assert!(callees["results"][0].get("line").is_none());
+
+        let definition = cli_like_output(super::definition(&root, None, "helper", None));
+        assert_meta_shape(&definition, "source", 1);
+        assert!(definition["results"][0]["source"]
+            .as_str()
+            .expect("definition source")
+            .contains("return os.getenv"));
+        assert!(definition["results"][0].get("body").is_none());
+
+        let refs = cli_like_output(super::refs(&root, None, "User"));
+        assert_meta_shape(&refs, "source", 2);
+        assert_eq!(refs["results"][0]["kind"], "identifier");
+        assert!(refs["results"][0]["source"].as_str().is_some());
+        assert!(refs["results"][0].get("type").is_none());
+
+        let graph = cli_like_output(super::graph(
+            &root,
+            None,
+            "helper",
+            None,
+            2,
+            crate::models::GraphDirection::Forward,
+        ));
+        assert_eq!(graph["meta"]["backend"], "source");
+        assert!(graph["results"].is_array());
+    }
+
+    #[test]
+    fn indexed_backend_matches_v2_shape() {
+        let _guard = cwd_lock().lock().expect("lock cwd");
+        let project = test_project();
+        let old_cwd = std::env::current_dir().expect("cwd");
+        std::env::set_current_dir(project.path()).expect("chdir temp");
+
+        let root = project.path().canonicalize().expect("canonical root");
+        let root_str = root.to_string_lossy().to_string();
+
+        let indexed = cli_like_output(super::index(&root_str, None));
+        assert_eq!(indexed["meta"]["backend"], "source");
+        assert_eq!(indexed["results"][0]["candidates"], 2);
+        assert!(indexed["results"][0].get("discovered_files").is_none());
+
+        let imports = cli_like_output(super::imports(&root_str, None, "fs"));
+        assert_eq!(imports["meta"]["backend"], "store");
+        assert_eq!(imports["results"][0]["location"]["end_line"], 4);
+
+        let callers = cli_like_output(super::callers(&root_str, None, "User", None));
+        assert_eq!(callers["meta"]["backend"], "store");
+        assert_eq!(callers["results"][0]["location"]["start_line"], 11);
+
+        std::env::set_current_dir(old_cwd).expect("restore cwd");
+    }
 }

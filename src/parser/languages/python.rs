@@ -69,13 +69,32 @@ pub(crate) fn split_attribute_parts(
     (callee, obj_name)
 }
 
-pub(crate) fn unwrap_callable_node<'a>(node: Node<'a>) -> Node<'a> {
+pub(crate) fn unwrap_definition_node<'a>(node: Node<'a>) -> Node<'a> {
     if node.kind() == "decorated_definition" {
         if let Some(definition) = node.child_by_field_name("definition") {
             return definition;
         }
     }
     node
+}
+
+pub(crate) fn should_skip_import_ref(node: Node<'_>) -> bool {
+    if node.kind() != "identifier" {
+        return false;
+    }
+
+    let mut current = node.parent();
+    let mut has_import_name_ancestor = false;
+    while let Some(parent) = current {
+        match parent.kind() {
+            "dotted_name" | "relative_import" => has_import_name_ancestor = true,
+            "import_statement" | "import_from_statement" => return has_import_name_ancestor,
+            _ => {}
+        }
+        current = parent.parent();
+    }
+
+    false
 }
 
 pub(crate) fn function_name_from_node(context: &ParseContext, node: Node<'_>) -> Option<String> {

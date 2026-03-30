@@ -209,7 +209,7 @@ impl ParseContext {
 
         for (func_node, name_node) in func_pairs {
             let function_node = match self.language.as_str() {
-                "python" => python::unwrap_callable_node(func_node),
+                "python" => python::unwrap_definition_node(func_node),
                 _ => func_node,
             };
             let name = self
@@ -265,7 +265,7 @@ impl ParseContext {
 
     pub(crate) fn collect_function_params(&self, function_node: Node) -> Vec<FunctionParamInfo> {
         let target = match self.language.as_str() {
-            "python" => python::unwrap_callable_node(function_node),
+            "python" => python::unwrap_definition_node(function_node),
             _ => function_node,
         };
         match self.language.as_str() {
@@ -305,15 +305,25 @@ impl ParseContext {
 
         let mut classes = Vec::new();
         let mut active_ranges: Vec<usize> = Vec::new();
+        let mut seen = HashSet::new();
         let allow_nested_classes = matches!(self.language.as_str(), "python" | "java");
 
         for (class_node, name_node) in class_pairs {
-            let name = self.node_text(name_node);
+            let class_node = match self.language.as_str() {
+                "python" => python::unwrap_definition_node(class_node),
+                _ => class_node,
+            };
+            let name = self
+                .cached_class_name(class_node)
+                .unwrap_or_else(|| self.node_text(name_node));
             if name.is_empty() {
                 continue;
             }
             let start = class_node.start_byte();
             let end = class_node.end_byte();
+            if !seen.insert((start, end, name.clone())) {
+                continue;
+            }
             while let Some(&active_end) = active_ranges.last() {
                 if start >= active_end {
                     active_ranges.pop();
@@ -568,6 +578,9 @@ impl ParseContext {
                     _ => false,
                 };
                 if is_ref {
+                    if self.language == "python" && python::should_skip_import_ref(node) {
+                        continue;
+                    }
                     if let Some(reference) = map_node(node) {
                         refs.push(reference);
                     }

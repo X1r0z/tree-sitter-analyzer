@@ -161,7 +161,7 @@ fn signature_start_byte(declaration_node: Node<'_>) -> usize {
 
 pub(crate) fn extract_annotations(parser: &ParseContext) -> Vec<AnnotationInfo> {
     let mut annotations = Vec::new();
-    let mut stack = vec![parser.tree.root_node()];
+    let mut stack = vec![parser.tree().root_node()];
 
     while let Some(node) = stack.pop() {
         if matches!(node.kind(), "marker_annotation" | "annotation") {

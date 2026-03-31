@@ -8,4 +8,6 @@ pub(crate) mod languages {
     pub(crate) mod python;
 }
 
-pub(crate) use context::{ParseContext, PythonPropertyCallers, PythonPropertyDefinitions};
+pub(crate) use context::{
+    ParseContext, PythonPropertyCallers, PythonPropertyDefinitions, PythonPropertyIndexes,
+};

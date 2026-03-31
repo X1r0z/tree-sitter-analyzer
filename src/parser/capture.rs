@@ -21,7 +21,7 @@ fn with_compiled_capture_query<T>(
     kind: QueryKind,
     build: impl FnOnce(&Query) -> T,
 ) -> Option<T> {
-    compiled_query(&context.language, kind).map(build)
+    compiled_query(context.language(), kind).map(build)
 }
 
 pub(crate) fn collect_capture_pairs<'a>(
@@ -49,7 +49,7 @@ pub(crate) fn collect_capture_pairs<'a>(
 
         let mut cursor = QueryCursor::new();
         let mut capture_matches =
-            cursor.matches(query, context.tree.root_node(), context.source.as_slice());
+            cursor.matches(query, context.tree().root_node(), context.source());
         let mut pairs = Vec::new();
         while let Some(capture_match) = capture_matches.next() {
             let mut first = None;
@@ -98,7 +98,7 @@ pub(crate) fn collect_call_capture_matches<'a>(
 
         let mut cursor = QueryCursor::new();
         let mut capture_matches =
-            cursor.matches(query, context.tree.root_node(), context.source.as_slice());
+            cursor.matches(query, context.tree().root_node(), context.source());
         let mut out = Vec::new();
         while let Some(capture_match) = capture_matches.next() {
             let mut call = None;
@@ -150,7 +150,7 @@ pub(crate) fn collect_import_capture_matches<'a>(
 
         let mut cursor = QueryCursor::new();
         let mut capture_matches =
-            cursor.matches(query, context.tree.root_node(), context.source.as_slice());
+            cursor.matches(query, context.tree().root_node(), context.source());
         let mut out = Vec::new();
         while let Some(capture_match) = capture_matches.next() {
             let mut import = None;

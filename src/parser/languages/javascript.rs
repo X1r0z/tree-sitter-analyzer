@@ -75,9 +75,10 @@ impl ParseContext {
             return Vec::new();
         };
 
-        let mut resolvers = self.js_alias_resolvers_by_function.borrow_mut();
+        let mut caches = self.caches.borrow_mut();
+        let resolvers = &mut caches.js.alias_resolvers_by_function;
         let resolver = resolvers
-            .entry(func_node.id())
+            .entry(self.node_id(func_node))
             .or_insert_with(|| JsAliasResolverState::new(alias_events(self, func_node)));
         resolver.resolve(call_node.start_byte(), identifier_name)
     }

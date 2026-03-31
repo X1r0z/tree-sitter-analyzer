@@ -4,7 +4,9 @@ use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
 use super::super::capture::CallCaptureMatch;
-use super::super::{ParseContext, PythonPropertyCallers, PythonPropertyDefinitions};
+use super::super::{
+    ParseContext, PythonPropertyCallers, PythonPropertyDefinitions, PythonPropertyIndexes,
+};
 use crate::models::{
     AnnotationInfo, FieldInfo, FunctionParamInfo, Location, PythonPropertyCallerInfo,
     PythonPropertyInfo,
@@ -17,54 +19,70 @@ use crate::utils::select_most_specific_by_line;
 
 type PythonPropertyCallerKey = (String, String, Option<String>, Option<String>, usize, usize);
 
-fn ensure_property_definitions_cached(parser: &ParseContext) {
-    if parser.language != "python" {
+fn ensure_property_indexes_cached(parser: &ParseContext) {
+    if parser.language() != "python" {
         return;
     }
-    if parser.python_property_definitions.borrow().is_some() {
+    if parser.caches.borrow().python.property_indexes.is_some() {
         return;
     }
     let definitions = collect_property_definitions(parser);
-    *parser.python_property_definitions.borrow_mut() = Some(definitions);
+    parser.caches.borrow_mut().python.property_indexes = Some(PythonPropertyIndexes {
+        definitions,
+        callers_by_property: None,
+    });
 }
 
 fn ensure_property_callers_cached(parser: &ParseContext) {
-    if parser.language != "python" {
+    if parser.language() != "python" {
         return;
     }
-    if parser.python_property_callers.borrow().is_some() {
+    ensure_property_indexes_cached(parser);
+
+    let should_build = parser
+        .caches
+        .borrow()
+        .python
+        .property_indexes
+        .as_ref()
+        .is_some_and(|indexes| indexes.callers_by_property.is_none());
+    if !should_build {
         return;
     }
-    let raw_callers = if parser.python_property_definitions.borrow().is_some() {
-        collect_property_callers_raw(parser)
-    } else {
-        let definitions = collect_property_definitions(parser);
-        let raw_callers = collect_property_callers_raw(parser);
-        *parser.python_property_definitions.borrow_mut() = Some(definitions);
-        raw_callers
-    };
-    let definitions = parser.python_property_definitions.borrow();
-    let filtered_callers = filter_property_callers(
-        parser,
-        definitions
+
+    let definitions = {
+        let caches = parser.caches.borrow();
+        caches
+            .python
+            .property_indexes
             .as_ref()
-            .expect("python property definitions cache"),
-        &raw_callers,
-    );
-    *parser.python_property_callers.borrow_mut() = Some(filtered_callers);
+            .expect("python cache")
+            .definitions
+            .clone()
+    };
+    let raw_callers = collect_property_callers_raw(parser);
+    let callers_by_property = filter_property_callers(parser, &definitions, &raw_callers);
+    if let Some(indexes) = parser.caches.borrow_mut().python.property_indexes.as_mut() {
+        indexes.callers_by_property = Some(callers_by_property);
+    }
 }
 
 fn with_cached_property_definitions<R>(
     parser: &ParseContext,
     f: impl FnOnce(&PythonPropertyDefinitions) -> R,
 ) -> R {
-    if parser.language != "python" {
+    if parser.language() != "python" {
         return f(&HashSet::new());
     }
-    ensure_property_definitions_cached(parser);
-    let definitions = parser.python_property_definitions.borrow();
-    let definitions = Ref::map(definitions, |definitions| {
-        definitions.as_ref().expect("python cache")
+    ensure_property_indexes_cached(parser);
+    let caches = parser.caches.borrow();
+    let definitions = Ref::map(caches, |caches| {
+        &caches
+            .python
+            .property_indexes
+            .as_ref()
+            .expect("python cache")
+            .definitions
     });
     f(&definitions)
 }
@@ -73,12 +91,21 @@ fn with_cached_property_callers<R>(
     parser: &ParseContext,
     f: impl FnOnce(&PythonPropertyCallers) -> R,
 ) -> R {
-    if parser.language != "python" {
+    if parser.language() != "python" {
         return f(&HashMap::new());
     }
     ensure_property_callers_cached(parser);
-    let callers = parser.python_property_callers.borrow();
-    let callers = Ref::map(callers, |callers| callers.as_ref().expect("python cache"));
+    let caches = parser.caches.borrow();
+    let callers = Ref::map(caches, |caches| {
+        caches
+            .python
+            .property_indexes
+            .as_ref()
+            .expect("python cache")
+            .callers_by_property
+            .as_ref()
+            .expect("python callers cache")
+    });
     f(&callers)
 }
 
@@ -275,7 +302,7 @@ pub(crate) fn extract_definition_header(
 
 pub(crate) fn extract_decorators(parser: &ParseContext) -> Vec<AnnotationInfo> {
     let mut annotations = Vec::new();
-    let mut stack = vec![parser.tree.root_node()];
+    let mut stack = vec![parser.tree().root_node()];
 
     while let Some(node) = stack.pop() {
         if node.kind() == "decorated_definition" {
@@ -372,47 +399,42 @@ fn extract_decorator_name(parser: &ParseContext, decorator_node: Node<'_>) -> St
 }
 
 pub(crate) fn collect_property_definitions(parser: &ParseContext) -> PythonPropertyDefinitions {
-    if parser.language != "python" {
+    if parser.language() != "python" {
         return HashSet::new();
     }
 
     let mut properties = HashSet::new();
-    let mut stack = vec![parser.tree.root_node()];
+    let mut stack = vec![parser.tree().root_node()];
 
     while let Some(node) = stack.pop() {
-        match node.kind() {
-            "decorated_definition" => {
-                let Some(definition_node) = node.child_by_field_name("definition") else {
+        if node.kind() == "decorated_definition" {
+            let Some(definition_node) = node.child_by_field_name("definition") else {
+                continue;
+            };
+            if definition_node.kind() != "function_definition" {
+                continue;
+            }
+            let Some(name_node) = definition_node.child_by_field_name("name") else {
+                continue;
+            };
+
+            let mut is_property = false;
+            for i in 0..node.named_child_count() {
+                let Some(child) = node.named_child(i as u32) else {
                     continue;
                 };
-                if definition_node.kind() != "function_definition" {
-                    continue;
-                }
-                let Some(name_node) = definition_node.child_by_field_name("name") else {
-                    continue;
-                };
-
-                let mut is_property = false;
-                for i in 0..node.named_child_count() {
-                    let Some(child) = node.named_child(i as u32) else {
-                        continue;
-                    };
-                    if child.kind() == "decorator"
-                        && parser.node_trimmed_text_eq(child, "@property")
-                    {
-                        is_property = true;
-                        break;
-                    }
-                }
-
-                if is_property {
-                    properties.insert((
-                        parser.node_text(name_node),
-                        parser.find_enclosing_context(definition_node).class_name,
-                    ));
+                if child.kind() == "decorator" && parser.node_trimmed_text_eq(child, "@property") {
+                    is_property = true;
+                    break;
                 }
             }
-            _ => {}
+
+            if is_property {
+                properties.insert((
+                    parser.node_text(name_node),
+                    parser.find_enclosing_context(definition_node).class_name,
+                ));
+            }
         }
 
         for i in (0..node.named_child_count()).rev() {
@@ -426,14 +448,14 @@ pub(crate) fn collect_property_definitions(parser: &ParseContext) -> PythonPrope
 }
 
 pub(crate) fn collect_property_callers_raw(parser: &ParseContext) -> PythonPropertyCallers {
-    if parser.language != "python" {
+    if parser.language() != "python" {
         return HashMap::new();
     }
 
     let module_binding_types = collect_module_binding_types(parser);
     let mut callers_by_property: HashMap<String, Vec<PythonPropertyCallerInfo>> = HashMap::new();
     let mut seen_callers: HashSet<PythonPropertyCallerKey> = HashSet::new();
-    let mut stack = vec![parser.tree.root_node()];
+    let mut stack = vec![parser.tree().root_node()];
 
     while let Some(node) = stack.pop() {
         if node.kind() == "attribute" {
@@ -472,7 +494,7 @@ pub(crate) fn collect_property_callers_raw(parser: &ParseContext) -> PythonPrope
                     .or_default()
                     .push(PythonPropertyCallerInfo {
                         location: Location {
-                            file: parser.file_path.clone(),
+                            file: parser.file_path().to_string_lossy().into_owned(),
                             start_line,
                             end_line,
                         },
@@ -520,7 +542,7 @@ fn node_is_within(container: Node<'_>, node: Node<'_>) -> bool {
 
 fn collect_module_binding_types(parser: &ParseContext) -> HashMap<String, String> {
     let mut bindings = HashMap::new();
-    let root = parser.tree.root_node();
+    let root = parser.tree().root_node();
 
     for index in 0..root.named_child_count() {
         let Some(node) = root.named_child(index as u32) else {

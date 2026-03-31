@@ -33,8 +33,11 @@ pub(crate) struct ParseContext {
     pub(crate) class_names_by_node: RefCell<HashMap<usize, Option<String>>>,
     pub(crate) js_alias_resolvers_by_function:
         RefCell<HashMap<usize, super::languages::javascript::JsAliasResolverState>>,
-    pub(crate) python_property_indexes:
-        RefCell<Option<(PythonPropertyDefinitions, PythonPropertyCallers)>>,
+    pub(crate) python_property_definitions: RefCell<Option<PythonPropertyDefinitions>>,
+    pub(crate) python_property_callers: RefCell<Option<PythonPropertyCallers>>,
+    pub(crate) functions_without_bodies_cache: RefCell<Option<Vec<FunctionInfo>>>,
+    pub(crate) classes_cache: RefCell<Option<Vec<ClassInfo>>>,
+    pub(crate) field_infos_by_class_cache: RefCell<HashMap<String, Vec<FieldInfo>>>,
 }
 
 impl ParseContext {
@@ -65,7 +68,11 @@ impl ParseContext {
             function_names_by_node: RefCell::new(HashMap::new()),
             class_names_by_node: RefCell::new(HashMap::new()),
             js_alias_resolvers_by_function: RefCell::new(HashMap::new()),
-            python_property_indexes: RefCell::new(None),
+            python_property_definitions: RefCell::new(None),
+            python_property_callers: RefCell::new(None),
+            functions_without_bodies_cache: RefCell::new(None),
+            classes_cache: RefCell::new(None),
+            field_infos_by_class_cache: RefCell::new(HashMap::new()),
         })
     }
 
@@ -200,6 +207,11 @@ impl ParseContext {
     }
 
     pub(crate) fn collect_functions(&self, include_body: bool) -> Vec<FunctionInfo> {
+        if !include_body {
+            if let Some(cached) = self.functions_without_bodies_cache.borrow().as_ref() {
+                return cached.clone();
+            }
+        }
         let mut func_pairs: Vec<(Node<'_>, Node<'_>)> =
             capture::collect_capture_pairs(self, QueryKind::Function, "function", "name");
         func_pairs.sort_by_key(|(f, _)| (f.start_byte(), std::cmp::Reverse(f.end_byte())));
@@ -241,6 +253,10 @@ impl ParseContext {
             });
         }
 
+        if !include_body {
+            *self.functions_without_bodies_cache.borrow_mut() = Some(functions.clone());
+        }
+
         functions
     }
 
@@ -278,6 +294,9 @@ impl ParseContext {
     }
 
     pub(crate) fn collect_classes(&self) -> Vec<ClassInfo> {
+        if let Some(cached) = self.classes_cache.borrow().as_ref() {
+            return cached.clone();
+        }
         let mut methods_by_class = std::collections::HashMap::new();
         if self.language == "go" {
             for function in self.collect_functions(false) {
@@ -358,6 +377,7 @@ impl ParseContext {
             });
         }
 
+        *self.classes_cache.borrow_mut() = Some(classes.clone());
         classes
     }
 
@@ -388,6 +408,9 @@ impl ParseContext {
     }
 
     pub(crate) fn collect_field_infos_for_class(&self, class_name: &str) -> Vec<FieldInfo> {
+        if let Some(cached) = self.field_infos_by_class_cache.borrow().get(class_name) {
+            return cached.clone();
+        }
         let mut candidates: Vec<Node<'_>> = Vec::new();
         for (class_node, name_node) in
             capture::collect_capture_pairs(self, QueryKind::Class, "class", "name")
@@ -404,7 +427,11 @@ impl ParseContext {
             let size = node.end_byte() - node.start_byte();
             (size, node.start_byte())
         });
-        self.collect_class_field_infos(candidates[0], class_name)
+        let fields = self.collect_class_field_infos(candidates[0], class_name);
+        self.field_infos_by_class_cache
+            .borrow_mut()
+            .insert(class_name.to_string(), fields.clone());
+        fields
     }
 
     pub(crate) fn collect_calls(&self) -> Vec<CallInfo> {
@@ -435,6 +462,11 @@ impl ParseContext {
             };
 
             if callee.is_empty() {
+                continue;
+            }
+            if self.language == "python"
+                && python::should_skip_call(call_node, &callee, obj_name.as_deref())
+            {
                 continue;
             }
 

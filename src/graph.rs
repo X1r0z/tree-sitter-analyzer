@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 
 use crate::models::{
-    CallGraphPath, CallInfo, FieldInfo, FunctionInfo, FunctionKey, GraphDirection, GraphPathNode,
-    Location, PythonPropertyInfo,
+    CallGraphPath, CallInfo, ClassInfo, FieldInfo, FunctionInfo, FunctionKey, GraphDirection,
+    GraphPathNode, Location, PythonPropertyInfo,
 };
 use crate::parser::call_targets::{
     matches_module_property_target, matches_property_target as call_matches_property_target,
@@ -43,6 +43,7 @@ struct GraphEdgeKey {
 type FunctionsByFileContext = HashMap<(String, String, Option<String>), Vec<FunctionInfo>>;
 type FunctionsByFileName = HashMap<(String, String), Vec<FunctionInfo>>;
 type ResolutionCacheKey = (String, String, Option<String>, usize);
+type DirectSuperClassesByFileClass = HashMap<(String, String), Vec<String>>;
 
 #[derive(Debug, Clone)]
 pub(crate) struct CallGraph {
@@ -55,6 +56,7 @@ pub(crate) struct CallGraph {
 impl CallGraph {
     pub(crate) fn build(
         functions: Vec<FunctionInfo>,
+        classes: Vec<ClassInfo>,
         fields: Vec<FieldInfo>,
         calls: Vec<CallInfo>,
         python_properties: Vec<PythonPropertyInfo>,
@@ -81,6 +83,12 @@ impl CallGraph {
                     .or_default()
                     .push(field);
             }
+        }
+
+        let mut direct_superclasses_by_file_class = HashMap::new();
+        for class in classes {
+            direct_superclasses_by_file_class
+                .insert((class.location.file, class.name), class.super_classes);
         }
 
         let property_keys: HashSet<(String, Option<String>)> = python_properties
@@ -147,8 +155,13 @@ impl CallGraph {
                 }
             };
 
-            let mut callees =
-                resolve_call_targets(&call, &caller, &defs_by_name, &fields_by_file_class);
+            let mut callees = resolve_call_targets(
+                &call,
+                &caller,
+                &defs_by_name,
+                &fields_by_file_class,
+                &direct_superclasses_by_file_class,
+            );
             if callees.is_empty() {
                 let unresolved = unresolved_call_key(&call);
                 functions_by_key
@@ -495,10 +508,35 @@ fn resolve_call_targets(
     caller: &FunctionInfo,
     defs_by_name: &HashMap<String, Vec<FunctionInfo>>,
     fields_by_file_class: &HashMap<(String, String), Vec<FieldInfo>>,
+    direct_superclasses_by_file_class: &DirectSuperClassesByFileClass,
 ) -> Vec<FunctionKey> {
     let Some(candidates) = defs_by_name.get(&call.callee) else {
         return Vec::new();
     };
+    if call.object_name.as_deref() == Some("super()") {
+        let Some(caller_class_name) = caller.class_name.as_deref() else {
+            return Vec::new();
+        };
+        let Some(direct_superclasses) = direct_superclasses_by_file_class
+            .get(&(caller.location.file.clone(), caller_class_name.to_string()))
+        else {
+            return Vec::new();
+        };
+        let mut matched: Vec<_> = candidates
+            .iter()
+            .filter(|candidate| {
+                candidate.class_name.as_deref().is_some_and(|class_name| {
+                    direct_superclasses
+                        .iter()
+                        .any(|parent| parent == class_name)
+                })
+            })
+            .map(FunctionKey::from)
+            .collect();
+        matched.sort_by(compare_keys);
+        matched.dedup();
+        return matched;
+    }
     let matched: Vec<_> = resolve_forward_targets_with_fallback(
         ForwardTargetContext {
             caller_class_name: caller.class_name.as_deref(),

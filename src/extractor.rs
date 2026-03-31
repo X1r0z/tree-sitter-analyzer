@@ -177,6 +177,13 @@ impl CodeExtractor {
     }
 
     fn call_matches_class_target(&mut self, call: &CallInfo, class_name: &str) -> bool {
+        if self.matches_super_call_target(
+            call.caller_class_name.as_deref(),
+            call.object_name.as_deref(),
+            class_name,
+        ) {
+            return true;
+        }
         self.matches_class_target(
             call.caller.as_deref(),
             call.caller_class_name.as_deref(),
@@ -184,6 +191,56 @@ impl CodeExtractor {
             call.location.start_line,
             class_name,
         )
+    }
+
+    fn matches_super_call_target(
+        &mut self,
+        caller_class_name: Option<&str>,
+        object_name: Option<&str>,
+        class_name: &str,
+    ) -> bool {
+        if object_name != Some("super()") {
+            return false;
+        }
+        let Some(caller_class_name) = caller_class_name else {
+            return false;
+        };
+        self.direct_superclasses(caller_class_name)
+            .iter()
+            .any(|super_class| super_class == class_name)
+    }
+
+    fn direct_superclasses(&mut self, class_name: &str) -> Vec<String> {
+        self.collect_classes()
+            .into_iter()
+            .find(|class| class.name == class_name)
+            .map(|class| class.super_classes)
+            .unwrap_or_default()
+    }
+
+    fn resolve_super_call_targets(&mut self, caller: &FunctionInfo, callee: &str) -> Vec<String> {
+        let Some(caller_class_name) = caller.class_name.as_deref() else {
+            return Vec::new();
+        };
+        let direct_superclasses = self.direct_superclasses(caller_class_name);
+        if direct_superclasses.is_empty() {
+            return Vec::new();
+        }
+
+        let mut targets: Vec<_> = self
+            .find_function_signatures(callee, None)
+            .into_iter()
+            .filter_map(|function| {
+                let class_name = function.class_name?;
+                direct_superclasses
+                    .iter()
+                    .any(|super_class| super_class == &class_name)
+                    .then(|| format!("{}.{}", class_name, function.name))
+            })
+            .collect();
+        targets.sort();
+        targets.dedup();
+        targets
     }
 
     fn matches_property_target(
@@ -457,13 +514,29 @@ impl CodeExtractor {
         let mut callees = Vec::new();
         let mut seen: HashSet<(String, usize, usize)> = HashSet::new();
         for call in candidate_calls {
-            let Some(_caller) = self.enclosing_function_info_at_line(
+            let Some(caller) = self.enclosing_function_info_at_line(
                 function_name,
                 class_name,
                 call.location.start_line,
             ) else {
                 continue;
             };
+            if call.object_name.as_deref() == Some("super()") {
+                let resolved = self.resolve_super_call_targets(&caller, &call.callee);
+                if !resolved.is_empty() {
+                    for callee_name in resolved {
+                        let key = (
+                            callee_name.clone(),
+                            call.location.start_line,
+                            call.location.end_line,
+                        );
+                        if seen.insert(key) {
+                            callees.push((callee_name, call.location.clone()));
+                        }
+                    }
+                    continue;
+                }
+            }
             let mut callee_name = call.callee.clone();
             if let Some(ref obj) = call.object_name {
                 callee_name = format!("{}.{}", obj, callee_name);

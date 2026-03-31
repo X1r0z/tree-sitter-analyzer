@@ -9,17 +9,49 @@ use crate::models::{
     AnnotationInfo, FieldInfo, FunctionParamInfo, Location, PythonPropertyCallerInfo,
     PythonPropertyInfo,
 };
+use crate::parser::call_targets::{
+    matches_module_property_target, matches_property_target as call_matches_property_target,
+    type_matches_class,
+};
+use crate::utils::select_most_specific_by_line;
 
 type PythonPropertyCallerKey = (String, String, Option<String>, Option<String>, usize, usize);
 
-fn ensure_property_indexes_cached(parser: &ParseContext) {
+fn ensure_property_definitions_cached(parser: &ParseContext) {
     if parser.language != "python" {
         return;
     }
-    if parser.python_property_indexes.borrow().is_some() {
+    if parser.python_property_definitions.borrow().is_some() {
         return;
     }
-    *parser.python_property_indexes.borrow_mut() = Some(collect_property_indexes(parser));
+    let definitions = collect_property_definitions(parser);
+    *parser.python_property_definitions.borrow_mut() = Some(definitions);
+}
+
+fn ensure_property_callers_cached(parser: &ParseContext) {
+    if parser.language != "python" {
+        return;
+    }
+    if parser.python_property_callers.borrow().is_some() {
+        return;
+    }
+    let raw_callers = if parser.python_property_definitions.borrow().is_some() {
+        collect_property_callers_raw(parser)
+    } else {
+        let definitions = collect_property_definitions(parser);
+        let raw_callers = collect_property_callers_raw(parser);
+        *parser.python_property_definitions.borrow_mut() = Some(definitions);
+        raw_callers
+    };
+    let definitions = parser.python_property_definitions.borrow();
+    let filtered_callers = filter_property_callers(
+        parser,
+        definitions
+            .as_ref()
+            .expect("python property definitions cache"),
+        &raw_callers,
+    );
+    *parser.python_property_callers.borrow_mut() = Some(filtered_callers);
 }
 
 fn with_cached_property_definitions<R>(
@@ -29,10 +61,10 @@ fn with_cached_property_definitions<R>(
     if parser.language != "python" {
         return f(&HashSet::new());
     }
-    ensure_property_indexes_cached(parser);
-    let indexes = parser.python_property_indexes.borrow();
-    let definitions = Ref::map(indexes, |indexes| {
-        &indexes.as_ref().expect("python cache").0
+    ensure_property_definitions_cached(parser);
+    let definitions = parser.python_property_definitions.borrow();
+    let definitions = Ref::map(definitions, |definitions| {
+        definitions.as_ref().expect("python cache")
     });
     f(&definitions)
 }
@@ -44,11 +76,9 @@ fn with_cached_property_callers<R>(
     if parser.language != "python" {
         return f(&HashMap::new());
     }
-    ensure_property_indexes_cached(parser);
-    let indexes = parser.python_property_indexes.borrow();
-    let callers = Ref::map(indexes, |indexes| {
-        &indexes.as_ref().expect("python cache").1
-    });
+    ensure_property_callers_cached(parser);
+    let callers = parser.python_property_callers.borrow();
+    let callers = Ref::map(callers, |callers| callers.as_ref().expect("python cache"));
     f(&callers)
 }
 
@@ -151,6 +181,24 @@ pub(crate) fn resolve_call_parts<'a>(
     }
 
     (callee, is_method, obj_name, callee_function_node)
+}
+
+pub(crate) fn should_skip_call(
+    call_node: Node<'_>,
+    callee: &str,
+    object_name: Option<&str>,
+) -> bool {
+    if callee != "super" || object_name.is_some() {
+        return false;
+    }
+
+    let Some(parent) = call_node.parent() else {
+        return false;
+    };
+    parent.kind() == "attribute"
+        && parent
+            .child_by_field_name("object")
+            .is_some_and(|object| object.id() == call_node.id())
 }
 
 pub(crate) fn is_ref_node(node: Node<'_>) -> bool {
@@ -323,17 +371,12 @@ fn extract_decorator_name(parser: &ParseContext, decorator_node: Node<'_>) -> St
     String::new()
 }
 
-pub(crate) fn collect_property_indexes(
-    parser: &ParseContext,
-) -> (PythonPropertyDefinitions, PythonPropertyCallers) {
+pub(crate) fn collect_property_definitions(parser: &ParseContext) -> PythonPropertyDefinitions {
     if parser.language != "python" {
-        return (HashSet::new(), HashMap::new());
+        return HashSet::new();
     }
 
-    let module_binding_types = collect_module_binding_types(parser);
     let mut properties = HashSet::new();
-    let mut callers_by_property: HashMap<String, Vec<PythonPropertyCallerInfo>> = HashMap::new();
-    let mut seen_callers: HashSet<PythonPropertyCallerKey> = HashSet::new();
     let mut stack = vec![parser.tree.root_node()];
 
     while let Some(node) = stack.pop() {
@@ -369,54 +412,6 @@ pub(crate) fn collect_property_indexes(
                     ));
                 }
             }
-            "attribute" => {
-                if !is_load_like_property_access(node) {
-                    continue;
-                }
-                let (property_name, object_name) = split_attribute_parts(parser, node);
-                if property_name.is_empty() {
-                    continue;
-                }
-                let enclosing = parser.find_enclosing_context(node);
-                let caller = enclosing
-                    .function_name
-                    .unwrap_or_else(|| "<module>".to_string());
-                let start_line = node.start_position().row + 1;
-                let end_line = node.end_position().row + 1;
-                let object_type = if caller == "<module>" {
-                    object_name
-                        .as_deref()
-                        .and_then(|name| module_binding_types.get(name))
-                        .cloned()
-                } else {
-                    None
-                };
-                let seen_key = (
-                    property_name.clone(),
-                    caller.clone(),
-                    enclosing.class_name.clone(),
-                    object_name.clone(),
-                    start_line,
-                    end_line,
-                );
-                if seen_callers.insert(seen_key) {
-                    callers_by_property
-                        .entry(property_name.clone())
-                        .or_default()
-                        .push(PythonPropertyCallerInfo {
-                            location: Location {
-                                file: parser.file_path.clone(),
-                                start_line,
-                                end_line,
-                            },
-                            property_name: property_name.clone(),
-                            caller,
-                            caller_class_name: enclosing.class_name.clone(),
-                            object_name,
-                            object_type,
-                        });
-                }
-            }
             _ => {}
         }
 
@@ -427,7 +422,77 @@ pub(crate) fn collect_property_indexes(
         }
     }
 
-    (properties, callers_by_property)
+    properties
+}
+
+pub(crate) fn collect_property_callers_raw(parser: &ParseContext) -> PythonPropertyCallers {
+    if parser.language != "python" {
+        return HashMap::new();
+    }
+
+    let module_binding_types = collect_module_binding_types(parser);
+    let mut callers_by_property: HashMap<String, Vec<PythonPropertyCallerInfo>> = HashMap::new();
+    let mut seen_callers: HashSet<PythonPropertyCallerKey> = HashSet::new();
+    let mut stack = vec![parser.tree.root_node()];
+
+    while let Some(node) = stack.pop() {
+        if node.kind() == "attribute" {
+            if !is_load_like_property_access(node) {
+                continue;
+            }
+            let (property_name, object_name) = split_attribute_parts(parser, node);
+            if property_name.is_empty() {
+                continue;
+            }
+            let enclosing = parser.find_enclosing_context(node);
+            let caller = enclosing
+                .function_name
+                .unwrap_or_else(|| "<module>".to_string());
+            let start_line = node.start_position().row + 1;
+            let end_line = node.end_position().row + 1;
+            let object_type = if caller == "<module>" {
+                object_name
+                    .as_deref()
+                    .and_then(|name| module_binding_types.get(name))
+                    .cloned()
+            } else {
+                None
+            };
+            let seen_key = (
+                property_name.clone(),
+                caller.clone(),
+                enclosing.class_name.clone(),
+                object_name.clone(),
+                start_line,
+                end_line,
+            );
+            if seen_callers.insert(seen_key) {
+                callers_by_property
+                    .entry(property_name.clone())
+                    .or_default()
+                    .push(PythonPropertyCallerInfo {
+                        location: Location {
+                            file: parser.file_path.clone(),
+                            start_line,
+                            end_line,
+                        },
+                        property_name: property_name.clone(),
+                        caller,
+                        caller_class_name: enclosing.class_name.clone(),
+                        object_name,
+                        object_type,
+                    });
+            }
+        }
+
+        for i in (0..node.named_child_count()).rev() {
+            if let Some(child) = node.named_child(i as u32) {
+                stack.push(child);
+            }
+        }
+    }
+
+    callers_by_property
 }
 
 fn is_load_like_property_access(node: Node<'_>) -> bool {
@@ -572,6 +637,135 @@ pub(crate) fn collect_property_callers(
                 .then_with(|| left.location.start_line.cmp(&right.location.start_line))
         });
         values
+    })
+}
+
+fn filter_property_callers(
+    parser: &ParseContext,
+    property_definitions: &PythonPropertyDefinitions,
+    callers: &PythonPropertyCallers,
+) -> PythonPropertyCallers {
+    let property_definitions: Vec<_> = property_definitions
+        .iter()
+        .cloned()
+        .map(|(name, class_name)| PythonPropertyInfo { name, class_name })
+        .collect();
+    let direct_superclasses = parser
+        .collect_classes()
+        .into_iter()
+        .map(|class| (class.name, class.super_classes))
+        .collect::<HashMap<_, _>>();
+    let mut functions = parser.collect_functions(false);
+    functions.sort_by_key(|function| (function.location.start_line, function.location.end_line));
+
+    let mut filtered = HashMap::new();
+    for (property_name, entries) in callers {
+        let matched: Vec<_> = entries
+            .iter()
+            .filter(|caller| {
+                property_caller_matches_known_property(
+                    parser,
+                    caller,
+                    &property_definitions,
+                    &direct_superclasses,
+                    &functions,
+                )
+            })
+            .cloned()
+            .collect();
+        if !matched.is_empty() {
+            filtered.insert(property_name.clone(), matched);
+        }
+    }
+    filtered
+}
+
+fn property_caller_matches_known_property(
+    parser: &ParseContext,
+    caller: &PythonPropertyCallerInfo,
+    property_definitions: &[PythonPropertyInfo],
+    direct_superclasses: &HashMap<String, Vec<String>>,
+    functions: &[crate::models::FunctionInfo],
+) -> bool {
+    let candidates: Vec<_> = property_definitions
+        .iter()
+        .filter(|property| property.name == caller.property_name)
+        .collect();
+    if candidates.is_empty() {
+        return false;
+    }
+
+    if caller.caller == "<module>" {
+        return candidates.iter().any(|property| {
+            property.class_name.as_deref().is_some_and(|class_name| {
+                matches_module_property_target(
+                    caller.object_name.as_deref(),
+                    caller.object_type.as_deref(),
+                    class_name,
+                )
+            })
+        });
+    }
+
+    let caller_params =
+        select_most_specific_by_line(functions, caller.location.start_line, |function| {
+            (function.location.start_line, function.location.end_line)
+        })
+        .filter(|function| {
+            function.name == caller.caller
+                && function.class_name.as_deref() == caller.caller_class_name.as_deref()
+        })
+        .map(|function| function.params.clone())
+        .unwrap_or_default();
+
+    let caller_fields = caller
+        .caller_class_name
+        .as_deref()
+        .map(|class_name| parser.collect_field_infos_for_class(class_name))
+        .unwrap_or_default();
+
+    candidates.iter().any(|property| {
+        let Some(target_class_name) = property.class_name.as_deref() else {
+            return false;
+        };
+
+        let receiver_matches =
+            if matches!(caller.object_name.as_deref(), Some("self") | Some("cls")) {
+                caller.caller_class_name.as_deref() == Some(target_class_name)
+                    || caller
+                        .caller_class_name
+                        .as_deref()
+                        .and_then(|class_name| direct_superclasses.get(class_name))
+                        .into_iter()
+                        .flatten()
+                        .any(|super_class| super_class == target_class_name)
+            } else {
+                call_matches_property_target(
+                    caller.caller_class_name.as_deref(),
+                    caller.object_name.as_deref(),
+                    target_class_name,
+                    |attr_name, expected_class_name| {
+                        caller_fields.iter().any(|field| {
+                            field.name == attr_name
+                                && type_matches_class(
+                                    field.field_type.as_deref(),
+                                    expected_class_name,
+                                )
+                        })
+                    },
+                    |attr_name, expected_class_name| {
+                        caller_params.iter().any(|param| {
+                            param.name == attr_name
+                                && type_matches_class(
+                                    param.param_type.as_deref(),
+                                    expected_class_name,
+                                )
+                        })
+                    },
+                )
+            };
+
+        receiver_matches
     })
 }
 

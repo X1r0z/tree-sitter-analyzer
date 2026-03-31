@@ -129,6 +129,15 @@ impl<'a> CallTargetResolver<'a> {
         field_type_cache: &mut FieldTypeCache,
         param_type_cache: &mut ParamTypeCache,
     ) -> anyhow::Result<bool> {
+        if object_name == Some("super()") {
+            let Some(caller_class_name) = caller.function.class_name.as_deref() else {
+                return Ok(false);
+            };
+            return Ok(self
+                .load_direct_superclasses_by_file_class(caller.file_id, caller_class_name)?
+                .iter()
+                .any(|super_class| super_class == class_name));
+        }
         let field_types = caller
             .function
             .class_name
@@ -188,6 +197,39 @@ impl<'a> CallTargetResolver<'a> {
         field_type_cache: &mut FieldTypeCache,
         param_type_cache: &mut ParamTypeCache,
     ) -> anyhow::Result<Vec<IndexedFunction>> {
+        if object_name == Some("super()") {
+            let Some(caller_class_name) = caller.function.class_name.as_deref() else {
+                return Ok(Vec::new());
+            };
+            let direct_superclasses =
+                self.load_direct_superclasses_by_file_class(caller.file_id, caller_class_name)?;
+            let mut resolved: Vec<_> = candidates
+                .iter()
+                .filter(|candidate| {
+                    candidate
+                        .function
+                        .class_name
+                        .as_deref()
+                        .is_some_and(|class_name| {
+                            direct_superclasses
+                                .iter()
+                                .any(|super_class| super_class == class_name)
+                        })
+                })
+                .cloned()
+                .collect();
+            resolved.sort_by_key(|candidate| {
+                (
+                    candidate.function.location.file.clone(),
+                    candidate.function.location.start_line,
+                    candidate.function.location.end_line,
+                    candidate.function.class_name.clone(),
+                    candidate.function.name.clone(),
+                )
+            });
+            resolved.dedup_by(|left, right| left.key() == right.key());
+            return Ok(resolved);
+        }
         let field_types = caller
             .function
             .class_name
@@ -322,5 +364,23 @@ impl<'a> CallTargetResolver<'a> {
         let map = Arc::new(map);
         cache.insert(function_id, Arc::clone(&map));
         Ok(map)
+    }
+
+    fn load_direct_superclasses_by_file_class(
+        &self,
+        file_id: i64,
+        class_name: &str,
+    ) -> anyhow::Result<Vec<String>> {
+        let mut stmt = self.ctx.conn.prepare(
+            "
+            SELECT rel.super_class_name
+            FROM classes cls
+            JOIN class_super_classes rel ON rel.class_id = cls.id
+            WHERE cls.file_id = ?1 AND cls.name = ?2
+            ORDER BY rel.rowid
+            ",
+        )?;
+        let rows = stmt.query_map(params![file_id, class_name], |row| row.get::<_, String>(0))?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 }

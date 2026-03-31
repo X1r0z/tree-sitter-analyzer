@@ -25,8 +25,11 @@ pub(super) struct CallerRow {
 
 #[derive(Debug)]
 pub(super) struct CalleeRow {
+    file_id: i64,
     location: Location,
     callee: String,
+    object_name: Option<String>,
+    caller_class_name: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -308,17 +311,22 @@ impl<'a> CallEdgeQuery<'a> {
         sql.push_str(" ) ORDER BY f.path, c.start_line");
 
         let mut stmt = self.ctx.conn.prepare(&sql)?;
+        let resolver = CallTargetResolver::new(self.ctx);
+        let mut field_type_cache = HashMap::new();
+        let mut param_type_cache = HashMap::new();
+        let mut node_cache = HashMap::new();
+        let mut resolution_cache = HashMap::new();
+        let mut enclosing_caches = EnclosingFunctionCaches {
+            candidates: &mut node_cache,
+            resolutions: &mut resolution_cache,
+        };
         let rows: Vec<CalleeRow> = stmt
             .query_map(params_from_iter(params.iter()), |row| {
                 Ok(CalleeRow {
-                    callee: {
-                        let callee: String = row.get(2)?;
-                        let object_name: Option<String> = row.get(3)?;
-                        match object_name {
-                            Some(object_name) => format!("{}.{}", object_name, callee),
-                            None => callee,
-                        }
-                    },
+                    file_id: row.get(0)?,
+                    callee: row.get(2)?,
+                    object_name: row.get(3)?,
+                    caller_class_name: row.get(4)?,
                     location: Location {
                         file: row.get(1)?,
                         start_line: row.get::<_, i64>(5)? as usize,
@@ -331,15 +339,62 @@ impl<'a> CallEdgeQuery<'a> {
         let mut results = Vec::new();
         let mut seen = HashSet::new();
         for row in rows {
+            if row.object_name.as_deref() == Some("super()") {
+                if let Some(caller) = self.resolve_enclosing_function(
+                    row.file_id,
+                    &row.location.file,
+                    function_name,
+                    row.caller_class_name.as_deref(),
+                    row.location.start_line,
+                    &mut enclosing_caches,
+                )? {
+                    let candidates =
+                        self.load_functions_by_name(&row.callee, enclosing_caches.candidates)?;
+                    let resolved = resolver.resolve_forward_targets_with_fallback(
+                        &caller,
+                        row.object_name.as_deref(),
+                        candidates.as_ref(),
+                        &mut field_type_cache,
+                        &mut param_type_cache,
+                    )?;
+                    if !resolved.is_empty() {
+                        for candidate in resolved {
+                            let callee = match candidate.function.class_name.as_deref() {
+                                Some(class_name) => {
+                                    format!("{}.{}", class_name, candidate.function.name)
+                                }
+                                None => candidate.function.name.clone(),
+                            };
+                            let key = (
+                                row.location.file.clone(),
+                                callee.clone(),
+                                row.location.start_line,
+                                row.location.end_line,
+                            );
+                            if seen.insert(key) {
+                                results.push(CalleeInfo {
+                                    callee,
+                                    location: row.location.clone(),
+                                });
+                            }
+                        }
+                        continue;
+                    }
+                }
+            }
+            let callee = match row.object_name {
+                Some(object_name) => format!("{}.{}", object_name, row.callee),
+                None => row.callee,
+            };
             let key = (
                 row.location.file.clone(),
-                row.callee.clone(),
+                callee.clone(),
                 row.location.start_line,
                 row.location.end_line,
             );
             if seen.insert(key) {
                 results.push(CalleeInfo {
-                    callee: row.callee,
+                    callee,
                     location: row.location,
                 });
             }

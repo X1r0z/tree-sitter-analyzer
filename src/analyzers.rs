@@ -407,6 +407,7 @@ impl SourceAnalyzer {
         };
 
         let mut functions = Vec::new();
+        let mut classes = Vec::new();
         let mut fields = Vec::new();
         let mut calls = Vec::new();
         let mut python_properties = Vec::new();
@@ -415,6 +416,7 @@ impl SourceAnalyzer {
         for snapshot in snapshots {
             let snapshot = snapshot?;
             functions.extend(snapshot.functions);
+            classes.extend(snapshot.classes);
             fields.extend(snapshot.fields);
             calls.extend(snapshot.calls);
             python_properties.extend(snapshot.python_properties);
@@ -432,6 +434,7 @@ impl SourceAnalyzer {
 
         let graph = CallGraph::build(
             functions,
+            classes,
             fields,
             calls,
             python_properties,

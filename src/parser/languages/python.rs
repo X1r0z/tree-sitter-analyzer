@@ -67,7 +67,7 @@ fn ensure_property_callers_cached(parser: &ParseContext) {
     }
 }
 
-fn with_cached_property_definitions<R>(
+pub(crate) fn with_cached_property_definitions<R>(
     parser: &ParseContext,
     f: impl FnOnce(&PythonPropertyDefinitions) -> R,
 ) -> R {
@@ -524,7 +524,10 @@ fn is_load_like_property_access(node: Node<'_>) -> bool {
             "assignment" | "augmented_assignment" => {
                 if parent
                     .child_by_field_name("left")
-                    .is_some_and(|left| node_is_within(left, node))
+                    .is_some_and(|left| {
+                        left.start_byte() <= node.start_byte()
+                            && node.end_byte() <= left.end_byte()
+                    })
                 {
                     return false;
                 }
@@ -534,10 +537,6 @@ fn is_load_like_property_access(node: Node<'_>) -> bool {
         current = parent;
     }
     true
-}
-
-fn node_is_within(container: Node<'_>, node: Node<'_>) -> bool {
-    container.start_byte() <= node.start_byte() && node.end_byte() <= container.end_byte()
 }
 
 fn collect_module_binding_types(parser: &ParseContext) -> HashMap<String, String> {
@@ -580,7 +579,12 @@ fn collect_module_binding_types_from_node(
             }
 
             if let Some(type_node) = node.child_by_field_name("type") {
-                let class_name = last_name_segment(&parser.node_text(type_node));
+                let class_name = parser
+                    .node_text(type_node)
+                    .rsplit('.')
+                    .next()
+                    .unwrap_or_default()
+                    .to_string();
                 if !class_name.is_empty() {
                     bindings.insert(name, class_name);
                     return;
@@ -607,15 +611,16 @@ fn infer_module_binding_type(parser: &ParseContext, node: Node<'_>) -> Option<St
             .child_by_field_name("function")
             .and_then(|function| infer_module_binding_type(parser, function)),
         "identifier" | "attribute" => {
-            let class_name = last_name_segment(&parser.node_text(node));
+            let class_name = parser
+                .node_text(node)
+                .rsplit('.')
+                .next()
+                .unwrap_or_default()
+                .to_string();
             (!class_name.is_empty()).then_some(class_name)
         }
         _ => None,
     }
-}
-
-fn last_name_segment(value: &str) -> String {
-    value.rsplit('.').next().unwrap_or(value).to_string()
 }
 
 pub(crate) fn collect_property_infos(parser: &ParseContext) -> Vec<PythonPropertyInfo> {
@@ -788,16 +793,6 @@ fn property_caller_matches_known_property(
             };
 
         receiver_matches
-    })
-}
-
-pub(crate) fn has_property_definition(
-    parser: &ParseContext,
-    property_name: &str,
-    class_name: Option<&str>,
-) -> bool {
-    with_cached_property_definitions(parser, |properties| {
-        properties.contains(&(property_name.to_string(), class_name.map(str::to_string)))
     })
 }
 

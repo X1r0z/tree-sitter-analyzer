@@ -345,7 +345,12 @@ impl CallGraph {
                         .collect(),
                 )
             },
-            graph_path_identity,
+            |steps: &[TraversalPathStep<FunctionKey, CallSite>]| {
+                steps
+                    .iter()
+                    .map(|step| (step.node.clone(), step.edge.clone()))
+                    .collect::<Vec<_>>()
+            },
             |direction, steps| self.materialize_graph(direction, steps),
         )
         .unwrap_or_else(|never| match never {});
@@ -441,15 +446,6 @@ fn freeze_edges(
             });
             (key, values)
         })
-        .collect()
-}
-
-fn graph_path_identity(
-    steps: &[TraversalPathStep<FunctionKey, CallSite>],
-) -> Vec<(FunctionKey, Option<CallSite>)> {
-    steps
-        .iter()
-        .map(|step| (step.node.clone(), step.edge.clone()))
         .collect()
 }
 

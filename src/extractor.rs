@@ -6,6 +6,7 @@ use crate::parser::call_targets::{
     matches_property_target as call_matches_property_target, split_function_target,
     type_matches_class,
 };
+use crate::parser::languages::python;
 use crate::parser::ParseContext;
 use crate::utils::select_most_specific_by_line;
 
@@ -456,10 +457,9 @@ impl CodeExtractor {
             }
         }
 
-        if self
-            .parser
-            .has_python_property_definition(function_name, class_name)
-        {
+        if python::with_cached_property_definitions(&self.parser, |properties| {
+            properties.contains(&(function_name.to_string(), class_name.map(str::to_string)))
+        }) {
             for caller in self
                 .parser
                 .collect_python_property_callers(Some(function_name))

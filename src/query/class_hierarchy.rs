@@ -118,7 +118,11 @@ impl<'a> ClassHierarchyQuery<'a> {
                 .query_map(params![class_name], |row| row.get(0))?
                 .collect::<Result<Vec<_>, _>>()?,
         };
-        self.collect_non_seed_ids(reachable_ids, seed_ids)
+        let seed_ids: HashSet<i64> = seed_ids.iter().copied().collect();
+        Ok(reachable_ids
+            .into_iter()
+            .filter(|id| !seed_ids.contains(id))
+            .collect())
     }
 
     fn load_sub_class_ids(&self, class_name: &str, seed_ids: &[i64]) -> anyhow::Result<Vec<i64>> {
@@ -174,14 +178,6 @@ impl<'a> ClassHierarchyQuery<'a> {
                 .query_map(params![class_name], |row| row.get(0))?
                 .collect::<Result<Vec<_>, _>>()?,
         };
-        self.collect_non_seed_ids(reachable_ids, seed_ids)
-    }
-
-    fn collect_non_seed_ids(
-        &self,
-        reachable_ids: Vec<i64>,
-        seed_ids: &[i64],
-    ) -> anyhow::Result<Vec<i64>> {
         let seed_ids: HashSet<i64> = seed_ids.iter().copied().collect();
         Ok(reachable_ids
             .into_iter()

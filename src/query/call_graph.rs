@@ -8,7 +8,9 @@ use super::{CallEdgeQuery, QueryContext};
 use crate::models::{
     CallGraphPath, FunctionInfo, FunctionKey, GraphDirection, GraphPathNode, Location,
 };
-use crate::parser::call_targets::has_non_self_object_target;
+use crate::parser::call_targets::{
+    has_non_self_object_target, matches_module_property_target,
+};
 use crate::traversal::{collect_paths_dfs, TraversalPathStep};
 
 #[derive(Clone, Eq, Hash, PartialEq)]
@@ -130,7 +132,12 @@ impl<'a> CallGraphQuery<'a> {
                         .collect(),
                 )
             },
-            graph_path_identity,
+            |steps: &[TraversalPathStep<IndexedFunction, CallSite>]| {
+                steps
+                    .iter()
+                    .map(|step| (step.node.key(), step.edge.clone()))
+                    .collect::<Vec<_>>()
+            },
             Self::materialize_graph,
         )?;
 
@@ -230,13 +237,25 @@ impl<'a> CallGraphQuery<'a> {
                 caches.param_type_cache,
             )?;
             if resolved.is_empty() {
-                resolved.push(unresolved_indexed_function(
-                    node.file_id,
-                    &node.function.location.file,
-                    &callee_name,
-                    object_name.as_deref(),
-                    line,
-                ));
+                let name = match object_name.as_deref() {
+                    Some(object_name) => format!("{}.{}", object_name, callee_name),
+                    None => callee_name.clone(),
+                };
+                resolved.push(IndexedFunction {
+                    function_id: -1,
+                    file_id: node.file_id,
+                    function: FunctionInfo {
+                        name,
+                        location: Location {
+                            file: node.function.location.file.clone(),
+                            start_line: line,
+                            end_line: line,
+                        },
+                        body: String::new(),
+                        class_name: None,
+                        params: Vec::new(),
+                    },
+                });
             }
             for candidate in resolved {
                 let key = GraphEdgeKey {
@@ -293,13 +312,25 @@ impl<'a> CallGraphQuery<'a> {
             }
 
             if matched.is_empty() {
-                matched.push(unresolved_indexed_function(
-                    node.file_id,
-                    &node.function.location.file,
-                    &property_name,
-                    object_name.as_deref(),
-                    line,
-                ));
+                let name = match object_name.as_deref() {
+                    Some(object_name) => format!("{}.{}", object_name, property_name),
+                    None => property_name.clone(),
+                };
+                matched.push(IndexedFunction {
+                    function_id: -1,
+                    file_id: node.file_id,
+                    function: FunctionInfo {
+                        name,
+                        location: Location {
+                            file: node.function.location.file.clone(),
+                            start_line: line,
+                            end_line: line,
+                        },
+                        body: String::new(),
+                        class_name: None,
+                        params: Vec::new(),
+                    },
+                });
             }
 
             for candidate in matched {
@@ -463,7 +494,21 @@ impl<'a> CallGraphQuery<'a> {
                 }
             }
 
-            let caller = module_caller_indexed_function(file_id, &file, line);
+            let caller = IndexedFunction {
+                function_id: -1,
+                file_id,
+                function: FunctionInfo {
+                    name: "<module>".to_string(),
+                    location: Location {
+                        file: file.clone(),
+                        start_line: line,
+                        end_line: line,
+                    },
+                    body: String::new(),
+                    class_name: None,
+                    params: Vec::new(),
+                },
+            };
             let key = GraphEdgeKey {
                 node: caller.key(),
                 call_site: CallSite {
@@ -495,7 +540,7 @@ impl<'a> CallGraphQuery<'a> {
             {
                 if caller_name == "<module>" {
                     if let Some(class_name) = node.function.class_name.as_deref() {
-                        if !resolver.matches_property_target_without_enclosing_function(
+                        if !matches_module_property_target(
                             object_name.as_deref(),
                             object_type.as_deref(),
                             class_name,
@@ -503,7 +548,21 @@ impl<'a> CallGraphQuery<'a> {
                             continue;
                         }
                     }
-                    let caller = module_caller_indexed_function(file_id, &file, line);
+                    let caller = IndexedFunction {
+                        function_id: -1,
+                        file_id,
+                        function: FunctionInfo {
+                            name: "<module>".to_string(),
+                            location: Location {
+                                file: file.clone(),
+                                start_line: line,
+                                end_line: line,
+                            },
+                            body: String::new(),
+                            class_name: None,
+                            params: Vec::new(),
+                        },
+                    };
                     let key = GraphEdgeKey {
                         node: caller.key(),
                         call_site: CallSite {
@@ -727,60 +786,5 @@ impl<'a> CallGraphQuery<'a> {
         };
 
         Ok(rows)
-    }
-}
-
-fn graph_path_identity(
-    steps: &[TraversalPathStep<IndexedFunction, CallSite>],
-) -> Vec<(FunctionKey, Option<CallSite>)> {
-    steps
-        .iter()
-        .map(|step| (step.node.key(), step.edge.clone()))
-        .collect()
-}
-
-fn unresolved_indexed_function(
-    file_id: i64,
-    file: &str,
-    callee_name: &str,
-    object_name: Option<&str>,
-    line: usize,
-) -> IndexedFunction {
-    let name = match object_name {
-        Some(object_name) => format!("{}.{}", object_name, callee_name),
-        None => callee_name.to_string(),
-    };
-    IndexedFunction {
-        function_id: -1,
-        file_id,
-        function: FunctionInfo {
-            name,
-            location: Location {
-                file: file.to_string(),
-                start_line: line,
-                end_line: line,
-            },
-            body: String::new(),
-            class_name: None,
-            params: Vec::new(),
-        },
-    }
-}
-
-fn module_caller_indexed_function(file_id: i64, file: &str, line: usize) -> IndexedFunction {
-    IndexedFunction {
-        function_id: -1,
-        file_id,
-        function: FunctionInfo {
-            name: "<module>".to_string(),
-            location: Location {
-                file: file.to_string(),
-                start_line: line,
-                end_line: line,
-            },
-            body: String::new(),
-            class_name: None,
-            params: Vec::new(),
-        },
     }
 }

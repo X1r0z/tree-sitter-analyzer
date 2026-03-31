@@ -6,7 +6,7 @@ use rusqlite::{params, OptionalExtension};
 use super::call_edges::IndexedFunction;
 use super::QueryContext;
 use crate::parser::call_targets::{
-    has_unique_class_method_target, matches_call_target, matches_module_property_target,
+    has_unique_class_method_target, matches_call_target,
     matches_property_target as call_matches_property_target, resolve_forward_targets_with_fallback,
     type_matches_class, ForwardTargetContext,
 };
@@ -110,15 +110,6 @@ impl<'a> CallTargetResolver<'a> {
                     .any(|param_type| type_matches_class(param_type.as_deref(), target_class_name))
             },
         ))
-    }
-
-    pub(super) fn matches_property_target_without_enclosing_function(
-        &self,
-        object_name: Option<&str>,
-        object_type: Option<&str>,
-        class_name: &str,
-    ) -> bool {
-        matches_module_property_target(object_name, object_type, class_name)
     }
 
     pub(super) fn matches_call_target(

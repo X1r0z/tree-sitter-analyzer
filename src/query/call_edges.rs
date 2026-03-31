@@ -7,7 +7,9 @@ use rusqlite::{params, params_from_iter, ToSql};
 use super::call_resolver::CallTargetResolver;
 use super::QueryContext;
 use crate::models::{CalleeInfo, CallerInfo, FunctionInfo, FunctionKey, Location};
-use crate::parser::call_targets::{has_non_self_object_target, split_function_target};
+use crate::parser::call_targets::{
+    has_non_self_object_target, matches_module_property_target, split_function_target,
+};
 use crate::utils::{
     select_most_specific_by_line, sort_callees_by_file_line, sort_callers_by_file_line,
 };
@@ -216,7 +218,7 @@ impl<'a> CallEdgeQuery<'a> {
                 ) = row?;
                 if let Some(class_name) = class_name {
                     if caller_name == "<module>" {
-                        if !resolver.matches_property_target_without_enclosing_function(
+                        if !matches_module_property_target(
                             object_name.as_deref(),
                             object_type.as_deref(),
                             class_name,

@@ -8,6 +8,7 @@ use crate::parser::call_targets::{
 };
 use crate::parser::languages::python;
 use crate::parser::ParseContext;
+use crate::traversal::collect_reachable_bfs;
 use crate::utils::select_most_specific_by_line;
 
 struct ParseCache {
@@ -206,12 +207,12 @@ impl CodeExtractor {
         let Some(caller_class_name) = caller_class_name else {
             return false;
         };
-        self.direct_superclasses(caller_class_name)
+        self.parents(caller_class_name)
             .iter()
             .any(|super_class| super_class == class_name)
     }
 
-    fn direct_superclasses(&mut self, class_name: &str) -> Vec<String> {
+    fn parents(&mut self, class_name: &str) -> Vec<String> {
         self.collect_classes()
             .into_iter()
             .find(|class| class.name == class_name)
@@ -223,8 +224,8 @@ impl CodeExtractor {
         let Some(caller_class_name) = caller.class_name.as_deref() else {
             return Vec::new();
         };
-        let direct_superclasses = self.direct_superclasses(caller_class_name);
-        if direct_superclasses.is_empty() {
+        let parents = self.parents(caller_class_name);
+        if parents.is_empty() {
             return Vec::new();
         }
 
@@ -233,9 +234,9 @@ impl CodeExtractor {
             .into_iter()
             .filter_map(|function| {
                 let class_name = function.class_name?;
-                direct_superclasses
+                parents
                     .iter()
-                    .any(|super_class| super_class == &class_name)
+                    .any(|parent| parent == &class_name)
                     .then(|| format!("{}.{}", class_name, function.name))
             })
             .collect();
@@ -255,6 +256,20 @@ impl CodeExtractor {
     ) -> bool {
         if caller_name == Some("<module>") {
             return matches_module_property_target(object_name, object_type, class_name);
+        }
+        if matches!(object_name, Some("self") | Some("cls")) {
+            return caller_class_name.is_some_and(|caller_class_name| {
+                caller_class_name == class_name
+                    || collect_reachable_bfs(
+                        [caller_class_name.to_string()],
+                        [caller_class_name.to_string()],
+                        |current| self.parents(current),
+                        Clone::clone,
+                        Clone::clone,
+                    )
+                    .into_iter()
+                    .any(|ancestor| ancestor == class_name)
+            });
         }
         let field_infos = caller_class_name
             .map(|caller_class_name| self.collect_fields(caller_class_name))

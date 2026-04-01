@@ -10,11 +10,13 @@ use crate::parser::call_targets::{
     matches_property_target as call_matches_property_target, resolve_forward_targets_with_fallback,
     type_matches_class, ForwardTargetContext,
 };
+use crate::traversal::collect_reachable_bfs;
 
 pub(super) type FieldTypesByName = HashMap<String, Vec<Option<String>>>;
 pub(super) type FieldTypeCache = HashMap<(i64, String), Arc<FieldTypesByName>>;
 pub(super) type ParamTypesByName = HashMap<String, Vec<Option<String>>>;
 pub(super) type ParamTypeCache = HashMap<i64, Arc<ParamTypesByName>>;
+pub(super) type AncestorsByFileClass = HashMap<(i64, String), Arc<[String]>>;
 
 pub(crate) struct CallTargetResolver<'a> {
     ctx: QueryContext<'a>,
@@ -72,10 +74,21 @@ impl<'a> CallTargetResolver<'a> {
         class_name: &str,
         field_type_cache: &mut FieldTypeCache,
         param_type_cache: &mut ParamTypeCache,
+        ancestors_cache: &mut AncestorsByFileClass,
     ) -> anyhow::Result<bool> {
         let Some(caller) = caller else {
             return Ok(false);
         };
+        if matches!(object_name, Some("self") | Some("cls")) {
+            let Some(caller_class_name) = caller.function.class_name.as_deref() else {
+                return Ok(false);
+            };
+            return Ok(self
+                .load_class_ancestors(caller.file_id, caller_class_name, ancestors_cache)?
+                .iter()
+                .any(|ancestor| ancestor == class_name)
+                || caller_class_name == class_name);
+        }
         let field_types = caller
             .function
             .class_name
@@ -125,9 +138,9 @@ impl<'a> CallTargetResolver<'a> {
                 return Ok(false);
             };
             return Ok(self
-                .load_direct_superclasses_by_file_class(caller.file_id, caller_class_name)?
+                .load_class_parents(caller.file_id, caller_class_name)?
                 .iter()
-                .any(|super_class| super_class == class_name));
+                .any(|parent| parent == class_name));
         }
         let field_types = caller
             .function
@@ -192,8 +205,7 @@ impl<'a> CallTargetResolver<'a> {
             let Some(caller_class_name) = caller.function.class_name.as_deref() else {
                 return Ok(Vec::new());
             };
-            let direct_superclasses =
-                self.load_direct_superclasses_by_file_class(caller.file_id, caller_class_name)?;
+            let parents = self.load_class_parents(caller.file_id, caller_class_name)?;
             let mut resolved: Vec<_> = candidates
                 .iter()
                 .filter(|candidate| {
@@ -201,11 +213,7 @@ impl<'a> CallTargetResolver<'a> {
                         .function
                         .class_name
                         .as_deref()
-                        .is_some_and(|class_name| {
-                            direct_superclasses
-                                .iter()
-                                .any(|super_class| super_class == class_name)
-                        })
+                        .is_some_and(|class_name| parents.iter().any(|parent| parent == class_name))
                 })
                 .cloned()
                 .collect();
@@ -357,11 +365,7 @@ impl<'a> CallTargetResolver<'a> {
         Ok(map)
     }
 
-    fn load_direct_superclasses_by_file_class(
-        &self,
-        file_id: i64,
-        class_name: &str,
-    ) -> anyhow::Result<Vec<String>> {
+    fn load_class_parents(&self, file_id: i64, class_name: &str) -> anyhow::Result<Vec<String>> {
         let mut stmt = self.ctx.conn.prepare(
             "
             SELECT rel.super_class_name
@@ -373,5 +377,39 @@ impl<'a> CallTargetResolver<'a> {
         )?;
         let rows = stmt.query_map(params![file_id, class_name], |row| row.get::<_, String>(0))?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    fn load_class_ancestors(
+        &self,
+        file_id: i64,
+        class_name: &str,
+        cache: &mut AncestorsByFileClass,
+    ) -> anyhow::Result<Arc<[String]>> {
+        let key = (file_id, class_name.to_string());
+        if let Some(cached) = cache.get(&key) {
+            return Ok(Arc::clone(cached));
+        }
+        let mut error = None;
+        let ancestors = collect_reachable_bfs(
+            [class_name.to_string()],
+            [class_name.to_string()],
+            |current| match self.load_class_parents(file_id, current) {
+                Ok(parents) => parents,
+                Err(err) => {
+                    if error.is_none() {
+                        error = Some(err);
+                    }
+                    Vec::new()
+                }
+            },
+            Clone::clone,
+            Clone::clone,
+        );
+        if let Some(err) = error {
+            return Err(err);
+        }
+        let ordered: Arc<[String]> = Arc::from(ancestors);
+        cache.insert(key, Arc::clone(&ordered));
+        Ok(ordered)
     }
 }

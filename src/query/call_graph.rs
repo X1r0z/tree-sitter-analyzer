@@ -3,14 +3,14 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use rusqlite::params;
 
 use super::call_edges::IndexedFunction;
-use super::call_resolver::{CallTargetResolver, FieldTypeCache, ParamTypeCache};
+use super::call_resolver::{
+    AncestorsByFileClass, CallTargetResolver, FieldTypeCache, ParamTypeCache,
+};
 use super::{CallEdgeQuery, QueryContext};
 use crate::models::{
     CallGraphPath, FunctionInfo, FunctionKey, GraphDirection, GraphPathNode, Location,
 };
-use crate::parser::call_targets::{
-    has_non_self_object_target, matches_module_property_target,
-};
+use crate::parser::call_targets::{has_non_self_object_target, matches_module_property_target};
 use crate::traversal::{collect_paths_dfs, TraversalPathStep};
 
 #[derive(Clone, Eq, Hash, PartialEq)]
@@ -36,6 +36,7 @@ struct GraphTraversalState {
     node_cache: HashMap<(String, Option<String>), std::sync::Arc<[IndexedFunction]>>,
     field_type_cache: FieldTypeCache,
     param_type_cache: ParamTypeCache,
+    ancestors_cache: AncestorsByFileClass,
     is_property_cache: HashMap<(String, Option<String>), bool>,
 }
 
@@ -47,6 +48,7 @@ struct GraphTraversalCaches<'a> {
     resolution_cache: &'a mut IndexedResolutionCache,
     field_type_cache: &'a mut FieldTypeCache,
     param_type_cache: &'a mut ParamTypeCache,
+    ancestors_cache: &'a mut AncestorsByFileClass,
     is_property_cache: &'a mut HashMap<(String, Option<String>), bool>,
 }
 
@@ -96,6 +98,7 @@ impl<'a> CallGraphQuery<'a> {
             node_cache: HashMap::new(),
             field_type_cache: HashMap::new(),
             param_type_cache: HashMap::new(),
+            ancestors_cache: HashMap::new(),
             is_property_cache: HashMap::new(),
         };
         let mut resolution_cache = HashMap::new();
@@ -106,6 +109,7 @@ impl<'a> CallGraphQuery<'a> {
             resolution_cache: &mut resolution_cache,
             field_type_cache: &mut state.field_type_cache,
             param_type_cache: &mut state.param_type_cache,
+            ancestors_cache: &mut state.ancestors_cache,
             is_property_cache: &mut state.is_property_cache,
         };
 
@@ -305,6 +309,7 @@ impl<'a> CallGraphQuery<'a> {
                     candidate.function.class_name.as_deref().unwrap_or_default(),
                     caches.field_type_cache,
                     caches.param_type_cache,
+                    caches.ancestors_cache,
                 )? {
                     continue;
                 }
@@ -596,6 +601,7 @@ impl<'a> CallGraphQuery<'a> {
                         node.function.class_name.as_deref().unwrap_or_default(),
                         caches.field_type_cache,
                         caches.param_type_cache,
+                        caches.ancestors_cache,
                     )? {
                         continue;
                     }

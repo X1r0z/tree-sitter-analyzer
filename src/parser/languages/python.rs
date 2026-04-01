@@ -15,6 +15,7 @@ use crate::parser::call_targets::{
     matches_module_property_target, matches_property_target as call_matches_property_target,
     type_matches_class,
 };
+use crate::traversal::collect_reachable_bfs;
 use crate::utils::select_most_specific_by_line;
 
 type PythonPropertyCallerKey = (String, String, Option<String>, Option<String>, usize, usize);
@@ -522,13 +523,9 @@ fn is_load_like_property_access(node: Node<'_>) -> bool {
     while let Some(parent) = current.parent() {
         match parent.kind() {
             "assignment" | "augmented_assignment" => {
-                if parent
-                    .child_by_field_name("left")
-                    .is_some_and(|left| {
-                        left.start_byte() <= node.start_byte()
-                            && node.end_byte() <= left.end_byte()
-                    })
-                {
+                if parent.child_by_field_name("left").is_some_and(|left| {
+                    left.start_byte() <= node.start_byte() && node.end_byte() <= left.end_byte()
+                }) {
                     return false;
                 }
             }
@@ -677,7 +674,7 @@ fn filter_property_callers(
         .cloned()
         .map(|(name, class_name)| PythonPropertyInfo { name, class_name })
         .collect();
-    let direct_superclasses = parser
+    let parents_by_class = parser
         .collect_classes()
         .into_iter()
         .map(|class| (class.name, class.super_classes))
@@ -694,7 +691,7 @@ fn filter_property_callers(
                     parser,
                     caller,
                     &property_definitions,
-                    &direct_superclasses,
+                    &parents_by_class,
                     &functions,
                 )
             })
@@ -711,7 +708,7 @@ fn property_caller_matches_known_property(
     parser: &ParseContext,
     caller: &PythonPropertyCallerInfo,
     property_definitions: &[PythonPropertyInfo],
-    direct_superclasses: &HashMap<String, Vec<String>>,
+    parents_by_class: &HashMap<String, Vec<String>>,
     functions: &[crate::models::FunctionInfo],
 ) -> bool {
     let candidates: Vec<_> = property_definitions
@@ -758,14 +755,23 @@ fn property_caller_matches_known_property(
 
         let receiver_matches =
             if matches!(caller.object_name.as_deref(), Some("self") | Some("cls")) {
-                caller.caller_class_name.as_deref() == Some(target_class_name)
-                    || caller
-                        .caller_class_name
-                        .as_deref()
-                        .and_then(|class_name| direct_superclasses.get(class_name))
-                        .into_iter()
-                        .flatten()
-                        .any(|super_class| super_class == target_class_name)
+                caller
+                    .caller_class_name
+                    .as_deref()
+                    .is_some_and(|class_name| {
+                        class_name == target_class_name
+                            || collect_reachable_bfs(
+                                [class_name.to_string()],
+                                [class_name.to_string()],
+                                |current| {
+                                    parents_by_class.get(current).cloned().unwrap_or_default()
+                                },
+                                Clone::clone,
+                                Clone::clone,
+                            )
+                            .into_iter()
+                            .any(|ancestor| ancestor == target_class_name)
+                    })
             } else {
                 call_matches_property_target(
                     caller.caller_class_name.as_deref(),

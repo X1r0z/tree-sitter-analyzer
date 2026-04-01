@@ -4,7 +4,7 @@ use std::sync::Arc;
 use rusqlite::types::Value;
 use rusqlite::{params, params_from_iter, ToSql};
 
-use super::call_resolver::CallTargetResolver;
+use super::call_resolver::{AncestorsByFileClass, CallTargetResolver};
 use super::QueryContext;
 use crate::models::{CalleeInfo, CallerInfo, FunctionInfo, FunctionKey, Location};
 use crate::parser::call_targets::{
@@ -106,6 +106,7 @@ impl<'a> CallEdgeQuery<'a> {
         let mut seen = HashSet::new();
         let mut field_type_cache = HashMap::new();
         let mut param_type_cache = HashMap::new();
+        let mut ancestors_cache: AncestorsByFileClass = HashMap::new();
         let mut node_cache = HashMap::new();
         let mut resolution_cache = HashMap::new();
         let mut enclosing_caches = EnclosingFunctionCaches {
@@ -240,6 +241,7 @@ impl<'a> CallEdgeQuery<'a> {
                             class_name,
                             &mut field_type_cache,
                             &mut param_type_cache,
+                            &mut ancestors_cache,
                         )? {
                             continue;
                         }

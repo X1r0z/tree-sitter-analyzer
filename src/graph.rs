@@ -9,7 +9,7 @@ use crate::parser::call_targets::{
     matches_module_property_target, matches_property_target as call_matches_property_target,
     resolve_forward_targets_with_fallback, type_matches_class, ForwardTargetContext,
 };
-use crate::traversal::{collect_paths_dfs, TraversalPathStep};
+use crate::traversal::{collect_paths_dfs, collect_reachable_bfs, TraversalPathStep};
 use crate::utils::select_most_specific_by_line;
 
 #[derive(Debug, Clone)]
@@ -43,7 +43,7 @@ struct GraphEdgeKey {
 type FunctionsByFileContext = HashMap<(String, String, Option<String>), Vec<FunctionInfo>>;
 type FunctionsByFileName = HashMap<(String, String), Vec<FunctionInfo>>;
 type ResolutionCacheKey = (String, String, Option<String>, usize);
-type DirectSuperClassesByFileClass = HashMap<(String, String), Vec<String>>;
+type ParentsByFileClass = HashMap<(String, String), Vec<String>>;
 
 #[derive(Debug, Clone)]
 pub(crate) struct CallGraph {
@@ -85,10 +85,9 @@ impl CallGraph {
             }
         }
 
-        let mut direct_superclasses_by_file_class = HashMap::new();
+        let mut parents_by_file_class = HashMap::new();
         for class in classes {
-            direct_superclasses_by_file_class
-                .insert((class.location.file, class.name), class.super_classes);
+            parents_by_file_class.insert((class.location.file, class.name), class.super_classes);
         }
 
         let property_keys: HashSet<(String, Option<String>)> = python_properties
@@ -160,7 +159,7 @@ impl CallGraph {
                 &caller,
                 &defs_by_name,
                 &fields_by_file_class,
-                &direct_superclasses_by_file_class,
+                &parents_by_file_class,
             );
             if callees.is_empty() {
                 let unresolved = unresolved_call_key(&call);
@@ -237,6 +236,7 @@ impl CallGraph {
                         property_caller.object_name.as_deref(),
                         Some(target_class_name),
                         &fields_by_file_class,
+                        &parents_by_file_class,
                     )
                 };
                 if !matches_target {
@@ -394,10 +394,31 @@ fn matches_property_target(
     object_name: Option<&str>,
     class_name: Option<&str>,
     fields_by_file_class: &HashMap<(String, String), Vec<FieldInfo>>,
+    parents_by_file_class: &ParentsByFileClass,
 ) -> bool {
     let Some(class_name) = class_name else {
         return false;
     };
+    if matches!(object_name, Some("self") | Some("cls")) {
+        let Some(caller_class_name) = caller.class_name.as_deref() else {
+            return false;
+        };
+        return caller_class_name == class_name
+            || collect_reachable_bfs(
+                [caller_class_name.to_string()],
+                [caller_class_name.to_string()],
+                |current| {
+                    parents_by_file_class
+                        .get(&(caller.location.file.clone(), current.to_string()))
+                        .cloned()
+                        .unwrap_or_default()
+                },
+                Clone::clone,
+                Clone::clone,
+            )
+            .into_iter()
+            .any(|ancestor| ancestor == class_name);
+    }
 
     call_matches_property_target(
         caller.class_name.as_deref(),
@@ -504,7 +525,7 @@ fn resolve_call_targets(
     caller: &FunctionInfo,
     defs_by_name: &HashMap<String, Vec<FunctionInfo>>,
     fields_by_file_class: &HashMap<(String, String), Vec<FieldInfo>>,
-    direct_superclasses_by_file_class: &DirectSuperClassesByFileClass,
+    parents_by_file_class: &ParentsByFileClass,
 ) -> Vec<FunctionKey> {
     let Some(candidates) = defs_by_name.get(&call.callee) else {
         return Vec::new();
@@ -513,7 +534,7 @@ fn resolve_call_targets(
         let Some(caller_class_name) = caller.class_name.as_deref() else {
             return Vec::new();
         };
-        let Some(direct_superclasses) = direct_superclasses_by_file_class
+        let Some(parents) = parents_by_file_class
             .get(&(caller.location.file.clone(), caller_class_name.to_string()))
         else {
             return Vec::new();
@@ -522,9 +543,7 @@ fn resolve_call_targets(
             .iter()
             .filter(|candidate| {
                 candidate.class_name.as_deref().is_some_and(|class_name| {
-                    direct_superclasses
-                        .iter()
-                        .any(|parent| parent == class_name)
+                    parents.iter().any(|parent| parent == class_name)
                 })
             })
             .map(FunctionKey::from)

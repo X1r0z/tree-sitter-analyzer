@@ -181,17 +181,19 @@ impl CallGraph {
                     name: unresolved_name.clone(),
                     class_name: None,
                 };
-                functions_by_key.entry(unresolved.clone()).or_insert_with(|| FunctionInfo {
-                    name: unresolved_name.clone(),
-                    location: Location {
-                        file: call.location.file.clone(),
-                        start_line: call.location.start_line,
-                        end_line: call.location.start_line,
-                    },
-                    body: String::new(),
-                    class_name: None,
-                    params: Vec::new(),
-                });
+                functions_by_key
+                    .entry(unresolved.clone())
+                    .or_insert_with(|| FunctionInfo {
+                        name: unresolved_name.clone(),
+                        location: Location {
+                            file: call.location.file.clone(),
+                            start_line: call.location.start_line,
+                            end_line: call.location.start_line,
+                        },
+                        body: String::new(),
+                        class_name: None,
+                        params: Vec::new(),
+                    });
                 callees.push(unresolved);
             }
 
@@ -305,17 +307,19 @@ impl CallGraph {
                     name: unresolved_name.clone(),
                     class_name: None,
                 };
-                functions_by_key.entry(unresolved.clone()).or_insert_with(|| FunctionInfo {
-                    name: unresolved_name.clone(),
-                    location: Location {
-                        file: property_caller.location.file.clone(),
-                        start_line: property_caller.location.start_line,
-                        end_line: property_caller.location.start_line,
-                    },
-                    body: String::new(),
-                    class_name: None,
-                    params: Vec::new(),
-                });
+                functions_by_key
+                    .entry(unresolved.clone())
+                    .or_insert_with(|| FunctionInfo {
+                        name: unresolved_name.clone(),
+                        location: Location {
+                            file: property_caller.location.file.clone(),
+                            start_line: property_caller.location.start_line,
+                            end_line: property_caller.location.start_line,
+                        },
+                        body: String::new(),
+                        class_name: None,
+                        params: Vec::new(),
+                    });
                 let caller_key = FunctionKey::from(&caller);
                 let call_site = CallSite {
                     file: property_caller.location.file.clone(),

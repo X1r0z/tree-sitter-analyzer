@@ -551,8 +551,7 @@ impl<'a> CallEdgeQuery<'a> {
             return Ok(Arc::clone(cached));
         }
 
-        let loaded: IndexedFunctionSlice =
-            self.load_exact_functions(function_name, None)?.into();
+        let loaded: IndexedFunctionSlice = self.load_exact_functions(function_name, None)?.into();
         cache.insert(key, Arc::clone(&loaded));
         Ok(loaded)
     }

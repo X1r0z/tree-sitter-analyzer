@@ -3,11 +3,12 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use tree_sitter::{Node, Parser, Tree};
 
 use super::capture::{self, CallCaptureMatch};
-use super::languages::python;
+use super::languages::{javascript, python};
 use crate::languages::{detect_language_engine, LanguageEngine, QueryKind};
 use crate::models::{
     AnnotationInfo, CallInfo, ClassInfo, FieldInfo, FunctionInfo, FunctionParamInfo, ImportInfo,
@@ -49,8 +50,11 @@ pub(crate) struct ParseInput {
 
 #[derive(Default)]
 pub(crate) struct JsParseCaches {
-    pub(crate) alias_resolvers_by_function:
-        HashMap<NodeId, super::languages::javascript::JsAliasResolverState>,
+    pub(crate) alias_events_by_function:
+        HashMap<NodeId, Vec<super::languages::javascript::JsAliasEvent>>,
+    pub(crate) identifier_targets: HashMap<(NodeId, usize, String), Vec<String>>,
+    pub(crate) type_facts: Option<Rc<super::languages::javascript::JsTypeFacts>>,
+    pub(crate) member_call_object_resolution: HashMap<NodeId, Option<String>>,
 }
 
 pub(crate) struct PythonPropertyIndexes {
@@ -141,6 +145,26 @@ impl ParseContext {
 
     pub(crate) fn engine(&self) -> &'static dyn crate::languages::LanguageEngine {
         self.input.engine
+    }
+
+    pub(crate) fn resolve_call_targets_for_identifier(
+        &self,
+        call_node: Node<'_>,
+        identifier_name: &str,
+    ) -> Vec<String> {
+        let Some(function_node) = self.find_enclosing_context(call_node).function_node else {
+            return Vec::new();
+        };
+
+        match self.language() {
+            "javascript" | "typescript" | "tsx" => javascript::resolve_call_targets_for_identifier(
+                self,
+                function_node,
+                call_node,
+                identifier_name,
+            ),
+            _ => Vec::new(),
+        }
     }
 
     pub(crate) fn node_id(&self, node: Node<'_>) -> NodeId {
@@ -449,6 +473,19 @@ impl ParseContext {
             .get(class_name)
         {
             return cached.clone();
+        }
+        if matches!(self.language(), "javascript" | "typescript" | "tsx") {
+            let fields = super::languages::javascript::type_facts(self)
+                .field_infos_by_class
+                .get(class_name)
+                .cloned()
+                .unwrap_or_default();
+            self.caches
+                .borrow_mut()
+                .common
+                .field_infos_by_class
+                .insert(class_name.to_string(), fields.clone());
+            return fields;
         }
         let mut candidates: Vec<Node<'_>> = Vec::new();
         for (class_node, name_node) in

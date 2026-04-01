@@ -110,9 +110,13 @@ impl LanguageEngine for JavaEngine {
                     .child_by_field_name("name")
                     .map(|node| ctx.node_text(node))
                     .unwrap_or_default();
-                let object_name = call_node
-                    .child_by_field_name("object")
-                    .map(|node| ctx.node_text(node));
+                let object_name = call_node.child_by_field_name("object").map(|node| {
+                    if ctx.node_text_eq(node, "super") {
+                        "super()".to_string()
+                    } else {
+                        ctx.node_text(node)
+                    }
+                });
                 (callee, object_name.is_some(), object_name)
             };
         ResolvedCall {

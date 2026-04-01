@@ -8,7 +8,7 @@ use std::rc::Rc;
 use tree_sitter::{Node, Parser, Tree};
 
 use super::capture::{self, CallCaptureMatch};
-use super::languages::{javascript, python};
+use super::languages::python;
 use crate::languages::{detect_language_engine, LanguageEngine, QueryKind};
 use crate::models::{
     AnnotationInfo, CallInfo, ClassInfo, FieldInfo, FunctionInfo, FunctionParamInfo, ImportInfo,
@@ -147,7 +147,7 @@ impl ParseContext {
         self.input.engine
     }
 
-    pub(crate) fn resolve_call_targets_for_identifier(
+    pub(crate) fn resolve_call_targets(
         &self,
         call_node: Node<'_>,
         identifier_name: &str,
@@ -156,15 +156,8 @@ impl ParseContext {
             return Vec::new();
         };
 
-        match self.language() {
-            "javascript" | "typescript" | "tsx" => javascript::resolve_call_targets_for_identifier(
-                self,
-                function_node,
-                call_node,
-                identifier_name,
-            ),
-            _ => Vec::new(),
-        }
+        self.engine()
+            .resolve_call_targets(self, function_node, call_node, identifier_name)
     }
 
     pub(crate) fn node_id(&self, node: Node<'_>) -> NodeId {
@@ -550,7 +543,7 @@ impl ParseContext {
                     .unwrap_or(false)
                 && enclosing.function_node.is_some()
             {
-                let resolved = self.resolve_call_targets_for_identifier(call_node, &callee);
+                let resolved = self.resolve_call_targets(call_node, &callee);
                 if !resolved.is_empty() {
                     for resolved_callee in resolved {
                         calls.push(CallInfo {

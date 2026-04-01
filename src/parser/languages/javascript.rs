@@ -184,6 +184,17 @@ impl LanguageEngine for JavaScriptFamilyEngine {
         }
     }
 
+    fn resolve_call_targets(
+        &self,
+        ctx: &ParseContext,
+        function_node: Node<'_>,
+        call_node: Node<'_>,
+        identifier_name: &str,
+    ) -> Vec<String> {
+        JsAliasResolver::new(ctx, function_node, call_node)
+            .resolve_identifier_targets(identifier_name)
+    }
+
     fn is_ref_node(&self, node: Node<'_>) -> bool {
         matches!(
             node.kind(),
@@ -1005,7 +1016,7 @@ impl<'a> ExpressionTargetResolver<'a> {
         match expression_node.kind() {
             "identifier" | "property_identifier" => self
                 .parser
-                .resolve_call_targets_for_identifier(self.call_node, &expr_text)
+                .resolve_call_targets(self.call_node, &expr_text)
                 .into_iter()
                 .flat_map(|target| self.resolve_symbolic_class_targets(&target))
                 .collect(),
@@ -1128,16 +1139,6 @@ impl<'a> ExpressionTargetResolver<'a> {
         targets.dedup();
         targets
     }
-}
-
-pub(crate) fn resolve_call_targets_for_identifier(
-    parser: &ParseContext,
-    function_node: Node<'_>,
-    call_node: Node<'_>,
-    identifier_name: &str,
-) -> Vec<String> {
-    JsAliasResolver::new(parser, function_node, call_node)
-        .resolve_identifier_targets(identifier_name)
 }
 
 pub(crate) fn type_facts(parser: &ParseContext) -> Rc<JsTypeFacts> {

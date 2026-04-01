@@ -75,6 +75,17 @@ pub trait LanguageEngine: Sync {
         matched: &CallCaptureMatch<'a>,
     ) -> ResolvedCall<'a>;
 
+    fn resolve_call_targets(
+        &self,
+        ctx: &ParseContext,
+        function_node: Node<'_>,
+        call_node: Node<'_>,
+        identifier_name: &str,
+    ) -> Vec<String> {
+        let _ = (ctx, function_node, call_node, identifier_name);
+        Vec::new()
+    }
+
     fn is_ref_node(&self, node: Node<'_>) -> bool;
 
     fn class_fields(

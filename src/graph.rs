@@ -542,9 +542,10 @@ fn resolve_call_targets(
         let mut matched: Vec<_> = candidates
             .iter()
             .filter(|candidate| {
-                candidate.class_name.as_deref().is_some_and(|class_name| {
-                    parents.iter().any(|parent| parent == class_name)
-                })
+                candidate
+                    .class_name
+                    .as_deref()
+                    .is_some_and(|class_name| parents.iter().any(|parent| parent == class_name))
             })
             .map(FunctionKey::from)
             .collect();

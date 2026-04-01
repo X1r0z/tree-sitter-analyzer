@@ -50,9 +50,7 @@ impl FileSearch {
         if let Some(cached) = self.text_filter_cache.get(text) {
             return cached;
         }
-        let matched_files: Vec<String> = if let Some(rg_files) =
-            search_files_with_rg(text, &self.path, None)
-        {
+        let matched_files = if let Some(rg_files) = search_files_with_rg(text, &self.path, None) {
             let mut rg_files = rg_files;
             rg_files.sort();
             rg_files.dedup();

@@ -418,6 +418,25 @@ impl CodeExtractor {
         }
     }
 
+    pub fn build_graph_snapshot(&mut self) -> GraphFileSnapshot {
+        let functions = self.collect_functions();
+        let classes = self.collect_classes();
+
+        let mut fields = Vec::new();
+        for class in &classes {
+            fields.extend(self.collect_fields(&class.name));
+        }
+
+        GraphFileSnapshot {
+            functions,
+            classes,
+            fields,
+            calls: self.collect_calls(),
+            python_properties: self.parser.collect_python_properties(),
+            python_property_callers: self.parser.collect_python_property_callers(None),
+        }
+    }
+
     pub fn find_function_callers(
         &mut self,
         function_name: &str,
@@ -595,7 +614,7 @@ impl CodeExtractor {
         function_name: &str,
         class_name: Option<&str>,
     ) -> Vec<(String, Location)> {
-        let has_target = self.collect_functions_with_bodies().iter().any(|function| {
+        let has_target = self.collect_functions().iter().any(|function| {
             function.name == function_name
                 && (class_name.is_none() || function.class_name.as_deref() == class_name)
         });
@@ -615,5 +634,119 @@ impl CodeExtractor {
 
     pub fn hydrate_refs(&mut self, candidates: &[RefInfo]) -> Vec<RefInfo> {
         self.parser.hydrate_refs(candidates)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+
+    use tempfile::tempdir;
+
+    use super::CodeExtractor;
+    use crate::analyzers::SourceAnalyzer;
+    use crate::models::GraphDirection;
+
+    fn write_temp_file(name: &str, content: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(name);
+        fs::write(&path, content).unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn find_function_callees_if_present_checks_signatures_without_loading_bodies() {
+        let (_dir, file) = write_temp_file(
+            "sample.py",
+            r#"
+def helper():
+    pass
+
+def main():
+    helper()
+"#,
+        );
+        let mut extractor = CodeExtractor::new(file.to_str().unwrap()).unwrap();
+
+        let callees = extractor.find_function_callees_if_present("main", None);
+
+        assert_eq!(callees.len(), 1);
+        assert!(extractor.cache.functions_with_bodies.is_none());
+    }
+
+    #[test]
+    fn build_graph_snapshot_skips_non_graph_caches() {
+        let (_dir, file) = write_temp_file(
+            "sample.py",
+            r#"
+import os
+
+def helper():
+    pass
+
+def main():
+    helper()
+"#,
+        );
+        let mut extractor = CodeExtractor::new(file.to_str().unwrap()).unwrap();
+
+        let snapshot = extractor.build_graph_snapshot();
+
+        assert_eq!(snapshot.functions.len(), 2);
+        assert_eq!(snapshot.calls.len(), 1);
+        assert!(extractor.cache.imports.is_none());
+        assert!(extractor.cache.functions_with_bodies.is_none());
+    }
+
+    #[test]
+    fn source_graph_results_still_include_expected_forward_and_backward_paths() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("sample.py");
+        fs::write(
+            &file,
+            r#"
+def leaf():
+    pass
+
+def helper():
+    leaf()
+
+def main():
+    helper()
+"#,
+        )
+        .unwrap();
+
+        let analyzer =
+            SourceAnalyzer::new_with_language(dir.path().to_str().unwrap(), Some("python"))
+                .unwrap();
+
+        let forward = analyzer
+            .find_graphs("main", None, GraphDirection::Forward, 2)
+            .unwrap();
+        let backward = analyzer
+            .find_graphs("leaf", None, GraphDirection::Backward, 2)
+            .unwrap();
+
+        assert!(forward.iter().any(|path| {
+            path.path
+                .iter()
+                .map(|node| node.name.as_str())
+                .eq(["main", "helper", "leaf"])
+        }));
+        assert!(
+            backward.iter().any(|path| {
+                path.path
+                    .iter()
+                    .map(|node| node.name.as_str())
+                    .eq(["main", "helper", "leaf"])
+            }) || backward.iter().any(|path| {
+                path.path
+                    .iter()
+                    .map(|node| node.name.as_str())
+                    .eq(["leaf", "helper", "main"])
+            })
+        );
     }
 }

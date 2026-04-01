@@ -725,62 +725,90 @@ fn collect_module_binding_types(parser: &ParseContext) -> HashMap<String, String
         let Some(node) = root.named_child(index as u32) else {
             continue;
         };
-        collect_module_binding_types_from_node(parser, node, &mut bindings);
+        match node.kind() {
+            "expression_statement" => {
+                for index in 0..node.named_child_count() {
+                    let Some(child) = node.named_child(index as u32) else {
+                        continue;
+                    };
+                    if child.kind() != "assignment" {
+                        continue;
+                    }
+                    let Some(left) = child.child_by_field_name("left") else {
+                        continue;
+                    };
+                    if left.kind() != "identifier" {
+                        continue;
+                    }
+                    let name = parser.node_text(left);
+                    if name.is_empty() {
+                        continue;
+                    }
+
+                    if let Some(type_node) = child.child_by_field_name("type") {
+                        let class_name = parser
+                            .node_text(type_node)
+                            .rsplit('.')
+                            .next()
+                            .unwrap_or_default()
+                            .to_string();
+                        if !class_name.is_empty() {
+                            bindings.insert(name, class_name);
+                            continue;
+                        }
+                    }
+
+                    let Some(right) = child.child_by_field_name("right") else {
+                        bindings.remove(&name);
+                        continue;
+                    };
+                    if let Some(class_name) = infer_module_binding_type(parser, right) {
+                        bindings.insert(name, class_name);
+                    } else {
+                        bindings.remove(&name);
+                    }
+                }
+            }
+            "assignment" => {
+                let Some(left) = node.child_by_field_name("left") else {
+                    continue;
+                };
+                if left.kind() != "identifier" {
+                    continue;
+                }
+                let name = parser.node_text(left);
+                if name.is_empty() {
+                    continue;
+                }
+
+                if let Some(type_node) = node.child_by_field_name("type") {
+                    let class_name = parser
+                        .node_text(type_node)
+                        .rsplit('.')
+                        .next()
+                        .unwrap_or_default()
+                        .to_string();
+                    if !class_name.is_empty() {
+                        bindings.insert(name, class_name);
+                        continue;
+                    }
+                }
+
+                let Some(right) = node.child_by_field_name("right") else {
+                    bindings.remove(&name);
+                    continue;
+                };
+                if let Some(class_name) = infer_module_binding_type(parser, right) {
+                    bindings.insert(name, class_name);
+                } else {
+                    bindings.remove(&name);
+                }
+            }
+            _ => {}
+        }
     }
 
     bindings
-}
-
-fn collect_module_binding_types_from_node(
-    parser: &ParseContext,
-    node: Node<'_>,
-    bindings: &mut HashMap<String, String>,
-) {
-    match node.kind() {
-        "expression_statement" => {
-            for index in 0..node.named_child_count() {
-                if let Some(child) = node.named_child(index as u32) {
-                    collect_module_binding_types_from_node(parser, child, bindings);
-                }
-            }
-        }
-        "assignment" => {
-            let Some(left) = node.child_by_field_name("left") else {
-                return;
-            };
-            if left.kind() != "identifier" {
-                return;
-            }
-            let name = parser.node_text(left);
-            if name.is_empty() {
-                return;
-            }
-
-            if let Some(type_node) = node.child_by_field_name("type") {
-                let class_name = parser
-                    .node_text(type_node)
-                    .rsplit('.')
-                    .next()
-                    .unwrap_or_default()
-                    .to_string();
-                if !class_name.is_empty() {
-                    bindings.insert(name, class_name);
-                    return;
-                }
-            }
-
-            let Some(right) = node.child_by_field_name("right") else {
-                bindings.remove(&name);
-                return;
-            };
-            if let Some(class_name) = infer_module_binding_type(parser, right) {
-                bindings.insert(name, class_name);
-            } else {
-                bindings.remove(&name);
-            }
-        }
-        _ => {}
-    }
 }
 
 fn infer_module_binding_type(parser: &ParseContext, node: Node<'_>) -> Option<String> {

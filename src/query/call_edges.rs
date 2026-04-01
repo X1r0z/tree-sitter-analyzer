@@ -551,7 +551,8 @@ impl<'a> CallEdgeQuery<'a> {
             return Ok(Arc::clone(cached));
         }
 
-        let loaded = self.load_exact_functions_shared(function_name, None)?;
+        let loaded: IndexedFunctionSlice =
+            self.load_exact_functions(function_name, None)?.into();
         cache.insert(key, Arc::clone(&loaded));
         Ok(loaded)
     }
@@ -635,7 +636,8 @@ impl<'a> CallEdgeQuery<'a> {
         let candidates = if let Some(cached) = caches.candidates.get(&cache_key) {
             Arc::clone(cached)
         } else {
-            let loaded = self.load_exact_functions_shared(function_name, class_name)?;
+            let loaded: IndexedFunctionSlice =
+                self.load_exact_functions(function_name, class_name)?.into();
             caches.candidates.insert(cache_key, Arc::clone(&loaded));
             loaded
         };
@@ -644,14 +646,6 @@ impl<'a> CallEdgeQuery<'a> {
             resolve_enclosing_function_from_candidates(candidates.as_ref(), file_id, file, line);
         caches.resolutions.insert(resolution_key, resolved.clone());
         Ok(resolved)
-    }
-
-    fn load_exact_functions_shared(
-        &self,
-        function_name: &str,
-        class_name: Option<&str>,
-    ) -> anyhow::Result<IndexedFunctionSlice> {
-        Ok(self.load_exact_functions(function_name, class_name)?.into())
     }
 
     fn function_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<IndexedFunction> {

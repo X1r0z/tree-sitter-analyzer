@@ -1,5 +1,5 @@
 use streaming_iterator::StreamingIterator;
-use tree_sitter::{Node, Query, QueryCursor};
+use tree_sitter::{Node, QueryCursor};
 
 use super::ParseContext;
 use crate::languages::{compiled_query, QueryKind};
@@ -16,21 +16,13 @@ pub(crate) struct ImportCaptureMatch<'a> {
     pub(crate) module: Node<'a>,
 }
 
-fn with_compiled_capture_query<T>(
-    context: &ParseContext,
-    kind: QueryKind,
-    build: impl FnOnce(&Query) -> T,
-) -> Option<T> {
-    compiled_query(context.language(), kind).map(build)
-}
-
 pub(crate) fn collect_capture_pairs<'a>(
     context: &'a ParseContext,
     kind: QueryKind,
     first_capture: &str,
     second_capture: &str,
 ) -> Vec<(Node<'a>, Node<'a>)> {
-    with_compiled_capture_query(context, kind, |query| {
+    compiled_query(context.language(), kind).map(|query| {
         let capture_names = query.capture_names();
         let Some(first_index) = capture_names
             .iter()
@@ -74,7 +66,7 @@ pub(crate) fn collect_call_capture_matches<'a>(
     context: &'a ParseContext,
     kind: QueryKind,
 ) -> Vec<CallCaptureMatch<'a>> {
-    with_compiled_capture_query(context, kind, |query| {
+    compiled_query(context.language(), kind).map(|query| {
         let capture_names = query.capture_names();
         let call_index = capture_names
             .iter()
@@ -134,7 +126,7 @@ pub(crate) fn collect_import_capture_matches<'a>(
     context: &'a ParseContext,
     kind: QueryKind,
 ) -> Vec<ImportCaptureMatch<'a>> {
-    with_compiled_capture_query(context, kind, |query| {
+    compiled_query(context.language(), kind).map(|query| {
         let capture_names = query.capture_names();
         let import_index = capture_names
             .iter()

@@ -63,7 +63,7 @@ impl LanguageEngine for JavaScriptFamilyEngine {
             let Some(param) = parameters.named_child(i as u32) else {
                 continue;
             };
-            if let Some(info) = build_param_info(ctx, param) {
+            if let Some(info) = build_parameter_info(ctx, param) {
                 params.push(info);
             }
         }
@@ -428,8 +428,8 @@ pub(crate) fn split_attribute_parts(
     (callee, obj_name)
 }
 
-fn build_param_info(parser: &ParseContext, param: Node<'_>) -> Option<FunctionParamInfo> {
-    let name_node = resolve_param_name_node(param)?;
+fn build_parameter_info(parser: &ParseContext, param: Node<'_>) -> Option<FunctionParamInfo> {
+    let name_node = find_param_name_node(param)?;
     let name = parser.node_text(name_node).trim().to_string();
     if name.is_empty() {
         return None;
@@ -441,7 +441,7 @@ fn build_param_info(parser: &ParseContext, param: Node<'_>) -> Option<FunctionPa
     })
 }
 
-fn resolve_param_name_node<'a>(node: Node<'a>) -> Option<Node<'a>> {
+fn find_param_name_node<'a>(node: Node<'a>) -> Option<Node<'a>> {
     match node.kind() {
         "identifier"
         | "property_identifier"
@@ -450,18 +450,18 @@ fn resolve_param_name_node<'a>(node: Node<'a>) -> Option<Node<'a>> {
         | "array_pattern" => Some(node),
         "assignment_pattern" => node
             .child_by_field_name("left")
-            .and_then(resolve_param_name_node),
+            .and_then(find_param_name_node),
         "rest_pattern" => {
             if let Some(pattern) = node.child_by_field_name("pattern") {
-                return resolve_param_name_node(pattern);
+                return find_param_name_node(pattern);
             }
-            node.named_child(0).and_then(resolve_param_name_node)
+            node.named_child(0).and_then(find_param_name_node)
         }
         _ => node
             .child_by_field_name("pattern")
             .or_else(|| node.child_by_field_name("name"))
-            .and_then(resolve_param_name_node)
-            .or_else(|| node.named_child(0).and_then(resolve_param_name_node)),
+            .and_then(find_param_name_node)
+            .or_else(|| node.named_child(0).and_then(find_param_name_node)),
     }
 }
 

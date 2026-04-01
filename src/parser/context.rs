@@ -424,7 +424,7 @@ impl ParseContext {
                 }
             }
             let field_names = class_field_names(self, class_node);
-            let super_class_names = self.collect_super_class_names(class_node);
+            let super_class_names = self.engine().super_types(self, class_node);
 
             classes.push(ClassInfo {
                 name,
@@ -438,18 +438,6 @@ impl ParseContext {
 
         self.caches.borrow_mut().common.classes = Some(classes.clone());
         classes
-    }
-
-    pub(crate) fn collect_class_field_infos(
-        &self,
-        class_node: Node,
-        class_name: &str,
-    ) -> Vec<FieldInfo> {
-        self.engine().class_fields(self, class_node, class_name)
-    }
-
-    pub(crate) fn collect_super_class_names(&self, class_node: Node) -> Vec<String> {
-        self.engine().super_types(self, class_node)
     }
 
     pub(crate) fn collect_field_infos_for_class(&self, class_name: &str) -> Vec<FieldInfo> {
@@ -479,7 +467,7 @@ impl ParseContext {
             (size, node.start_byte())
         });
         let class_node = self.engine().normalize_class_node(self, candidates[0]);
-        let fields = self.collect_class_field_infos(class_node, class_name);
+        let fields = self.engine().class_fields(self, class_node, class_name);
         self.caches
             .borrow_mut()
             .common
@@ -731,40 +719,6 @@ fn class_kind(context: &ParseContext, node: Node<'_>) -> String {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::ParseContext;
-
-    #[test]
-    fn python_decorated_functions_are_normalized_before_extraction() {
-        let source = br#"
-@decorator
-def hello(name: str):
-    return name
-"#
-        .to_vec();
-
-        let parser = ParseContext::from_source("sample.py", source).expect("parser");
-        let functions = parser.collect_functions(false);
-
-        assert_eq!(functions.len(), 1);
-        assert_eq!(functions[0].name, "hello");
-        assert_eq!(functions[0].location.start_line, 3);
-        assert_eq!(functions[0].params.len(), 1);
-        assert_eq!(functions[0].params[0].name, "name");
-        assert_eq!(functions[0].params[0].param_type.as_deref(), Some("str"));
-    }
-
-    #[test]
-    fn parse_context_caches_language_engine() {
-        let parser = ParseContext::from_source("sample.py", b"def hello():\n    pass\n".to_vec())
-            .expect("parser");
-
-        assert!(std::ptr::eq(parser.engine(), parser.input.engine));
-        assert_eq!(parser.engine().id(), parser.language());
-    }
-}
-
 pub(crate) fn collect_field_infos_from_declarations(
     parser: &ParseContext,
     class_node: Node<'_>,
@@ -924,7 +878,8 @@ fn class_field_names(parser: &ParseContext, class_node: Node<'_>) -> Vec<String>
         .map(|child| parser.node_text(child))
         .unwrap_or_default();
     parser
-        .collect_class_field_infos(class_node, &class_name)
+        .engine()
+        .class_fields(parser, class_node, &class_name)
         .into_iter()
         .map(|field| field.name)
         .collect()

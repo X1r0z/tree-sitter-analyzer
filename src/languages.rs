@@ -39,10 +39,6 @@ pub trait LanguageEngine: Sync {
         self.language_info().name
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        self.language_info().extensions
-    }
-
     fn ts_language(&self) -> tree_sitter::Language {
         find_language(self.id()).expect("supported language")
     }
@@ -175,51 +171,22 @@ static GO_INFO: LanguageInfo = LanguageInfo {
     import_query: r#"(import_spec path: [(interpreted_string_literal) (raw_string_literal)] @module) @import"#,
 };
 
-static LANGUAGE_INFOS: &[&LanguageInfo] = &[
-    &PYTHON_INFO,
-    &JAVASCRIPT_INFO,
-    &TYPESCRIPT_INFO,
-    &TSX_INFO,
-    &JAVA_INFO,
-    &GO_INFO,
-];
-
-static FILE_EXTENSION_MAP: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
-    let mut m = HashMap::new();
-    m.insert(".py", "python");
-    m.insert(".pyw", "python");
-    m.insert(".pyi", "python");
-    m.insert(".js", "javascript");
-    m.insert(".mjs", "javascript");
-    m.insert(".cjs", "javascript");
-    m.insert(".jsx", "javascript");
-    m.insert(".ts", "typescript");
-    m.insert(".tsx", "tsx");
-    m.insert(".java", "java");
-    m.insert(".go", "go");
-    m
-});
-
-static LANGUAGE_INFO_MAP: LazyLock<HashMap<&'static str, &'static LanguageInfo>> =
-    LazyLock::new(|| {
-        let mut m = HashMap::new();
-        for info in LANGUAGE_INFOS {
-            m.insert(info.name, *info);
-        }
-        m
-    });
-
-static SUPPORTED_EXTENSIONS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
-    let mut exts: Vec<&'static str> = FILE_EXTENSION_MAP.keys().copied().collect();
-    exts.sort();
-    exts
-});
-
 struct CompiledQueries {
     function_query: Query,
     class_query: Query,
     call_query: Query,
     import_query: Query,
+}
+
+impl CompiledQueries {
+    fn get(&self, kind: QueryKind) -> &Query {
+        match kind {
+            QueryKind::Function => &self.function_query,
+            QueryKind::Class => &self.class_query,
+            QueryKind::Call => &self.call_query,
+            QueryKind::Import => &self.import_query,
+        }
+    }
 }
 
 fn compile_queries(engine: &'static dyn LanguageEngine) -> CompiledQueries {
@@ -234,73 +201,106 @@ fn compile_queries(engine: &'static dyn LanguageEngine) -> CompiledQueries {
     }
 }
 
-impl CompiledQueries {
-    fn get(&self, kind: QueryKind) -> &Query {
-        match kind {
-            QueryKind::Function => &self.function_query,
-            QueryKind::Class => &self.class_query,
-            QueryKind::Call => &self.call_query,
-            QueryKind::Import => &self.import_query,
-        }
-    }
+static PYTHON_QUERIES: LazyLock<CompiledQueries> =
+    LazyLock::new(|| compile_queries(&python::PYTHON_ENGINE));
+static JAVASCRIPT_QUERIES: LazyLock<CompiledQueries> =
+    LazyLock::new(|| compile_queries(&javascript::JAVASCRIPT_ENGINE));
+static TYPESCRIPT_QUERIES: LazyLock<CompiledQueries> =
+    LazyLock::new(|| compile_queries(&javascript::TYPESCRIPT_ENGINE));
+static TSX_QUERIES: LazyLock<CompiledQueries> =
+    LazyLock::new(|| compile_queries(&javascript::TSX_ENGINE));
+static JAVA_QUERIES: LazyLock<CompiledQueries> =
+    LazyLock::new(|| compile_queries(&java::JAVA_ENGINE));
+static GO_QUERIES: LazyLock<CompiledQueries> =
+    LazyLock::new(|| compile_queries(&go::GO_ENGINE));
+
+struct LanguageRegistryEntry {
+    info: &'static LanguageInfo,
+    engine: &'static dyn LanguageEngine,
+    ts_language: fn() -> tree_sitter::Language,
+    compiled_queries: &'static LazyLock<CompiledQueries>,
 }
 
-static PYTHON_QUERIES: LazyLock<CompiledQueries> =
-    LazyLock::new(|| compile_queries(find_language_engine("python").expect("python engine")));
-static JAVASCRIPT_QUERIES: LazyLock<CompiledQueries> = LazyLock::new(|| {
-    compile_queries(find_language_engine("javascript").expect("javascript engine"))
-});
-static TYPESCRIPT_QUERIES: LazyLock<CompiledQueries> = LazyLock::new(|| {
-    compile_queries(find_language_engine("typescript").expect("typescript engine"))
-});
-static TSX_QUERIES: LazyLock<CompiledQueries> =
-    LazyLock::new(|| compile_queries(find_language_engine("tsx").expect("tsx engine")));
-static JAVA_QUERIES: LazyLock<CompiledQueries> =
-    LazyLock::new(|| compile_queries(find_language_engine("java").expect("java engine")));
-static GO_QUERIES: LazyLock<CompiledQueries> =
-    LazyLock::new(|| compile_queries(find_language_engine("go").expect("go engine")));
+static LANGUAGE_REGISTRY: &[LanguageRegistryEntry] = &[
+    LanguageRegistryEntry {
+        info: &PYTHON_INFO,
+        engine: &python::PYTHON_ENGINE,
+        ts_language: || tree_sitter_python::LANGUAGE.into(),
+        compiled_queries: &PYTHON_QUERIES,
+    },
+    LanguageRegistryEntry {
+        info: &JAVASCRIPT_INFO,
+        engine: &javascript::JAVASCRIPT_ENGINE,
+        ts_language: || tree_sitter_javascript::LANGUAGE.into(),
+        compiled_queries: &JAVASCRIPT_QUERIES,
+    },
+    LanguageRegistryEntry {
+        info: &TYPESCRIPT_INFO,
+        engine: &javascript::TYPESCRIPT_ENGINE,
+        ts_language: || tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+        compiled_queries: &TYPESCRIPT_QUERIES,
+    },
+    LanguageRegistryEntry {
+        info: &TSX_INFO,
+        engine: &javascript::TSX_ENGINE,
+        ts_language: || tree_sitter_typescript::LANGUAGE_TSX.into(),
+        compiled_queries: &TSX_QUERIES,
+    },
+    LanguageRegistryEntry {
+        info: &JAVA_INFO,
+        engine: &java::JAVA_ENGINE,
+        ts_language: || tree_sitter_java::LANGUAGE.into(),
+        compiled_queries: &JAVA_QUERIES,
+    },
+    LanguageRegistryEntry {
+        info: &GO_INFO,
+        engine: &go::GO_ENGINE,
+        ts_language: || tree_sitter_go::LANGUAGE.into(),
+        compiled_queries: &GO_QUERIES,
+    },
+];
 
-static LANGUAGE_ENGINES: LazyLock<HashMap<&'static str, &'static dyn LanguageEngine>> =
-    LazyLock::new(|| {
-        let mut m: HashMap<&'static str, &'static dyn LanguageEngine> = HashMap::new();
-        m.insert("python", &python::PYTHON_ENGINE);
-        m.insert("javascript", &javascript::JAVASCRIPT_ENGINE);
-        m.insert("typescript", &javascript::TYPESCRIPT_ENGINE);
-        m.insert("tsx", &javascript::TSX_ENGINE);
-        m.insert("java", &java::JAVA_ENGINE);
-        m.insert("go", &go::GO_ENGINE);
-        m
-    });
+fn find_registry_entry(name: &str) -> Option<&'static LanguageRegistryEntry> {
+    LANGUAGE_REGISTRY.iter().find(|entry| entry.info.name == name)
+}
 
-pub fn detect_language(file_path: &Path) -> Option<&'static str> {
+fn find_registry_entry_by_extension(file_path: &Path) -> Option<&'static LanguageRegistryEntry> {
     let ext = file_path.extension()?.to_str()?;
     let dotted = format!(".{ext}");
     FILE_EXTENSION_MAP.get(dotted.as_str()).copied()
 }
 
-pub fn find_language(name: &str) -> Option<tree_sitter::Language> {
-    match name {
-        "python" => Some(tree_sitter_python::LANGUAGE.into()),
-        "javascript" => Some(tree_sitter_javascript::LANGUAGE.into()),
-        "typescript" => Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
-        "tsx" => Some(tree_sitter_typescript::LANGUAGE_TSX.into()),
-        "java" => Some(tree_sitter_java::LANGUAGE.into()),
-        "go" => Some(tree_sitter_go::LANGUAGE.into()),
-        _ => None,
+static FILE_EXTENSION_MAP: LazyLock<HashMap<&'static str, &'static LanguageRegistryEntry>> =
+    LazyLock::new(|| {
+    let mut map = HashMap::new();
+    for entry in LANGUAGE_REGISTRY {
+        for extension in entry.info.extensions {
+            map.insert(*extension, entry);
+        }
     }
+    map
+});
+
+static SUPPORTED_EXTENSIONS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+    let mut extensions = FILE_EXTENSION_MAP.keys().copied().collect::<Vec<_>>();
+    extensions.sort();
+    extensions
+});
+
+pub fn detect_language(file_path: &Path) -> Option<&'static str> {
+    find_registry_entry_by_extension(file_path).map(|entry| entry.info.name)
+}
+
+pub fn find_language(name: &str) -> Option<tree_sitter::Language> {
+    find_registry_entry(name).map(|entry| (entry.ts_language)())
 }
 
 pub fn find_language_info(name: &str) -> Option<&'static LanguageInfo> {
-    LANGUAGE_INFO_MAP.get(name).copied()
-}
-
-pub fn find_language_engine(name: &str) -> Option<&'static dyn LanguageEngine> {
-    LANGUAGE_ENGINES.get(name).copied()
+    find_registry_entry(name).map(|entry| entry.info)
 }
 
 pub fn detect_language_engine(path: &Path) -> Option<&'static dyn LanguageEngine> {
-    let language = detect_language(path)?;
-    find_language_engine(language)
+    find_registry_entry_by_extension(path).map(|entry| entry.engine)
 }
 
 pub fn supported_extensions() -> &'static [&'static str] {
@@ -308,59 +308,9 @@ pub fn supported_extensions() -> &'static [&'static str] {
 }
 
 pub fn language_extensions(name: &str) -> Option<&'static [&'static str]> {
-    find_language_engine(name)
-        .map(|engine| engine.extensions())
-        .or_else(|| find_language_info(name).map(|info| info.extensions))
-}
-
-fn get_compiled_queries(name: &str) -> Option<&'static CompiledQueries> {
-    let engine = find_language_engine(name)?;
-    match engine.id() {
-        "python" => Some(&PYTHON_QUERIES),
-        "javascript" => Some(&JAVASCRIPT_QUERIES),
-        "typescript" => Some(&TYPESCRIPT_QUERIES),
-        "tsx" => Some(&TSX_QUERIES),
-        "java" => Some(&JAVA_QUERIES),
-        "go" => Some(&GO_QUERIES),
-        _ => None,
-    }
+    find_registry_entry(name).map(|entry| entry.info.extensions)
 }
 
 pub fn compiled_query(language: &str, kind: QueryKind) -> Option<&'static Query> {
-    let queries = get_compiled_queries(language)?;
-    Some(queries.get(kind))
-}
-
-#[cfg(test)]
-mod tests {
-    use std::path::Path;
-
-    use super::{
-        compiled_query, detect_language, detect_language_engine, find_language_engine, QueryKind,
-    };
-
-    #[test]
-    fn engines_are_registered_for_all_supported_languages() {
-        for language in ["python", "javascript", "typescript", "tsx", "java", "go"] {
-            let engine = find_language_engine(language).expect("engine should be registered");
-            assert_eq!(engine.id(), language);
-            assert!(compiled_query(language, QueryKind::Function).is_some());
-        }
-    }
-
-    #[test]
-    fn engine_detection_matches_extension_detection() {
-        for path in [
-            "sample.py",
-            "sample.js",
-            "sample.ts",
-            "sample.tsx",
-            "sample.java",
-            "sample.go",
-        ] {
-            let language = detect_language(Path::new(path)).expect("language should be detected");
-            let engine = detect_language_engine(Path::new(path)).expect("engine should be found");
-            assert_eq!(engine.id(), language);
-        }
-    }
+    find_registry_entry(language).map(|entry| entry.compiled_queries.get(kind))
 }

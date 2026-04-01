@@ -286,95 +286,52 @@ fn find_annotation_target(
     parser: &ParseContext,
     annotation_node: Node<'_>,
 ) -> (String, String, String) {
+    let annotation_signature = parser.node_text(annotation_node);
     let mut current = annotation_node;
     while let Some(parent) = current.parent() {
         let (target_name, target_type, target_signature) = match parent.kind() {
-            "method_declaration" => (
+            "method_declaration" | "constructor_declaration" => (
                 parent
                     .child_by_field_name("name")
                     .map(|node| parser.node_text(node))
                     .unwrap_or_default(),
-                "method".to_string(),
+                if parent.kind() == "method_declaration" {
+                    "method".to_string()
+                } else {
+                    "constructor".to_string()
+                },
                 format!(
                     "{}\n{}",
-                    parser.node_text(annotation_node),
+                    annotation_signature,
                     extract_signature(parser, parent)
                 ),
             ),
-            "constructor_declaration" => (
+            "class_declaration"
+            | "interface_declaration"
+            | "enum_declaration"
+            | "record_declaration"
+            | "annotation_type_declaration" => (
                 parent
                     .child_by_field_name("name")
                     .map(|node| parser.node_text(node))
                     .unwrap_or_default(),
-                "constructor".to_string(),
+                match parent.kind() {
+                    "class_declaration" => "class",
+                    "interface_declaration" => "interface",
+                    "enum_declaration" => "enum",
+                    "record_declaration" => "record",
+                    "annotation_type_declaration" => "annotation_type",
+                    _ => unreachable!(),
+                }
+                .to_string(),
                 format!(
                     "{}\n{}",
-                    parser.node_text(annotation_node),
-                    extract_signature(parser, parent)
-                ),
-            ),
-            "class_declaration" => (
-                parent
-                    .child_by_field_name("name")
-                    .map(|node| parser.node_text(node))
-                    .unwrap_or_default(),
-                "class".to_string(),
-                format!(
-                    "{}\n{}",
-                    parser.node_text(annotation_node),
-                    extract_class_header_line(parser, parent)
-                ),
-            ),
-            "interface_declaration" => (
-                parent
-                    .child_by_field_name("name")
-                    .map(|node| parser.node_text(node))
-                    .unwrap_or_default(),
-                "interface".to_string(),
-                format!(
-                    "{}\n{}",
-                    parser.node_text(annotation_node),
-                    extract_class_header_line(parser, parent)
-                ),
-            ),
-            "enum_declaration" => (
-                parent
-                    .child_by_field_name("name")
-                    .map(|node| parser.node_text(node))
-                    .unwrap_or_default(),
-                "enum".to_string(),
-                format!(
-                    "{}\n{}",
-                    parser.node_text(annotation_node),
-                    extract_class_header_line(parser, parent)
-                ),
-            ),
-            "record_declaration" => (
-                parent
-                    .child_by_field_name("name")
-                    .map(|node| parser.node_text(node))
-                    .unwrap_or_default(),
-                "record".to_string(),
-                format!(
-                    "{}\n{}",
-                    parser.node_text(annotation_node),
-                    extract_class_header_line(parser, parent)
-                ),
-            ),
-            "annotation_type_declaration" => (
-                parent
-                    .child_by_field_name("name")
-                    .map(|node| parser.node_text(node))
-                    .unwrap_or_default(),
-                "annotation_type".to_string(),
-                format!(
-                    "{}\n{}",
-                    parser.node_text(annotation_node),
+                    annotation_signature,
                     extract_class_header_line(parser, parent)
                 ),
             ),
             "field_declaration" => {
-                let field_name = declarator_name(parser, parent);
+                let field_name = variable_declarator_name(parser, parent);
                 (field_name, "field".to_string(), parser.node_text(parent))
             }
             "formal_parameter" | "spread_parameter" => (
@@ -383,10 +340,24 @@ fn find_annotation_target(
                     .map(|node| parser.node_text(node))
                     .unwrap_or_default(),
                 "parameter".to_string(),
-                find_enclosing_callable_signature(parser, parent),
+                {
+                    let mut current = parent;
+                    let mut signature = String::new();
+                    while let Some(ancestor) = current.parent() {
+                        if matches!(
+                            ancestor.kind(),
+                            "method_declaration" | "constructor_declaration"
+                        ) {
+                            signature = extract_signature(parser, ancestor);
+                            break;
+                        }
+                        current = ancestor;
+                    }
+                    signature
+                },
             ),
             "local_variable_declaration" => {
-                let var_name = declarator_name(parser, parent);
+                let var_name = variable_declarator_name(parser, parent);
                 (var_name, "variable".to_string(), parser.node_text(parent))
             }
             "modifiers" | "annotation_argument_list" => {
@@ -403,21 +374,7 @@ fn find_annotation_target(
     (String::new(), String::new(), String::new())
 }
 
-fn find_enclosing_callable_signature(parser: &ParseContext, node: Node<'_>) -> String {
-    let mut current = node;
-    while let Some(parent) = current.parent() {
-        if matches!(
-            parent.kind(),
-            "method_declaration" | "constructor_declaration"
-        ) {
-            return extract_signature(parser, parent);
-        }
-        current = parent;
-    }
-    String::new()
-}
-
-fn declarator_name(parser: &ParseContext, decl_node: Node<'_>) -> String {
+fn variable_declarator_name(parser: &ParseContext, decl_node: Node<'_>) -> String {
     for i in 0..decl_node.child_count() {
         let child = decl_node.child(i as u32).unwrap();
         if child.kind() == "variable_declarator" {

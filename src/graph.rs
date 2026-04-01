@@ -130,8 +130,17 @@ impl CallGraph {
         for call in calls {
             let caller = match call.caller.as_deref() {
                 None => {
-                    let caller =
-                        module_caller_function(&call.location.file, call.location.start_line);
+                    let caller = FunctionInfo {
+                        name: "<module>".to_string(),
+                        location: Location {
+                            file: call.location.file.clone(),
+                            start_line: call.location.start_line,
+                            end_line: call.location.start_line,
+                        },
+                        body: String::new(),
+                        class_name: None,
+                        params: Vec::new(),
+                    };
                     let module_key = FunctionKey::from(&caller);
                     functions_by_key
                         .entry(module_key)
@@ -162,10 +171,27 @@ impl CallGraph {
                 &parents_by_file_class,
             );
             if callees.is_empty() {
-                let unresolved = unresolved_call_key(&call);
-                functions_by_key
-                    .entry(unresolved.clone())
-                    .or_insert_with(|| unresolved_call_function(&call));
+                let unresolved_name = unresolved_name(call.object_name.as_deref(), &call.callee);
+                let unresolved = FunctionKey {
+                    location: Location {
+                        file: call.location.file.clone(),
+                        start_line: call.location.start_line,
+                        end_line: call.location.start_line,
+                    },
+                    name: unresolved_name.clone(),
+                    class_name: None,
+                };
+                functions_by_key.entry(unresolved.clone()).or_insert_with(|| FunctionInfo {
+                    name: unresolved_name.clone(),
+                    location: Location {
+                        file: call.location.file.clone(),
+                        start_line: call.location.start_line,
+                        end_line: call.location.start_line,
+                    },
+                    body: String::new(),
+                    class_name: None,
+                    params: Vec::new(),
+                });
                 callees.push(unresolved);
             }
 
@@ -188,10 +214,17 @@ impl CallGraph {
         for property_caller in property_callers {
             let module_level = property_caller.caller == "<module>";
             let caller = if module_level {
-                let caller = module_caller_function(
-                    &property_caller.location.file,
-                    property_caller.location.start_line,
-                );
+                let caller = FunctionInfo {
+                    name: "<module>".to_string(),
+                    location: Location {
+                        file: property_caller.location.file.clone(),
+                        start_line: property_caller.location.start_line,
+                        end_line: property_caller.location.start_line,
+                    },
+                    body: String::new(),
+                    class_name: None,
+                    params: Vec::new(),
+                };
                 let module_key = FunctionKey::from(&caller);
                 functions_by_key
                     .entry(module_key)
@@ -259,10 +292,30 @@ impl CallGraph {
             }
 
             if !matched {
-                let unresolved = unresolved_property_key(&property_caller);
-                functions_by_key
-                    .entry(unresolved.clone())
-                    .or_insert_with(|| unresolved_property_function(&property_caller));
+                let unresolved_name = unresolved_name(
+                    property_caller.object_name.as_deref(),
+                    &property_caller.property_name,
+                );
+                let unresolved = FunctionKey {
+                    location: Location {
+                        file: property_caller.location.file.clone(),
+                        start_line: property_caller.location.start_line,
+                        end_line: property_caller.location.start_line,
+                    },
+                    name: unresolved_name.clone(),
+                    class_name: None,
+                };
+                functions_by_key.entry(unresolved.clone()).or_insert_with(|| FunctionInfo {
+                    name: unresolved_name.clone(),
+                    location: Location {
+                        file: property_caller.location.file.clone(),
+                        start_line: property_caller.location.start_line,
+                        end_line: property_caller.location.start_line,
+                    },
+                    body: String::new(),
+                    class_name: None,
+                    params: Vec::new(),
+                });
                 let caller_key = FunctionKey::from(&caller);
                 let call_site = CallSite {
                     file: property_caller.location.file.clone(),
@@ -614,87 +667,9 @@ fn compare_graphs(left: &CallGraphPath, right: &CallGraphPath) -> std::cmp::Orde
         .then(left.path.len().cmp(&right.path.len()))
 }
 
-fn unresolved_call_key(call: &CallInfo) -> FunctionKey {
-    let name = unresolved_call_name(call);
-    FunctionKey {
-        location: Location {
-            file: call.location.file.clone(),
-            start_line: call.location.start_line,
-            end_line: call.location.start_line,
-        },
-        name: name.clone(),
-        class_name: None,
-    }
-}
-
-fn unresolved_call_function(call: &CallInfo) -> FunctionInfo {
-    FunctionInfo {
-        name: unresolved_call_name(call),
-        location: Location {
-            file: call.location.file.clone(),
-            start_line: call.location.start_line,
-            end_line: call.location.start_line,
-        },
-        body: String::new(),
-        class_name: None,
-        params: Vec::new(),
-    }
-}
-
-fn unresolved_call_name(call: &CallInfo) -> String {
-    unresolved_name(call.object_name.as_deref(), &call.callee)
-}
-
-fn unresolved_property_key(property_caller: &RawPropertyCaller) -> FunctionKey {
-    let name = unresolved_name(
-        property_caller.object_name.as_deref(),
-        &property_caller.property_name,
-    );
-    FunctionKey {
-        location: Location {
-            file: property_caller.location.file.clone(),
-            start_line: property_caller.location.start_line,
-            end_line: property_caller.location.end_line,
-        },
-        name: name.clone(),
-        class_name: None,
-    }
-}
-
-fn unresolved_property_function(property_caller: &RawPropertyCaller) -> FunctionInfo {
-    FunctionInfo {
-        name: unresolved_name(
-            property_caller.object_name.as_deref(),
-            &property_caller.property_name,
-        ),
-        location: Location {
-            file: property_caller.location.file.clone(),
-            start_line: property_caller.location.start_line,
-            end_line: property_caller.location.end_line,
-        },
-        body: String::new(),
-        class_name: None,
-        params: Vec::new(),
-    }
-}
-
 fn unresolved_name(object_name: Option<&str>, callee_name: &str) -> String {
     match object_name {
         Some(object_name) => format!("{}.{}", object_name, callee_name),
         None => callee_name.to_string(),
-    }
-}
-
-fn module_caller_function(file: &str, line: usize) -> FunctionInfo {
-    FunctionInfo {
-        name: "<module>".to_string(),
-        location: Location {
-            file: file.to_string(),
-            start_line: line,
-            end_line: line,
-        },
-        body: String::new(),
-        class_name: None,
-        params: Vec::new(),
     }
 }

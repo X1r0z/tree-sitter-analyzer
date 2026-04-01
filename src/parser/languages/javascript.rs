@@ -81,16 +81,33 @@ impl LanguageEngine for JavaScriptFamilyEngine {
         let mut object_name: Option<String> = None;
         let mut callee_function_node: Option<Node<'_>> = None;
 
-        if let Some(func_node) = call_node.child_by_field_name("function") {
-            callee_function_node = Some(func_node);
-            if func_node.kind() == "identifier" {
-                callee = ctx.node_text(func_node);
-            } else if func_node.kind() == "member_expression" {
-                is_method = true;
-                let (callee_name, resolved_object_name) = split_attribute_parts(ctx, func_node);
-                callee = callee_name;
-                object_name = resolved_object_name;
+        match call_node.kind() {
+            "call_expression" => {
+                if let Some(func_node) = call_node.child_by_field_name("function") {
+                    if func_node.kind() == "super" {
+                        callee = "constructor".to_string();
+                        object_name = Some("super()".to_string());
+                    } else {
+                        callee_function_node = Some(func_node);
+                        if func_node.kind() == "identifier" {
+                            callee = ctx.node_text(func_node);
+                        } else if func_node.kind() == "member_expression" {
+                            is_method = true;
+                            let (callee_name, resolved_object_name) =
+                                split_attribute_parts(ctx, func_node);
+                            callee = callee_name;
+                            object_name = resolved_object_name;
+                        }
+                    }
+                }
             }
+            "new_expression" => {
+                if let Some(constructor_node) = call_node.child_by_field_name("constructor") {
+                    callee = "constructor".to_string();
+                    object_name = Some(ctx.node_text(constructor_node));
+                }
+            }
+            _ => {}
         }
         if callee.is_empty() {
             if let Some(callee_cap) = matched.callee {

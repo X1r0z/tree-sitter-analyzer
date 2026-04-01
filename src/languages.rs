@@ -131,7 +131,7 @@ static JAVASCRIPT_INFO: LanguageInfo = LanguageInfo {
     extensions: &[".js", ".mjs", ".cjs", ".jsx"],
     function_query: r#"[(function_declaration name: (identifier) @name) (generator_function_declaration name: (identifier) @name) (method_definition name: [(property_identifier) (private_property_identifier)] @name) (function_expression name: (identifier) @name) (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])] @function"#,
     class_query: r#"[(class_declaration name: (identifier) @name) (class name: (identifier) @name) (variable_declarator name: (identifier) @name value: (class))] @class"#,
-    call_query: r#"[(call_expression function: (identifier) @callee) (call_expression function: (member_expression object: (_) @object property: [(property_identifier) (private_property_identifier)] @method)) (new_expression constructor: (identifier) @callee) (new_expression constructor: (member_expression object: (_) @object property: [(property_identifier) (private_property_identifier)] @method))] @call"#,
+    call_query: r#"[(call_expression function: (identifier) @callee) (call_expression function: (super)) @call (call_expression function: (member_expression object: (_) @object property: [(property_identifier) (private_property_identifier)] @method)) (new_expression constructor: (identifier) @callee) (new_expression constructor: (member_expression object: (_) @object property: [(property_identifier) (private_property_identifier)] @method))] @call"#,
     import_query: r#"[(import_statement source: (string) @module) (export_statement source: (string) @module) ((call_expression function: (identifier) @_callee arguments: (arguments (string) @module)) @import (#match? @_callee "^(require|import)$")) ((call_expression function: (import) arguments: (arguments (string) @module)) @import)]"#,
 };
 
@@ -140,7 +140,7 @@ static TYPESCRIPT_INFO: LanguageInfo = LanguageInfo {
     extensions: &[".ts"],
     function_query: r#"[(function_declaration name: (identifier) @name) (generator_function_declaration name: (identifier) @name) (method_definition name: [(property_identifier) (private_property_identifier)] @name) (function_expression name: (identifier) @name) (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])] @function"#,
     class_query: r#"[(class_declaration name: (type_identifier) @name) (abstract_class_declaration name: (type_identifier) @name) (interface_declaration name: (type_identifier) @name) (type_alias_declaration name: (type_identifier) @name) (enum_declaration name: (identifier) @name) (variable_declarator name: (identifier) @name value: (class))] @class"#,
-    call_query: r#"[(call_expression function: (identifier) @callee) (call_expression function: (member_expression object: (_) @object property: [(property_identifier) (private_property_identifier)] @method)) (new_expression constructor: (identifier) @callee) (new_expression constructor: (member_expression object: (_) @object property: [(property_identifier) (private_property_identifier)] @method))] @call"#,
+    call_query: r#"[(call_expression function: (identifier) @callee) (call_expression function: (super)) @call (call_expression function: (member_expression object: (_) @object property: [(property_identifier) (private_property_identifier)] @method)) (new_expression constructor: (identifier) @callee) (new_expression constructor: (member_expression object: (_) @object property: [(property_identifier) (private_property_identifier)] @method))] @call"#,
     import_query: r#"[(import_statement source: (string) @module) (import_statement (import_require_clause source: (string) @module)) (export_statement source: (string) @module) ((call_expression function: (identifier) @_callee arguments: (arguments (string) @module)) @import (#match? @_callee "^(require|import)$")) ((call_expression function: (import) arguments: (arguments (string) @module)) @import)]"#,
 };
 
@@ -149,7 +149,7 @@ static TSX_INFO: LanguageInfo = LanguageInfo {
     extensions: &[".tsx"],
     function_query: r#"[(function_declaration name: (identifier) @name) (method_definition name: [(property_identifier) (private_property_identifier)] @name) (function_expression name: (identifier) @name) (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])] @function"#,
     class_query: r#"[(class_declaration name: (type_identifier) @name) (abstract_class_declaration name: (type_identifier) @name) (interface_declaration name: (type_identifier) @name) (type_alias_declaration name: (type_identifier) @name) (enum_declaration name: (identifier) @name) (variable_declarator name: (identifier) @name value: (class))] @class"#,
-    call_query: r#"[(call_expression function: (identifier) @callee) (call_expression function: (member_expression object: (_) @object property: [(property_identifier) (private_property_identifier)] @method)) (new_expression constructor: (identifier) @callee) (new_expression constructor: (member_expression object: (_) @object property: [(property_identifier) (private_property_identifier)] @method))] @call"#,
+    call_query: r#"[(call_expression function: (identifier) @callee) (call_expression function: (super)) @call (call_expression function: (member_expression object: (_) @object property: [(property_identifier) (private_property_identifier)] @method)) (new_expression constructor: (identifier) @callee) (new_expression constructor: (member_expression object: (_) @object property: [(property_identifier) (private_property_identifier)] @method))] @call"#,
     import_query: r#"[(import_statement source: (string) @module) (import_statement (import_require_clause source: (string) @module)) (export_statement source: (string) @module) ((call_expression function: (identifier) @_callee arguments: (arguments (string) @module)) @import (#match? @_callee "^(require|import)$")) ((call_expression function: (import) arguments: (arguments (string) @module)) @import)]"#,
 };
 
@@ -211,8 +211,7 @@ static TSX_QUERIES: LazyLock<CompiledQueries> =
     LazyLock::new(|| compile_queries(&javascript::TSX_ENGINE));
 static JAVA_QUERIES: LazyLock<CompiledQueries> =
     LazyLock::new(|| compile_queries(&java::JAVA_ENGINE));
-static GO_QUERIES: LazyLock<CompiledQueries> =
-    LazyLock::new(|| compile_queries(&go::GO_ENGINE));
+static GO_QUERIES: LazyLock<CompiledQueries> = LazyLock::new(|| compile_queries(&go::GO_ENGINE));
 
 struct LanguageRegistryEntry {
     info: &'static LanguageInfo,
@@ -261,7 +260,9 @@ static LANGUAGE_REGISTRY: &[LanguageRegistryEntry] = &[
 ];
 
 fn find_registry_entry(name: &str) -> Option<&'static LanguageRegistryEntry> {
-    LANGUAGE_REGISTRY.iter().find(|entry| entry.info.name == name)
+    LANGUAGE_REGISTRY
+        .iter()
+        .find(|entry| entry.info.name == name)
 }
 
 fn find_registry_entry_by_extension(file_path: &Path) -> Option<&'static LanguageRegistryEntry> {
@@ -272,14 +273,14 @@ fn find_registry_entry_by_extension(file_path: &Path) -> Option<&'static Languag
 
 static FILE_EXTENSION_MAP: LazyLock<HashMap<&'static str, &'static LanguageRegistryEntry>> =
     LazyLock::new(|| {
-    let mut map = HashMap::new();
-    for entry in LANGUAGE_REGISTRY {
-        for extension in entry.info.extensions {
-            map.insert(*extension, entry);
+        let mut map = HashMap::new();
+        for entry in LANGUAGE_REGISTRY {
+            for extension in entry.info.extensions {
+                map.insert(*extension, entry);
+            }
         }
-    }
-    map
-});
+        map
+    });
 
 static SUPPORTED_EXTENSIONS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
     let mut extensions = FILE_EXTENSION_MAP.keys().copied().collect::<Vec<_>>();

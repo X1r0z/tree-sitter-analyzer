@@ -4,7 +4,269 @@ use tree_sitter::Node;
 
 use super::super::capture::CallCaptureMatch;
 use super::super::ParseContext;
+use crate::languages::{find_language_info, LanguageEngine, LanguageInfo, ResolvedCall};
 use crate::models::{FieldInfo, FunctionParamInfo};
+
+pub(crate) struct JavaScriptFamilyEngine {
+    language: &'static str,
+}
+
+pub(crate) static JAVASCRIPT_ENGINE: JavaScriptFamilyEngine = JavaScriptFamilyEngine {
+    language: "javascript",
+};
+pub(crate) static TYPESCRIPT_ENGINE: JavaScriptFamilyEngine = JavaScriptFamilyEngine {
+    language: "typescript",
+};
+pub(crate) static TSX_ENGINE: JavaScriptFamilyEngine = JavaScriptFamilyEngine { language: "tsx" };
+
+impl LanguageEngine for JavaScriptFamilyEngine {
+    fn language_info(&self) -> &'static LanguageInfo {
+        find_language_info(self.language).expect("javascript family language info")
+    }
+
+    fn function_name(&self, ctx: &ParseContext, node: Node<'_>) -> Option<String> {
+        if let Some(name_node) = node.child_by_field_name("name") {
+            let name = ctx.node_text(name_node);
+            if !name.is_empty() {
+                return Some(name);
+            }
+        }
+        if matches!(node.kind(), "arrow_function" | "function_expression") {
+            return anonymous_function_name(ctx, node);
+        }
+        for i in 0..node.child_count() {
+            let child = node.child(i as u32).unwrap();
+            if matches!(
+                child.kind(),
+                "identifier" | "property_identifier" | "field_identifier"
+            ) {
+                let name = ctx.node_text(child);
+                if !name.is_empty() {
+                    return Some(name);
+                }
+            }
+        }
+        None
+    }
+
+    fn function_params(
+        &self,
+        ctx: &ParseContext,
+        function_node: Node<'_>,
+    ) -> Vec<FunctionParamInfo> {
+        let Some(parameters) = function_node.child_by_field_name("parameters") else {
+            return Vec::new();
+        };
+
+        let mut params = Vec::new();
+        for i in 0..parameters.named_child_count() {
+            let Some(param) = parameters.named_child(i as u32) else {
+                continue;
+            };
+            if let Some(info) = build_param_info(ctx, param) {
+                params.push(info);
+            }
+        }
+        params
+    }
+
+    fn resolve_call<'a>(
+        &self,
+        ctx: &ParseContext,
+        matched: &CallCaptureMatch<'a>,
+    ) -> ResolvedCall<'a> {
+        let call_node = matched.call;
+        let mut callee = String::new();
+        let mut is_method = false;
+        let mut object_name: Option<String> = None;
+        let mut callee_function_node: Option<Node<'_>> = None;
+
+        if let Some(func_node) = call_node.child_by_field_name("function") {
+            callee_function_node = Some(func_node);
+            if func_node.kind() == "identifier" {
+                callee = ctx.node_text(func_node);
+            } else if func_node.kind() == "member_expression" {
+                is_method = true;
+                let (callee_name, resolved_object_name) = split_attribute_parts(ctx, func_node);
+                callee = callee_name;
+                object_name = resolved_object_name;
+            }
+        }
+        if callee.is_empty() {
+            if let Some(callee_cap) = matched.callee {
+                callee = ctx.node_text(callee_cap);
+            }
+            if let Some(method_cap) = matched.method {
+                callee = ctx.node_text(method_cap);
+                is_method = true;
+                if let Some(obj_cap) = matched.object {
+                    object_name = Some(ctx.node_text(obj_cap));
+                }
+            }
+        }
+
+        ResolvedCall {
+            callee,
+            is_method,
+            object_name,
+            callee_function_node,
+        }
+    }
+
+    fn is_ref_node(&self, node: Node<'_>) -> bool {
+        matches!(
+            node.kind(),
+            "identifier"
+                | "property_identifier"
+                | "private_property_identifier"
+                | "field_identifier"
+                | "type_identifier"
+        )
+    }
+
+    fn class_fields(
+        &self,
+        ctx: &ParseContext,
+        class_node: Node<'_>,
+        class_name: &str,
+    ) -> Vec<FieldInfo> {
+        let body = class_node.child_by_field_name("body").or_else(|| {
+            for i in 0..class_node.child_count() {
+                let child = class_node.child(i as u32).unwrap();
+                if child.kind() == "class_body" {
+                    return Some(child);
+                }
+            }
+            None
+        });
+        let Some(body) = body else {
+            return Vec::new();
+        };
+
+        let mut fields = Vec::new();
+        let mut seen = HashSet::new();
+
+        for i in 0..body.child_count() {
+            let member = body.child(i as u32).unwrap();
+            if !member.is_named() {
+                continue;
+            }
+
+            if member.kind().ends_with("field_definition")
+                || matches!(member.kind(), "property_definition" | "field_definition")
+            {
+                let name_node = member
+                    .child_by_field_name("name")
+                    .or_else(|| member.child_by_field_name("property"))
+                    .or_else(|| member.child_by_field_name("pattern"));
+                let Some(name_node) = name_node else {
+                    continue;
+                };
+                if !matches!(
+                    name_node.kind(),
+                    "identifier"
+                        | "property_identifier"
+                        | "private_property_identifier"
+                        | "field_identifier"
+                ) {
+                    continue;
+                }
+                let name = ctx.node_text(name_node);
+                let field_type = member
+                    .child_by_field_name("type")
+                    .map(|type_node| normalize_type_text(&ctx.node_text(type_node)))
+                    .or_else(|| {
+                        member
+                            .child_by_field_name("value")
+                            .and_then(|value| infer_field_type_from_value(ctx, value))
+                    })
+                    .or_else(|| infer_field_type_from_member(ctx, member, name_node.id()));
+                if !name.is_empty() && seen.insert(name.clone()) {
+                    fields.push(FieldInfo {
+                        name,
+                        location: ctx.node_location(member),
+                        field_type,
+                        class_name: Some(class_name.to_string()),
+                    });
+                }
+            }
+
+            if member.kind() != "method_definition" {
+                continue;
+            }
+            let Some(name_node) = member.child_by_field_name("name") else {
+                continue;
+            };
+            if !ctx.node_text_eq(name_node, "constructor") {
+                continue;
+            }
+
+            let Some(params) = member.child_by_field_name("parameters") else {
+                continue;
+            };
+            for j in 0..params.child_count() {
+                let param = params.child(j as u32).unwrap();
+                if !param.is_named() {
+                    continue;
+                }
+                let has_modifier = (0..param.child_count()).any(|k| {
+                    let child = param.child(k as u32).unwrap();
+                    matches!(child.kind(), "accessibility_modifier" | "readonly")
+                });
+                if !has_modifier {
+                    continue;
+                }
+                let mut pattern = param
+                    .child_by_field_name("pattern")
+                    .or_else(|| param.child_by_field_name("name"));
+                if let Some(pattern_node) = pattern {
+                    if pattern_node.kind() == "assignment_pattern" {
+                        pattern = pattern_node
+                            .child_by_field_name("left")
+                            .or(Some(pattern_node));
+                    }
+                }
+                let Some(pattern) = pattern else {
+                    continue;
+                };
+                if !matches!(pattern.kind(), "identifier" | "property_identifier") {
+                    continue;
+                }
+                let param_name = ctx.node_text(pattern);
+                let param_type = param
+                    .child_by_field_name("type")
+                    .map(|type_node| normalize_type_text(&ctx.node_text(type_node)));
+                if !param_name.is_empty() && seen.insert(param_name.clone()) {
+                    fields.push(FieldInfo {
+                        name: param_name,
+                        location: ctx.node_location(param),
+                        field_type: param_type,
+                        class_name: Some(class_name.to_string()),
+                    });
+                }
+            }
+
+            if let Some(body_node) = member.child_by_field_name("body") {
+                collect_field_infos_from_constructor_body(
+                    ctx,
+                    body_node,
+                    class_name,
+                    &mut seen,
+                    &mut fields,
+                );
+            }
+        }
+
+        fields
+    }
+
+    fn super_types(&self, ctx: &ParseContext, class_node: Node<'_>) -> Vec<String> {
+        let mut super_classes = Vec::new();
+        let mut seen = HashSet::new();
+        collect_super_class_names_from_heritage(ctx, class_node, &mut super_classes, &mut seen);
+        super_classes
+    }
+}
 
 pub(crate) struct JsAliasEvent {
     pub(crate) start_byte: usize,
@@ -76,7 +338,7 @@ impl ParseContext {
         };
 
         let mut caches = self.caches.borrow_mut();
-        let resolvers = &mut caches.js.alias_resolvers_by_function;
+        let resolvers = &mut caches.language.js.alias_resolvers_by_function;
         let resolver = resolvers
             .entry(self.node_id(func_node))
             .or_insert_with(|| JsAliasResolverState::new(alias_events(self, func_node)));
@@ -118,31 +380,6 @@ fn anonymous_function_name(context: &ParseContext, function_node: Node<'_>) -> O
             }
         }
         _ => {}
-    }
-    None
-}
-
-pub(crate) fn function_name_from_node(context: &ParseContext, node: Node<'_>) -> Option<String> {
-    if let Some(name_node) = node.child_by_field_name("name") {
-        let name = context.node_text(name_node);
-        if !name.is_empty() {
-            return Some(name);
-        }
-    }
-    if matches!(node.kind(), "arrow_function" | "function_expression") {
-        return anonymous_function_name(context, node);
-    }
-    for i in 0..node.child_count() {
-        let child = node.child(i as u32).unwrap();
-        if matches!(
-            child.kind(),
-            "identifier" | "property_identifier" | "field_identifier"
-        ) {
-            let name = context.node_text(child);
-            if !name.is_empty() {
-                return Some(name);
-            }
-        }
     }
     None
 }
@@ -189,74 +426,6 @@ pub(crate) fn split_attribute_parts(
     }
 
     (callee, obj_name)
-}
-
-pub(crate) fn resolve_call_parts<'a>(
-    parser: &ParseContext,
-    matched: &CallCaptureMatch<'a>,
-) -> (String, bool, Option<String>, Option<Node<'a>>) {
-    let call_node = matched.call;
-    let mut callee = String::new();
-    let mut is_method = false;
-    let mut obj_name: Option<String> = None;
-    let mut callee_function_node: Option<Node<'_>> = None;
-
-    if let Some(func_node) = call_node.child_by_field_name("function") {
-        callee_function_node = Some(func_node);
-        if func_node.kind() == "identifier" {
-            callee = parser.node_text(func_node);
-        } else if func_node.kind() == "member_expression" {
-            is_method = true;
-            let (callee_name, object_name) = split_attribute_parts(parser, func_node);
-            callee = callee_name;
-            obj_name = object_name;
-        }
-    }
-    if callee.is_empty() {
-        if let Some(callee_cap) = matched.callee {
-            callee = parser.node_text(callee_cap);
-        }
-        if let Some(method_cap) = matched.method {
-            callee = parser.node_text(method_cap);
-            is_method = true;
-            if let Some(obj_cap) = matched.object {
-                obj_name = Some(parser.node_text(obj_cap));
-            }
-        }
-    }
-
-    (callee, is_method, obj_name, callee_function_node)
-}
-
-pub(crate) fn is_ref_node(node: Node<'_>) -> bool {
-    matches!(
-        node.kind(),
-        "identifier"
-            | "property_identifier"
-            | "private_property_identifier"
-            | "field_identifier"
-            | "type_identifier"
-    )
-}
-
-pub(crate) fn function_params(
-    parser: &ParseContext,
-    function_node: Node<'_>,
-) -> Vec<FunctionParamInfo> {
-    let Some(parameters) = function_node.child_by_field_name("parameters") else {
-        return Vec::new();
-    };
-
-    let mut params = Vec::new();
-    for i in 0..parameters.named_child_count() {
-        let Some(param) = parameters.named_child(i as u32) else {
-            continue;
-        };
-        if let Some(info) = build_param_info(parser, param) {
-            params.push(info);
-        }
-    }
-    params
 }
 
 fn build_param_info(parser: &ParseContext, param: Node<'_>) -> Option<FunctionParamInfo> {
@@ -426,141 +595,6 @@ pub(crate) fn alias_events(parser: &ParseContext, func_node: Node<'_>) -> Vec<Js
     events
 }
 
-pub(crate) fn field_infos(
-    parser: &ParseContext,
-    class_node: Node<'_>,
-    class_name: &str,
-) -> Vec<FieldInfo> {
-    let body = class_node.child_by_field_name("body").or_else(|| {
-        for i in 0..class_node.child_count() {
-            let child = class_node.child(i as u32).unwrap();
-            if child.kind() == "class_body" {
-                return Some(child);
-            }
-        }
-        None
-    });
-    let Some(body) = body else {
-        return Vec::new();
-    };
-
-    let mut fields = Vec::new();
-    let mut seen = HashSet::new();
-
-    for i in 0..body.child_count() {
-        let member = body.child(i as u32).unwrap();
-        if !member.is_named() {
-            continue;
-        }
-
-        if member.kind().ends_with("field_definition")
-            || matches!(member.kind(), "property_definition" | "field_definition")
-        {
-            let name_node = member
-                .child_by_field_name("name")
-                .or_else(|| member.child_by_field_name("property"))
-                .or_else(|| member.child_by_field_name("pattern"));
-            let Some(name_node) = name_node else {
-                continue;
-            };
-            if !matches!(
-                name_node.kind(),
-                "identifier"
-                    | "property_identifier"
-                    | "private_property_identifier"
-                    | "field_identifier"
-            ) {
-                continue;
-            }
-            let name = parser.node_text(name_node);
-            let field_type = member
-                .child_by_field_name("type")
-                .map(|type_node| normalize_type_text(&parser.node_text(type_node)))
-                .or_else(|| {
-                    member
-                        .child_by_field_name("value")
-                        .and_then(|value| infer_field_type_from_value(parser, value))
-                })
-                .or_else(|| infer_field_type_from_member(parser, member, name_node.id()));
-            if !name.is_empty() && seen.insert(name.clone()) {
-                fields.push(FieldInfo {
-                    name,
-                    location: parser.node_location(member),
-                    field_type,
-                    class_name: Some(class_name.to_string()),
-                });
-            }
-        }
-
-        if member.kind() != "method_definition" {
-            continue;
-        }
-        let Some(name_node) = member.child_by_field_name("name") else {
-            continue;
-        };
-        if !parser.node_text_eq(name_node, "constructor") {
-            continue;
-        }
-
-        let Some(params) = member.child_by_field_name("parameters") else {
-            continue;
-        };
-        for j in 0..params.child_count() {
-            let param = params.child(j as u32).unwrap();
-            if !param.is_named() {
-                continue;
-            }
-            let has_modifier = (0..param.child_count()).any(|k| {
-                let child = param.child(k as u32).unwrap();
-                matches!(child.kind(), "accessibility_modifier" | "readonly")
-            });
-            if !has_modifier {
-                continue;
-            }
-            let mut pattern = param
-                .child_by_field_name("pattern")
-                .or_else(|| param.child_by_field_name("name"));
-            if let Some(pattern_node) = pattern {
-                if pattern_node.kind() == "assignment_pattern" {
-                    pattern = pattern_node
-                        .child_by_field_name("left")
-                        .or(Some(pattern_node));
-                }
-            }
-            let Some(pattern) = pattern else {
-                continue;
-            };
-            if !matches!(pattern.kind(), "identifier" | "property_identifier") {
-                continue;
-            }
-            let param_name = parser.node_text(pattern);
-            let param_type = param
-                .child_by_field_name("type")
-                .map(|type_node| normalize_type_text(&parser.node_text(type_node)));
-            if !param_name.is_empty() && seen.insert(param_name.clone()) {
-                fields.push(FieldInfo {
-                    name: param_name,
-                    location: parser.node_location(param),
-                    field_type: param_type,
-                    class_name: Some(class_name.to_string()),
-                });
-            }
-        }
-
-        if let Some(body_node) = member.child_by_field_name("body") {
-            collect_field_infos_from_constructor_body(
-                parser,
-                body_node,
-                class_name,
-                &mut seen,
-                &mut fields,
-            );
-        }
-    }
-
-    fields
-}
-
 fn collect_field_infos_from_constructor_body(
     parser: &ParseContext,
     body_node: Node<'_>,
@@ -685,13 +719,6 @@ fn normalize_type_text(text: &str) -> String {
     } else {
         stripped.to_string()
     }
-}
-
-pub(crate) fn super_class_names(parser: &ParseContext, class_node: Node<'_>) -> Vec<String> {
-    let mut super_classes = Vec::new();
-    let mut seen = HashSet::new();
-    collect_super_class_names_from_heritage(parser, class_node, &mut super_classes, &mut seen);
-    super_classes
 }
 
 fn collect_super_class_names_from_heritage(

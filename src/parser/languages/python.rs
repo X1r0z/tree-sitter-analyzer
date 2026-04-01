@@ -7,6 +7,7 @@ use super::super::capture::CallCaptureMatch;
 use super::super::{
     ParseContext, PythonPropertyCallers, PythonPropertyDefinitions, PythonPropertyIndexes,
 };
+use crate::languages::{find_language_info, LanguageEngine, LanguageInfo, ResolvedCall};
 use crate::models::{
     AnnotationInfo, FieldInfo, FunctionParamInfo, Location, PythonPropertyCallerInfo,
     PythonPropertyInfo,
@@ -20,15 +21,309 @@ use crate::utils::select_most_specific_by_line;
 
 type PythonPropertyCallerKey = (String, String, Option<String>, Option<String>, usize, usize);
 
+pub(crate) struct PythonEngine;
+
+pub(crate) static PYTHON_ENGINE: PythonEngine = PythonEngine;
+
+impl LanguageEngine for PythonEngine {
+    fn language_info(&self) -> &'static LanguageInfo {
+        find_language_info("python").expect("python language info")
+    }
+
+    fn normalize_function_node<'a>(&self, _ctx: &ParseContext, node: Node<'a>) -> Node<'a> {
+        unwrap_definition_node(node)
+    }
+
+    fn normalize_class_node<'a>(&self, _ctx: &ParseContext, node: Node<'a>) -> Node<'a> {
+        unwrap_definition_node(node)
+    }
+
+    fn function_name(&self, ctx: &ParseContext, node: Node<'_>) -> Option<String> {
+        if let Some(name_node) = node.child_by_field_name("name") {
+            let name = ctx.node_text(name_node);
+            if !name.is_empty() {
+                return Some(name);
+            }
+        }
+        for i in 0..node.child_count() {
+            let child = node.child(i as u32).unwrap();
+            if child.kind() == "identifier" {
+                let name = ctx.node_text(child);
+                if !name.is_empty() {
+                    return Some(name);
+                }
+            }
+        }
+        None
+    }
+
+    fn function_params(
+        &self,
+        ctx: &ParseContext,
+        function_node: Node<'_>,
+    ) -> Vec<FunctionParamInfo> {
+        let Some(parameters) = function_node.child_by_field_name("parameters") else {
+            return Vec::new();
+        };
+
+        let mut params = Vec::new();
+        for i in 0..parameters.named_child_count() {
+            let Some(param) = parameters.named_child(i as u32) else {
+                continue;
+            };
+            if let Some(info) = build_parameter_info(ctx, param) {
+                params.push(info);
+            }
+        }
+        params
+    }
+
+    fn resolve_call<'a>(
+        &self,
+        ctx: &ParseContext,
+        matched: &CallCaptureMatch<'a>,
+    ) -> ResolvedCall<'a> {
+        let call_node = matched.call;
+        let mut callee = String::new();
+        let mut is_method = false;
+        let mut object_name: Option<String> = None;
+        let mut callee_function_node: Option<Node<'_>> = None;
+
+        if let Some(func_node) = call_node.child_by_field_name("function") {
+            callee_function_node = Some(func_node);
+            if func_node.kind() == "identifier" {
+                callee = ctx.node_text(func_node);
+            } else if func_node.kind() == "attribute" {
+                is_method = true;
+                let (callee_name, resolved_object_name) = split_attribute_parts(ctx, func_node);
+                callee = callee_name;
+                object_name = resolved_object_name;
+            }
+        }
+        if callee.is_empty() {
+            if let Some(callee_cap) = matched.callee {
+                callee = ctx.node_text(callee_cap);
+            }
+            if let Some(method_cap) = matched.method {
+                callee = ctx.node_text(method_cap);
+                is_method = true;
+                if let Some(obj_cap) = matched.object {
+                    object_name = Some(ctx.node_text(obj_cap));
+                }
+            }
+        }
+
+        ResolvedCall {
+            callee,
+            is_method,
+            object_name,
+            callee_function_node,
+        }
+    }
+
+    fn is_ref_node(&self, node: Node<'_>) -> bool {
+        matches!(
+            node.kind(),
+            "identifier" | "dotted_name" | "relative_import"
+        )
+    }
+
+    fn class_fields(
+        &self,
+        ctx: &ParseContext,
+        class_node: Node<'_>,
+        class_name: &str,
+    ) -> Vec<FieldInfo> {
+        struct WalkCtx<'a> {
+            parser: &'a ParseContext,
+            class_node_id: usize,
+            class_name: String,
+            fields: Vec<FieldInfo>,
+            seen: HashSet<String>,
+        }
+
+        fn walk(ctx: &mut WalkCtx, node: Node, inside_method: bool) {
+            if node.id() != ctx.class_node_id
+                && matches!(
+                    node.kind(),
+                    "class_definition"
+                        | "class_declaration"
+                        | "class"
+                        | "interface_declaration"
+                        | "enum_declaration"
+                        | "record_declaration"
+                        | "annotation_type_declaration"
+                )
+            {
+                let nested_name = node
+                    .child_by_field_name("name")
+                    .map(|child| ctx.parser.node_text(child))
+                    .unwrap_or_default();
+                if !nested_name.is_empty() && nested_name != ctx.class_name {
+                    return;
+                }
+            }
+
+            if matches!(
+                node.kind(),
+                "function_definition"
+                    | "method_definition"
+                    | "method_declaration"
+                    | "constructor_declaration"
+            ) {
+                for i in 0..node.child_count() {
+                    if let Some(child) = node.child(i as u32) {
+                        walk(ctx, child, true);
+                    }
+                }
+                return;
+            }
+
+            if node.kind() == "expression_statement" {
+                for i in 0..node.child_count() {
+                    let child = node.child(i as u32).unwrap();
+                    if child.kind() != "assignment" {
+                        continue;
+                    }
+
+                    let Some(left_node) = child.child_by_field_name("left") else {
+                        continue;
+                    };
+                    let field_type = child
+                        .child_by_field_name("type")
+                        .map(|node| ctx.parser.node_text(node));
+                    let mut name = String::new();
+
+                    if inside_method {
+                        if left_node.kind() == "attribute" {
+                            let obj_node = left_node.child_by_field_name("object");
+                            let attr_node = left_node.child_by_field_name("attribute");
+                            if let (Some(obj), Some(attr)) = (obj_node, attr_node) {
+                                if ctx.parser.node_text_eq(obj, "self") {
+                                    name = ctx.parser.node_text(attr);
+                                }
+                            }
+                        }
+                    } else if left_node.kind() == "identifier" {
+                        name = ctx.parser.node_text(left_node);
+                    }
+
+                    if !name.is_empty() && ctx.seen.insert(name.clone()) {
+                        ctx.fields.push(FieldInfo {
+                            name,
+                            location: ctx.parser.node_location(child),
+                            field_type,
+                            class_name: Some(ctx.class_name.clone()),
+                        });
+                    }
+                }
+                return;
+            }
+
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i as u32) {
+                    walk(ctx, child, inside_method);
+                }
+            }
+        }
+
+        let mut walk_ctx = WalkCtx {
+            parser: ctx,
+            class_node_id: class_node.id(),
+            class_name: class_name.to_string(),
+            fields: Vec::new(),
+            seen: HashSet::new(),
+        };
+        walk(&mut walk_ctx, class_node, false);
+        walk_ctx.fields
+    }
+
+    fn super_types(&self, ctx: &ParseContext, class_node: Node<'_>) -> Vec<String> {
+        let mut super_classes = Vec::new();
+        for i in 0..class_node.child_count() {
+            let child = class_node.child(i as u32).unwrap();
+            if child.kind() != "argument_list" {
+                continue;
+            }
+            for j in 0..child.child_count() {
+                let arg = child.child(j as u32).unwrap();
+                if matches!(arg.kind(), "identifier" | "attribute") {
+                    super_classes.push(ctx.node_text(arg));
+                }
+            }
+        }
+        super_classes
+    }
+
+    fn annotations(&self, ctx: &ParseContext) -> Vec<AnnotationInfo> {
+        let mut annotations = Vec::new();
+        let mut stack = vec![ctx.tree().root_node()];
+
+        while let Some(node) = stack.pop() {
+            if node.kind() == "decorated_definition" {
+                collect_decorators_from_decorated(ctx, node, &mut annotations);
+                for i in (0..node.child_count()).rev() {
+                    if let Some(child) = node.child(i as u32) {
+                        stack.push(child);
+                    }
+                }
+                continue;
+            }
+            for i in (0..node.child_count()).rev() {
+                if let Some(child) = node.child(i as u32) {
+                    stack.push(child);
+                }
+            }
+        }
+        annotations
+    }
+
+    fn include_call(
+        &self,
+        _ctx: &ParseContext,
+        call_node: Node<'_>,
+        callee: &str,
+        object_name: Option<&str>,
+    ) -> bool {
+        !should_skip_call(call_node, callee, object_name)
+    }
+
+    fn ref_filter(&self, _ctx: &ParseContext, node: Node<'_>) -> bool {
+        if node.kind() != "identifier" {
+            return true;
+        }
+
+        let mut current = node.parent();
+        let mut has_import_name_ancestor = false;
+        while let Some(parent) = current {
+            match parent.kind() {
+                "dotted_name" | "relative_import" => has_import_name_ancestor = true,
+                "import_statement" | "import_from_statement" => return !has_import_name_ancestor,
+                _ => {}
+            }
+            current = parent.parent();
+        }
+
+        true
+    }
+}
+
 fn ensure_property_indexes_cached(parser: &ParseContext) {
     if parser.language() != "python" {
         return;
     }
-    if parser.caches.borrow().python.property_indexes.is_some() {
+    if parser
+        .caches
+        .borrow()
+        .language
+        .python
+        .property_indexes
+        .is_some()
+    {
         return;
     }
     let definitions = collect_property_definitions(parser);
-    parser.caches.borrow_mut().python.property_indexes = Some(PythonPropertyIndexes {
+    parser.caches.borrow_mut().language.python.property_indexes = Some(PythonPropertyIndexes {
         definitions,
         callers_by_property: None,
     });
@@ -43,6 +338,7 @@ fn ensure_property_callers_cached(parser: &ParseContext) {
     let should_build = parser
         .caches
         .borrow()
+        .language
         .python
         .property_indexes
         .as_ref()
@@ -54,6 +350,7 @@ fn ensure_property_callers_cached(parser: &ParseContext) {
     let definitions = {
         let caches = parser.caches.borrow();
         caches
+            .language
             .python
             .property_indexes
             .as_ref()
@@ -63,7 +360,14 @@ fn ensure_property_callers_cached(parser: &ParseContext) {
     };
     let raw_callers = collect_property_callers_raw(parser);
     let callers_by_property = filter_property_callers(parser, &definitions, &raw_callers);
-    if let Some(indexes) = parser.caches.borrow_mut().python.property_indexes.as_mut() {
+    if let Some(indexes) = parser
+        .caches
+        .borrow_mut()
+        .language
+        .python
+        .property_indexes
+        .as_mut()
+    {
         indexes.callers_by_property = Some(callers_by_property);
     }
 }
@@ -79,6 +383,7 @@ pub(crate) fn with_cached_property_definitions<R>(
     let caches = parser.caches.borrow();
     let definitions = Ref::map(caches, |caches| {
         &caches
+            .language
             .python
             .property_indexes
             .as_ref()
@@ -99,6 +404,7 @@ fn with_cached_property_callers<R>(
     let caches = parser.caches.borrow();
     let callers = Ref::map(caches, |caches| {
         caches
+            .language
             .python
             .property_indexes
             .as_ref()
@@ -136,81 +442,6 @@ pub(crate) fn unwrap_definition_node<'a>(node: Node<'a>) -> Node<'a> {
     node
 }
 
-pub(crate) fn should_skip_import_ref(node: Node<'_>) -> bool {
-    if node.kind() != "identifier" {
-        return false;
-    }
-
-    let mut current = node.parent();
-    let mut has_import_name_ancestor = false;
-    while let Some(parent) = current {
-        match parent.kind() {
-            "dotted_name" | "relative_import" => has_import_name_ancestor = true,
-            "import_statement" | "import_from_statement" => return has_import_name_ancestor,
-            _ => {}
-        }
-        current = parent.parent();
-    }
-
-    false
-}
-
-pub(crate) fn function_name_from_node(context: &ParseContext, node: Node<'_>) -> Option<String> {
-    if let Some(name_node) = node.child_by_field_name("name") {
-        let name = context.node_text(name_node);
-        if !name.is_empty() {
-            return Some(name);
-        }
-    }
-    for i in 0..node.child_count() {
-        let child = node.child(i as u32).unwrap();
-        if child.kind() == "identifier" {
-            let name = context.node_text(child);
-            if !name.is_empty() {
-                return Some(name);
-            }
-        }
-    }
-    None
-}
-
-pub(crate) fn resolve_call_parts<'a>(
-    parser: &ParseContext,
-    matched: &CallCaptureMatch<'a>,
-) -> (String, bool, Option<String>, Option<Node<'a>>) {
-    let call_node = matched.call;
-    let mut callee = String::new();
-    let mut is_method = false;
-    let mut obj_name: Option<String> = None;
-    let mut callee_function_node: Option<Node<'_>> = None;
-
-    if let Some(func_node) = call_node.child_by_field_name("function") {
-        callee_function_node = Some(func_node);
-        if func_node.kind() == "identifier" {
-            callee = parser.node_text(func_node);
-        } else if func_node.kind() == "attribute" {
-            is_method = true;
-            let (callee_name, object_name) = split_attribute_parts(parser, func_node);
-            callee = callee_name;
-            obj_name = object_name;
-        }
-    }
-    if callee.is_empty() {
-        if let Some(callee_cap) = matched.callee {
-            callee = parser.node_text(callee_cap);
-        }
-        if let Some(method_cap) = matched.method {
-            callee = parser.node_text(method_cap);
-            is_method = true;
-            if let Some(obj_cap) = matched.object {
-                obj_name = Some(parser.node_text(obj_cap));
-            }
-        }
-    }
-
-    (callee, is_method, obj_name, callee_function_node)
-}
-
 pub(crate) fn should_skip_call(
     call_node: Node<'_>,
     callee: &str,
@@ -227,33 +458,6 @@ pub(crate) fn should_skip_call(
         && parent
             .child_by_field_name("object")
             .is_some_and(|object| object.id() == call_node.id())
-}
-
-pub(crate) fn is_ref_node(node: Node<'_>) -> bool {
-    matches!(
-        node.kind(),
-        "identifier" | "dotted_name" | "relative_import"
-    )
-}
-
-pub(crate) fn function_params(
-    parser: &ParseContext,
-    function_node: Node<'_>,
-) -> Vec<FunctionParamInfo> {
-    let Some(parameters) = function_node.child_by_field_name("parameters") else {
-        return Vec::new();
-    };
-
-    let mut params = Vec::new();
-    for i in 0..parameters.named_child_count() {
-        let Some(param) = parameters.named_child(i as u32) else {
-            continue;
-        };
-        if let Some(info) = build_parameter_info(parser, param) {
-            params.push(info);
-        }
-    }
-    params
 }
 
 fn build_parameter_info(parser: &ParseContext, param: Node<'_>) -> Option<FunctionParamInfo> {
@@ -299,29 +503,6 @@ pub(crate) fn extract_definition_header(
         .source_text(definition_node.start_byte(), end_byte)
         .trim_end()
         .to_string()
-}
-
-pub(crate) fn extract_decorators(parser: &ParseContext) -> Vec<AnnotationInfo> {
-    let mut annotations = Vec::new();
-    let mut stack = vec![parser.tree().root_node()];
-
-    while let Some(node) = stack.pop() {
-        if node.kind() == "decorated_definition" {
-            collect_decorators_from_decorated(parser, node, &mut annotations);
-            for i in (0..node.child_count()).rev() {
-                if let Some(child) = node.child(i as u32) {
-                    stack.push(child);
-                }
-            }
-            continue;
-        }
-        for i in (0..node.child_count()).rev() {
-            if let Some(child) = node.child(i as u32) {
-                stack.push(child);
-            }
-        }
-    }
-    annotations
 }
 
 fn collect_decorators_from_decorated(
@@ -800,135 +981,6 @@ fn property_caller_matches_known_property(
 
         receiver_matches
     })
-}
-
-pub(crate) fn field_infos(
-    parser: &ParseContext,
-    class_node: Node<'_>,
-    class_name: &str,
-) -> Vec<FieldInfo> {
-    let fields = Vec::new();
-    let seen = HashSet::new();
-
-    struct WalkCtx<'a> {
-        parser: &'a ParseContext,
-        class_node_id: usize,
-        class_name: String,
-        fields: Vec<FieldInfo>,
-        seen: HashSet<String>,
-    }
-
-    fn collect_field_infos(ctx: &mut WalkCtx, node: Node, inside_method: bool) {
-        if node.id() != ctx.class_node_id
-            && matches!(
-                node.kind(),
-                "class_definition"
-                    | "class_declaration"
-                    | "class"
-                    | "interface_declaration"
-                    | "enum_declaration"
-                    | "record_declaration"
-                    | "annotation_type_declaration"
-            )
-        {
-            let nested_name = node
-                .child_by_field_name("name")
-                .map(|child| ctx.parser.node_text(child))
-                .unwrap_or_default();
-            if !nested_name.is_empty() && nested_name != ctx.class_name {
-                return;
-            }
-        }
-
-        if matches!(
-            node.kind(),
-            "function_definition"
-                | "method_definition"
-                | "method_declaration"
-                | "constructor_declaration"
-        ) {
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i as u32) {
-                    collect_field_infos(ctx, child, true);
-                }
-            }
-            return;
-        }
-
-        if node.kind() == "expression_statement" {
-            for i in 0..node.child_count() {
-                let child = node.child(i as u32).unwrap();
-                if child.kind() != "assignment" {
-                    continue;
-                }
-
-                let Some(left_node) = child.child_by_field_name("left") else {
-                    continue;
-                };
-                let field_type = child
-                    .child_by_field_name("type")
-                    .map(|node| ctx.parser.node_text(node));
-                let mut name = String::new();
-
-                if inside_method {
-                    if left_node.kind() == "attribute" {
-                        let obj_node = left_node.child_by_field_name("object");
-                        let attr_node = left_node.child_by_field_name("attribute");
-                        if let (Some(obj), Some(attr)) = (obj_node, attr_node) {
-                            if ctx.parser.node_text_eq(obj, "self") {
-                                name = ctx.parser.node_text(attr);
-                            }
-                        }
-                    }
-                } else if left_node.kind() == "identifier" {
-                    name = ctx.parser.node_text(left_node);
-                }
-
-                if !name.is_empty() && ctx.seen.insert(name.clone()) {
-                    ctx.fields.push(FieldInfo {
-                        name,
-                        location: ctx.parser.node_location(child),
-                        field_type,
-                        class_name: Some(ctx.class_name.clone()),
-                    });
-                }
-            }
-            return;
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i as u32) {
-                collect_field_infos(ctx, child, inside_method);
-            }
-        }
-    }
-
-    let mut ctx = WalkCtx {
-        parser,
-        class_node_id: class_node.id(),
-        class_name: class_name.to_string(),
-        fields,
-        seen,
-    };
-    collect_field_infos(&mut ctx, class_node, false);
-    ctx.fields
-}
-
-pub(crate) fn super_class_names(parser: &ParseContext, class_node: Node<'_>) -> Vec<String> {
-    let mut super_classes = Vec::new();
-    for i in 0..class_node.child_count() {
-        let child = class_node.child(i as u32).unwrap();
-        if child.kind() != "argument_list" {
-            continue;
-        }
-        for j in 0..child.child_count() {
-            let arg = child.child(j as u32).unwrap();
-            if matches!(arg.kind(), "identifier" | "attribute") {
-                super_classes.push(parser.node_text(arg));
-            }
-        }
-    }
-    super_classes
 }
 
 fn first_identifier_text(parser: &ParseContext, node: Node<'_>) -> String {

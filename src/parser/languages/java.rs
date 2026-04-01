@@ -1,111 +1,214 @@
 use tree_sitter::Node;
 
 use super::super::{context, ParseContext};
+use crate::languages::{find_language_info, LanguageEngine, LanguageInfo, ResolvedCall};
 use crate::models::{AnnotationInfo, FieldInfo, FunctionParamInfo};
 
-pub(crate) fn function_name_from_node(context: &ParseContext, node: Node<'_>) -> Option<String> {
-    if let Some(name_node) = node.child_by_field_name("name") {
-        let name = context.node_text(name_node);
-        if !name.is_empty() {
-            return Some(name);
-        }
+pub(crate) struct JavaEngine;
+
+pub(crate) static JAVA_ENGINE: JavaEngine = JavaEngine;
+
+impl LanguageEngine for JavaEngine {
+    fn language_info(&self) -> &'static LanguageInfo {
+        find_language_info("java").expect("java language info")
     }
-    for i in 0..node.child_count() {
-        let child = node.child(i as u32).unwrap();
-        if matches!(child.kind(), "identifier" | "type_identifier") {
-            let name = context.node_text(child);
+
+    fn function_name(&self, ctx: &ParseContext, node: Node<'_>) -> Option<String> {
+        if let Some(name_node) = node.child_by_field_name("name") {
+            let name = ctx.node_text(name_node);
             if !name.is_empty() {
                 return Some(name);
             }
         }
-    }
-    None
-}
-
-pub(crate) fn is_ref_node(node: Node<'_>) -> bool {
-    matches!(
-        node.kind(),
-        "identifier" | "type_identifier" | "scoped_identifier" | "scoped_type_identifier"
-    )
-}
-
-pub(crate) fn function_params(
-    parser: &ParseContext,
-    function_node: Node<'_>,
-) -> Vec<FunctionParamInfo> {
-    let Some(parameters) = function_node.child_by_field_name("parameters") else {
-        return Vec::new();
-    };
-
-    let mut params = Vec::new();
-    for i in 0..parameters.named_child_count() {
-        let Some(param) = parameters.named_child(i as u32) else {
-            continue;
-        };
-
-        let type_node = param.child_by_field_name("type");
-        let name = param
-            .child_by_field_name("name")
-            .map(|node| parser.node_text(node))
-            .or_else(|| {
-                (param.kind() == "receiver_parameter").then(|| {
-                    parser
-                        .node_text(param)
-                        .split_whitespace()
-                        .last()
-                        .unwrap_or("")
-                        .to_string()
-                })
-            })
-            .unwrap_or_default();
-
-        if name.is_empty() {
-            continue;
-        }
-
-        params.push(FunctionParamInfo {
-            name,
-            param_type: type_node.map(|node| parser.node_text(node)),
-        });
-    }
-    params
-}
-
-pub(crate) fn resolve_call_parts(
-    parser: &ParseContext,
-    call_node: Node<'_>,
-) -> (String, bool, Option<String>) {
-    if call_node.kind() == "explicit_constructor_invocation" {
-        if let Some(constructor_node) = call_node.child_by_field_name("constructor") {
-            return (parser.node_text(constructor_node), false, None);
-        }
-        return (String::new(), false, None);
-    }
-
-    if call_node.kind() == "object_creation_expression" {
-        if let Some(type_node) = call_node.child_by_field_name("type") {
-            if type_node.kind() == "generic_type" {
-                for i in 0..type_node.named_child_count() {
-                    let child = type_node.named_child(i as u32).unwrap();
-                    if child.kind() == "type_identifier" {
-                        return (parser.node_text(child), false, None);
-                    }
+        for i in 0..node.child_count() {
+            let child = node.child(i as u32).unwrap();
+            if matches!(child.kind(), "identifier" | "type_identifier") {
+                let name = ctx.node_text(child);
+                if !name.is_empty() {
+                    return Some(name);
                 }
-            } else {
-                return (parser.node_text(type_node), false, None);
             }
         }
-        return (String::new(), false, None);
+        None
     }
 
-    let callee = call_node
-        .child_by_field_name("name")
-        .map(|node| parser.node_text(node))
-        .unwrap_or_default();
-    let object_name = call_node
-        .child_by_field_name("object")
-        .map(|node| parser.node_text(node));
-    (callee, object_name.is_some(), object_name)
+    fn function_params(
+        &self,
+        ctx: &ParseContext,
+        function_node: Node<'_>,
+    ) -> Vec<FunctionParamInfo> {
+        let Some(parameters) = function_node.child_by_field_name("parameters") else {
+            return Vec::new();
+        };
+
+        let mut params = Vec::new();
+        for i in 0..parameters.named_child_count() {
+            let Some(param) = parameters.named_child(i as u32) else {
+                continue;
+            };
+
+            let type_node = param.child_by_field_name("type");
+            let name = param
+                .child_by_field_name("name")
+                .map(|node| ctx.node_text(node))
+                .or_else(|| {
+                    (param.kind() == "receiver_parameter").then(|| {
+                        ctx.node_text(param)
+                            .split_whitespace()
+                            .last()
+                            .unwrap_or("")
+                            .to_string()
+                    })
+                })
+                .unwrap_or_default();
+
+            if name.is_empty() {
+                continue;
+            }
+
+            params.push(FunctionParamInfo {
+                name,
+                param_type: type_node.map(|node| ctx.node_text(node)),
+            });
+        }
+        params
+    }
+
+    fn resolve_call<'a>(
+        &self,
+        ctx: &ParseContext,
+        matched: &super::super::capture::CallCaptureMatch<'a>,
+    ) -> ResolvedCall<'a> {
+        let call_node = matched.call;
+        let (callee, is_method, object_name) =
+            if call_node.kind() == "explicit_constructor_invocation" {
+                if let Some(constructor_node) = call_node.child_by_field_name("constructor") {
+                    (ctx.node_text(constructor_node), false, None)
+                } else {
+                    (String::new(), false, None)
+                }
+            } else if call_node.kind() == "object_creation_expression" {
+                if let Some(type_node) = call_node.child_by_field_name("type") {
+                    if type_node.kind() == "generic_type" {
+                        let mut callee = String::new();
+                        for i in 0..type_node.named_child_count() {
+                            let child = type_node.named_child(i as u32).unwrap();
+                            if child.kind() == "type_identifier" {
+                                callee = ctx.node_text(child);
+                                break;
+                            }
+                        }
+                        (callee, false, None)
+                    } else {
+                        (ctx.node_text(type_node), false, None)
+                    }
+                } else {
+                    (String::new(), false, None)
+                }
+            } else {
+                let callee = call_node
+                    .child_by_field_name("name")
+                    .map(|node| ctx.node_text(node))
+                    .unwrap_or_default();
+                let object_name = call_node
+                    .child_by_field_name("object")
+                    .map(|node| ctx.node_text(node));
+                (callee, object_name.is_some(), object_name)
+            };
+        ResolvedCall {
+            callee,
+            is_method,
+            object_name,
+            callee_function_node: None,
+        }
+    }
+
+    fn is_ref_node(&self, node: Node<'_>) -> bool {
+        matches!(
+            node.kind(),
+            "identifier" | "type_identifier" | "scoped_identifier" | "scoped_type_identifier"
+        )
+    }
+
+    fn class_fields(
+        &self,
+        ctx: &ParseContext,
+        class_node: Node<'_>,
+        class_name: &str,
+    ) -> Vec<FieldInfo> {
+        context::collect_field_infos_from_declarations(ctx, class_node, class_name, false)
+    }
+
+    fn super_types(&self, ctx: &ParseContext, class_node: Node<'_>) -> Vec<String> {
+        let mut super_classes = Vec::new();
+
+        for i in 0..class_node.child_count() {
+            let child = class_node.child(i as u32).unwrap();
+            match child.kind() {
+                "superclass" => {
+                    for j in 0..child.child_count() {
+                        let sub = child.child(j as u32).unwrap();
+                        if sub.kind() == "type_identifier" {
+                            super_classes.push(ctx.node_text(sub));
+                        } else if sub.kind() == "generic_type" {
+                            for k in 0..sub.child_count() {
+                                let grandchild = sub.child(k as u32).unwrap();
+                                if grandchild.kind() == "type_identifier" {
+                                    super_classes.push(ctx.node_text(grandchild));
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                "super_interfaces" => {
+                    for j in 0..child.child_count() {
+                        let sub = child.child(j as u32).unwrap();
+                        if sub.kind() != "type_list" {
+                            continue;
+                        }
+                        for k in 0..sub.child_count() {
+                            let type_node = sub.child(k as u32).unwrap();
+                            if type_node.kind() == "type_identifier" {
+                                super_classes.push(ctx.node_text(type_node));
+                            } else if type_node.kind() == "generic_type" {
+                                for l in 0..type_node.child_count() {
+                                    let grandchild = type_node.child(l as u32).unwrap();
+                                    if grandchild.kind() == "type_identifier" {
+                                        super_classes.push(ctx.node_text(grandchild));
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        super_classes
+    }
+
+    fn annotations(&self, ctx: &ParseContext) -> Vec<AnnotationInfo> {
+        let mut annotations = Vec::new();
+        let mut stack = vec![ctx.tree().root_node()];
+
+        while let Some(node) = stack.pop() {
+            if matches!(node.kind(), "marker_annotation" | "annotation") {
+                if let Some(info) = annotation_info(ctx, node) {
+                    annotations.push(info);
+                }
+                continue;
+            }
+            for i in (0..node.child_count()).rev() {
+                if let Some(child) = node.child(i as u32) {
+                    stack.push(child);
+                }
+            }
+        }
+        annotations
+    }
 }
 
 pub(crate) fn extract_signature(parser: &ParseContext, declaration_node: Node<'_>) -> String {
@@ -157,26 +260,6 @@ fn signature_start_byte(declaration_node: Node<'_>) -> usize {
     }
 
     declaration_node.start_byte()
-}
-
-pub(crate) fn extract_annotations(parser: &ParseContext) -> Vec<AnnotationInfo> {
-    let mut annotations = Vec::new();
-    let mut stack = vec![parser.tree().root_node()];
-
-    while let Some(node) = stack.pop() {
-        if matches!(node.kind(), "marker_annotation" | "annotation") {
-            if let Some(info) = annotation_info(parser, node) {
-                annotations.push(info);
-            }
-            continue;
-        }
-        for i in (0..node.child_count()).rev() {
-            if let Some(child) = node.child(i as u32) {
-                stack.push(child);
-            }
-        }
-    }
-    annotations
 }
 
 fn annotation_info(parser: &ParseContext, node: Node<'_>) -> Option<AnnotationInfo> {
@@ -344,63 +427,4 @@ fn declarator_name(parser: &ParseContext, decl_node: Node<'_>) -> String {
         }
     }
     String::new()
-}
-
-pub(crate) fn field_infos(
-    parser: &ParseContext,
-    class_node: Node<'_>,
-    class_name: &str,
-) -> Vec<FieldInfo> {
-    context::collect_field_infos_from_declarations(parser, class_node, class_name, false)
-}
-
-pub(crate) fn super_class_names(parser: &ParseContext, class_node: Node<'_>) -> Vec<String> {
-    let mut super_classes = Vec::new();
-
-    for i in 0..class_node.child_count() {
-        let child = class_node.child(i as u32).unwrap();
-        match child.kind() {
-            "superclass" => {
-                for j in 0..child.child_count() {
-                    let sub = child.child(j as u32).unwrap();
-                    if sub.kind() == "type_identifier" {
-                        super_classes.push(parser.node_text(sub));
-                    } else if sub.kind() == "generic_type" {
-                        for k in 0..sub.child_count() {
-                            let grandchild = sub.child(k as u32).unwrap();
-                            if grandchild.kind() == "type_identifier" {
-                                super_classes.push(parser.node_text(grandchild));
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            "super_interfaces" => {
-                for j in 0..child.child_count() {
-                    let sub = child.child(j as u32).unwrap();
-                    if sub.kind() != "type_list" {
-                        continue;
-                    }
-                    for k in 0..sub.child_count() {
-                        let type_node = sub.child(k as u32).unwrap();
-                        if type_node.kind() == "type_identifier" {
-                            super_classes.push(parser.node_text(type_node));
-                        } else if type_node.kind() == "generic_type" {
-                            for l in 0..type_node.child_count() {
-                                let grandchild = type_node.child(l as u32).unwrap();
-                                if grandchild.kind() == "type_identifier" {
-                                    super_classes.push(parser.node_text(grandchild));
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    super_classes
 }

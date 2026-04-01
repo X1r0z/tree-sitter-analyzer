@@ -2,7 +2,12 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::LazyLock;
 
-use tree_sitter::Query;
+use tree_sitter::{Node, Query};
+
+use crate::models::{AnnotationInfo, FieldInfo, FunctionParamInfo};
+use crate::parser::capture::CallCaptureMatch;
+use crate::parser::languages::{go, java, javascript, python};
+use crate::parser::ParseContext;
 
 pub struct LanguageInfo {
     pub name: &'static str,
@@ -11,6 +16,101 @@ pub struct LanguageInfo {
     pub class_query: &'static str,
     pub call_query: &'static str,
     pub import_query: &'static str,
+}
+
+pub struct LanguageQueries {
+    pub function_query: &'static str,
+    pub class_query: &'static str,
+    pub call_query: &'static str,
+    pub import_query: &'static str,
+}
+
+pub struct ResolvedCall<'a> {
+    pub callee: String,
+    pub is_method: bool,
+    pub object_name: Option<String>,
+    pub callee_function_node: Option<Node<'a>>,
+}
+
+pub trait LanguageEngine: Sync {
+    fn language_info(&self) -> &'static LanguageInfo;
+
+    fn id(&self) -> &'static str {
+        self.language_info().name
+    }
+
+    fn extensions(&self) -> &'static [&'static str] {
+        self.language_info().extensions
+    }
+
+    fn ts_language(&self) -> tree_sitter::Language {
+        find_language(self.id()).expect("supported language")
+    }
+
+    fn queries(&self) -> LanguageQueries {
+        let info = self.language_info();
+        LanguageQueries {
+            function_query: info.function_query,
+            class_query: info.class_query,
+            call_query: info.call_query,
+            import_query: info.import_query,
+        }
+    }
+
+    fn normalize_function_node<'a>(&self, _ctx: &ParseContext, node: Node<'a>) -> Node<'a> {
+        node
+    }
+
+    fn normalize_class_node<'a>(&self, _ctx: &ParseContext, node: Node<'a>) -> Node<'a> {
+        node
+    }
+
+    fn function_name(&self, ctx: &ParseContext, node: Node<'_>) -> Option<String>;
+
+    fn function_params(
+        &self,
+        ctx: &ParseContext,
+        function_node: Node<'_>,
+    ) -> Vec<FunctionParamInfo>;
+
+    fn resolve_call<'a>(
+        &self,
+        ctx: &ParseContext,
+        matched: &CallCaptureMatch<'a>,
+    ) -> ResolvedCall<'a>;
+
+    fn is_ref_node(&self, node: Node<'_>) -> bool;
+
+    fn class_fields(
+        &self,
+        ctx: &ParseContext,
+        class_node: Node<'_>,
+        class_name: &str,
+    ) -> Vec<FieldInfo>;
+
+    fn super_types(&self, ctx: &ParseContext, class_node: Node<'_>) -> Vec<String>;
+
+    fn annotations(&self, _ctx: &ParseContext) -> Vec<AnnotationInfo> {
+        Vec::new()
+    }
+
+    fn include_call(
+        &self,
+        _ctx: &ParseContext,
+        _call_node: Node<'_>,
+        _callee: &str,
+        _object_name: Option<&str>,
+    ) -> bool {
+        true
+    }
+
+    fn ref_filter(&self, _ctx: &ParseContext, _node: Node<'_>) -> bool {
+        true
+    }
+
+    fn enclosing_class_name(&self, _ctx: &ParseContext, _node: Node<'_>) -> Option<String> {
+        None
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -122,13 +222,15 @@ struct CompiledQueries {
     import_query: Query,
 }
 
-fn compile_queries(info: &'static LanguageInfo) -> CompiledQueries {
-    let language = find_language(info.name).expect("supported language");
+fn compile_queries(engine: &'static dyn LanguageEngine) -> CompiledQueries {
+    let queries = engine.queries();
+    let language = engine.ts_language();
     CompiledQueries {
-        function_query: Query::new(&language, info.function_query).expect("valid function query"),
-        class_query: Query::new(&language, info.class_query).expect("valid class query"),
-        call_query: Query::new(&language, info.call_query).expect("valid call query"),
-        import_query: Query::new(&language, info.import_query).expect("valid import query"),
+        function_query: Query::new(&language, queries.function_query)
+            .expect("valid function query"),
+        class_query: Query::new(&language, queries.class_query).expect("valid class query"),
+        call_query: Query::new(&language, queries.call_query).expect("valid call query"),
+        import_query: Query::new(&language, queries.import_query).expect("valid import query"),
     }
 }
 
@@ -143,14 +245,32 @@ impl CompiledQueries {
     }
 }
 
-static PYTHON_QUERIES: LazyLock<CompiledQueries> = LazyLock::new(|| compile_queries(&PYTHON_INFO));
-static JAVASCRIPT_QUERIES: LazyLock<CompiledQueries> =
-    LazyLock::new(|| compile_queries(&JAVASCRIPT_INFO));
-static TYPESCRIPT_QUERIES: LazyLock<CompiledQueries> =
-    LazyLock::new(|| compile_queries(&TYPESCRIPT_INFO));
-static TSX_QUERIES: LazyLock<CompiledQueries> = LazyLock::new(|| compile_queries(&TSX_INFO));
-static JAVA_QUERIES: LazyLock<CompiledQueries> = LazyLock::new(|| compile_queries(&JAVA_INFO));
-static GO_QUERIES: LazyLock<CompiledQueries> = LazyLock::new(|| compile_queries(&GO_INFO));
+static PYTHON_QUERIES: LazyLock<CompiledQueries> =
+    LazyLock::new(|| compile_queries(find_language_engine("python").expect("python engine")));
+static JAVASCRIPT_QUERIES: LazyLock<CompiledQueries> = LazyLock::new(|| {
+    compile_queries(find_language_engine("javascript").expect("javascript engine"))
+});
+static TYPESCRIPT_QUERIES: LazyLock<CompiledQueries> = LazyLock::new(|| {
+    compile_queries(find_language_engine("typescript").expect("typescript engine"))
+});
+static TSX_QUERIES: LazyLock<CompiledQueries> =
+    LazyLock::new(|| compile_queries(find_language_engine("tsx").expect("tsx engine")));
+static JAVA_QUERIES: LazyLock<CompiledQueries> =
+    LazyLock::new(|| compile_queries(find_language_engine("java").expect("java engine")));
+static GO_QUERIES: LazyLock<CompiledQueries> =
+    LazyLock::new(|| compile_queries(find_language_engine("go").expect("go engine")));
+
+static LANGUAGE_ENGINES: LazyLock<HashMap<&'static str, &'static dyn LanguageEngine>> =
+    LazyLock::new(|| {
+        let mut m: HashMap<&'static str, &'static dyn LanguageEngine> = HashMap::new();
+        m.insert("python", &python::PYTHON_ENGINE);
+        m.insert("javascript", &javascript::JAVASCRIPT_ENGINE);
+        m.insert("typescript", &javascript::TYPESCRIPT_ENGINE);
+        m.insert("tsx", &javascript::TSX_ENGINE);
+        m.insert("java", &java::JAVA_ENGINE);
+        m.insert("go", &go::GO_ENGINE);
+        m
+    });
 
 pub fn detect_language(file_path: &Path) -> Option<&'static str> {
     let ext = file_path.extension()?.to_str()?;
@@ -174,16 +294,28 @@ pub fn find_language_info(name: &str) -> Option<&'static LanguageInfo> {
     LANGUAGE_INFO_MAP.get(name).copied()
 }
 
+pub fn find_language_engine(name: &str) -> Option<&'static dyn LanguageEngine> {
+    LANGUAGE_ENGINES.get(name).copied()
+}
+
+pub fn detect_language_engine(path: &Path) -> Option<&'static dyn LanguageEngine> {
+    let language = detect_language(path)?;
+    find_language_engine(language)
+}
+
 pub fn supported_extensions() -> &'static [&'static str] {
     &SUPPORTED_EXTENSIONS
 }
 
 pub fn language_extensions(name: &str) -> Option<&'static [&'static str]> {
-    find_language_info(name).map(|info| info.extensions)
+    find_language_engine(name)
+        .map(|engine| engine.extensions())
+        .or_else(|| find_language_info(name).map(|info| info.extensions))
 }
 
 fn get_compiled_queries(name: &str) -> Option<&'static CompiledQueries> {
-    match name {
+    let engine = find_language_engine(name)?;
+    match engine.id() {
         "python" => Some(&PYTHON_QUERIES),
         "javascript" => Some(&JAVASCRIPT_QUERIES),
         "typescript" => Some(&TYPESCRIPT_QUERIES),
@@ -197,4 +329,38 @@ fn get_compiled_queries(name: &str) -> Option<&'static CompiledQueries> {
 pub fn compiled_query(language: &str, kind: QueryKind) -> Option<&'static Query> {
     let queries = get_compiled_queries(language)?;
     Some(queries.get(kind))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::{
+        compiled_query, detect_language, detect_language_engine, find_language_engine, QueryKind,
+    };
+
+    #[test]
+    fn engines_are_registered_for_all_supported_languages() {
+        for language in ["python", "javascript", "typescript", "tsx", "java", "go"] {
+            let engine = find_language_engine(language).expect("engine should be registered");
+            assert_eq!(engine.id(), language);
+            assert!(compiled_query(language, QueryKind::Function).is_some());
+        }
+    }
+
+    #[test]
+    fn engine_detection_matches_extension_detection() {
+        for path in [
+            "sample.py",
+            "sample.js",
+            "sample.ts",
+            "sample.tsx",
+            "sample.java",
+            "sample.go",
+        ] {
+            let language = detect_language(Path::new(path)).expect("language should be detected");
+            let engine = detect_language_engine(Path::new(path)).expect("engine should be found");
+            assert_eq!(engine.id(), language);
+        }
+    }
 }

@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use tree_sitter::{Node, Parser, Tree};
 
 use super::capture::{self, CallCaptureMatch};
-use super::languages::{go, java, javascript, python};
-use crate::languages::{detect_language, find_language, find_language_info, QueryKind};
+use super::languages::python;
+use crate::languages::{detect_language_engine, LanguageEngine, QueryKind};
 use crate::models::{
     AnnotationInfo, CallInfo, ClassInfo, FieldInfo, FunctionInfo, FunctionParamInfo, ImportInfo,
     Location, PythonPropertyCallerInfo, PythonPropertyInfo, RefInfo, RefKey,
@@ -41,6 +41,7 @@ impl<'a> From<Node<'a>> for NodeId {
 
 pub(crate) struct ParseInput {
     pub(crate) file_path: PathBuf,
+    pub(crate) engine: &'static dyn LanguageEngine,
     pub(crate) language: String,
     pub(crate) source: Vec<u8>,
     pub(crate) tree: Tree,
@@ -63,14 +64,24 @@ pub(crate) struct PythonParseCaches {
 }
 
 #[derive(Default)]
-pub(crate) struct ParseCaches {
+pub(crate) struct CommonParseCaches {
     pub(crate) function_names_by_node: HashMap<NodeId, Option<String>>,
     pub(crate) class_names_by_node: HashMap<NodeId, Option<String>>,
     pub(crate) functions_without_bodies: Option<Vec<FunctionInfo>>,
     pub(crate) classes: Option<Vec<ClassInfo>>,
     pub(crate) field_infos_by_class: HashMap<String, Vec<FieldInfo>>,
+}
+
+#[derive(Default)]
+pub(crate) struct LanguageSpecificCaches {
     pub(crate) js: JsParseCaches,
     pub(crate) python: PythonParseCaches,
+}
+
+#[derive(Default)]
+pub(crate) struct ParseCaches {
+    pub(crate) common: CommonParseCaches,
+    pub(crate) language: LanguageSpecificCaches,
 }
 
 pub(crate) struct EnclosingContext<'a> {
@@ -92,14 +103,10 @@ impl ParseContext {
 
     pub(crate) fn from_source(file_path: &str, source: Vec<u8>) -> anyhow::Result<Self> {
         let path = Path::new(file_path);
-        let language = detect_language(path)
+        let engine = detect_language_engine(path)
             .ok_or_else(|| anyhow::anyhow!("Could not detect language for: {}", file_path))?;
-        let ts_lang = find_language(language)
-            .ok_or_else(|| anyhow::anyhow!("Unsupported language: {}", language))?;
-        find_language_info(language)
-            .ok_or_else(|| anyhow::anyhow!("No language info for: {}", language))?;
         let mut parser = Parser::new();
-        parser.set_language(&ts_lang)?;
+        parser.set_language(&engine.ts_language())?;
         let tree = parser
             .parse(&source, None)
             .ok_or_else(|| anyhow::anyhow!("Failed to parse: {}", file_path))?;
@@ -107,7 +114,8 @@ impl ParseContext {
         Ok(Self {
             input: ParseInput {
                 file_path: path.to_path_buf(),
-                language: language.to_string(),
+                engine,
+                language: engine.id().to_string(),
                 source,
                 tree,
             },
@@ -129,6 +137,10 @@ impl ParseContext {
 
     pub(crate) fn tree(&self) -> &Tree {
         &self.input.tree
+    }
+
+    pub(crate) fn engine(&self) -> &'static dyn crate::languages::LanguageEngine {
+        self.input.engine
     }
 
     pub(crate) fn node_id(&self, node: Node<'_>) -> NodeId {
@@ -180,14 +192,12 @@ impl ParseContext {
     }
 
     pub(crate) fn find_enclosing_context<'a>(&self, node: Node<'a>) -> EnclosingContext<'a> {
-        if self.language() == "go" && node.kind() == "method_declaration" {
-            if let Some(class_name) = go::receiver_type_name(self, node) {
-                return EnclosingContext {
-                    function_name: self.cached_function_name(node),
-                    class_name: Some(class_name),
-                    function_node: Some(node),
-                };
-            }
+        if let Some(class_name) = self.engine().enclosing_class_name(self, node) {
+            return EnclosingContext {
+                function_name: self.cached_function_name(node),
+                class_name: Some(class_name),
+                function_node: Some(node),
+            };
         }
 
         let mut current = node.parent();
@@ -201,11 +211,8 @@ impl ParseContext {
                 function_node = Some(current_node);
             }
 
-            if class_name.is_none()
-                && self.language() == "go"
-                && current_node.kind() == "method_declaration"
-            {
-                class_name = go::receiver_type_name(self, current_node);
+            if class_name.is_none() {
+                class_name = self.engine().enclosing_class_name(self, current_node);
             }
 
             if class_name.is_none()
@@ -237,18 +244,19 @@ impl ParseContext {
 
     pub(crate) fn cached_function_name(&self, node: Node) -> Option<String> {
         let node_id = self.node_id(node);
-        if let Some(name) = self.caches.borrow().function_names_by_node.get(&node_id) {
+        if let Some(name) = self
+            .caches
+            .borrow()
+            .common
+            .function_names_by_node
+            .get(&node_id)
+        {
             return name.clone();
         }
-        let name = match self.language() {
-            "python" => python::function_name_from_node(self, node),
-            "javascript" | "typescript" | "tsx" => javascript::function_name_from_node(self, node),
-            "java" => java::function_name_from_node(self, node),
-            "go" => go::function_name_from_node(self, node),
-            _ => None,
-        };
+        let name = self.engine().function_name(self, node);
         self.caches
             .borrow_mut()
+            .common
             .function_names_by_node
             .insert(node_id, name.clone());
         name
@@ -256,12 +264,19 @@ impl ParseContext {
 
     pub(crate) fn cached_class_name(&self, node: Node) -> Option<String> {
         let node_id = self.node_id(node);
-        if let Some(name) = self.caches.borrow().class_names_by_node.get(&node_id) {
+        if let Some(name) = self
+            .caches
+            .borrow()
+            .common
+            .class_names_by_node
+            .get(&node_id)
+        {
             return name.clone();
         }
         let name = class_name_from_node(self, node);
         self.caches
             .borrow_mut()
+            .common
             .class_names_by_node
             .insert(node_id, name.clone());
         name
@@ -269,7 +284,13 @@ impl ParseContext {
 
     pub(crate) fn collect_functions(&self, include_body: bool) -> Vec<FunctionInfo> {
         if !include_body {
-            if let Some(cached) = self.caches.borrow().functions_without_bodies.as_ref() {
+            if let Some(cached) = self
+                .caches
+                .borrow()
+                .common
+                .functions_without_bodies
+                .as_ref()
+            {
                 return cached.clone();
             }
         }
@@ -281,10 +302,7 @@ impl ParseContext {
         let mut seen = HashSet::new();
 
         for (func_node, name_node) in func_pairs {
-            let function_node = match self.language() {
-                "python" => python::unwrap_definition_node(func_node),
-                _ => func_node,
-            };
+            let function_node = self.engine().normalize_function_node(self, func_node);
             let name = self
                 .cached_function_name(function_node)
                 .unwrap_or_else(|| self.node_text(name_node));
@@ -315,7 +333,7 @@ impl ParseContext {
         }
 
         if !include_body {
-            self.caches.borrow_mut().functions_without_bodies = Some(functions.clone());
+            self.caches.borrow_mut().common.functions_without_bodies = Some(functions.clone());
         }
 
         functions
@@ -333,21 +351,12 @@ impl ParseContext {
     }
 
     pub(crate) fn collect_function_params(&self, function_node: Node) -> Vec<FunctionParamInfo> {
-        let target = match self.language() {
-            "python" => python::unwrap_definition_node(function_node),
-            _ => function_node,
-        };
-        match self.language() {
-            "python" => python::function_params(self, target),
-            "javascript" | "typescript" | "tsx" => javascript::function_params(self, target),
-            "java" => java::function_params(self, target),
-            "go" => go::function_params(self, target),
-            _ => Vec::new(),
-        }
+        let target = self.engine().normalize_function_node(self, function_node);
+        self.engine().function_params(self, target)
     }
 
     pub(crate) fn collect_classes(&self) -> Vec<ClassInfo> {
-        if let Some(cached) = self.caches.borrow().classes.as_ref() {
+        if let Some(cached) = self.caches.borrow().common.classes.as_ref() {
             return cached.clone();
         }
         let mut methods_by_class = std::collections::HashMap::new();
@@ -381,10 +390,7 @@ impl ParseContext {
         let allow_nested_classes = matches!(self.language(), "python" | "java");
 
         for (class_node, name_node) in class_pairs {
-            let class_node = match self.language() {
-                "python" => python::unwrap_definition_node(class_node),
-                _ => class_node,
-            };
+            let class_node = self.engine().normalize_class_node(self, class_node);
             let name = self
                 .cached_class_name(class_node)
                 .unwrap_or_else(|| self.node_text(name_node));
@@ -430,7 +436,7 @@ impl ParseContext {
             });
         }
 
-        self.caches.borrow_mut().classes = Some(classes.clone());
+        self.caches.borrow_mut().common.classes = Some(classes.clone());
         classes
     }
 
@@ -439,29 +445,21 @@ impl ParseContext {
         class_node: Node,
         class_name: &str,
     ) -> Vec<FieldInfo> {
-        match self.language() {
-            "python" => python::field_infos(self, class_node, class_name),
-            "javascript" | "typescript" | "tsx" => {
-                javascript::field_infos(self, class_node, class_name)
-            }
-            "java" => java::field_infos(self, class_node, class_name),
-            "go" => go::field_infos(self, class_node, class_name),
-            _ => Vec::new(),
-        }
+        self.engine().class_fields(self, class_node, class_name)
     }
 
     pub(crate) fn collect_super_class_names(&self, class_node: Node) -> Vec<String> {
-        match self.language() {
-            "python" => python::super_class_names(self, class_node),
-            "javascript" | "typescript" | "tsx" => javascript::super_class_names(self, class_node),
-            "java" => java::super_class_names(self, class_node),
-            "go" => go::embedded_type_names(self, class_node),
-            _ => Vec::new(),
-        }
+        self.engine().super_types(self, class_node)
     }
 
     pub(crate) fn collect_field_infos_for_class(&self, class_name: &str) -> Vec<FieldInfo> {
-        if let Some(cached) = self.caches.borrow().field_infos_by_class.get(class_name) {
+        if let Some(cached) = self
+            .caches
+            .borrow()
+            .common
+            .field_infos_by_class
+            .get(class_name)
+        {
             return cached.clone();
         }
         let mut candidates: Vec<Node<'_>> = Vec::new();
@@ -480,9 +478,11 @@ impl ParseContext {
             let size = node.end_byte() - node.start_byte();
             (size, node.start_byte())
         });
-        let fields = self.collect_class_field_infos(candidates[0], class_name);
+        let class_node = self.engine().normalize_class_node(self, candidates[0]);
+        let fields = self.collect_class_field_infos(class_node, class_name);
         self.caches
             .borrow_mut()
+            .common
             .field_infos_by_class
             .insert(class_name.to_string(), fields.clone());
         fields
@@ -500,26 +500,18 @@ impl ParseContext {
         for matched in &matched_calls {
             let call_node = matched.call;
             let enclosing = self.find_enclosing_context(call_node);
-            let (callee, is_method, obj_name, callee_function_node) = if self.language() == "java" {
-                let (callee_name, resolved_is_method, object_name) =
-                    java::resolve_call_parts(self, call_node);
-                (callee_name, resolved_is_method, object_name, None)
-            } else {
-                match self.language() {
-                    "python" => python::resolve_call_parts(self, matched),
-                    "javascript" | "typescript" | "tsx" => {
-                        javascript::resolve_call_parts(self, matched)
-                    }
-                    "go" => go::resolve_call_parts(self, matched),
-                    _ => (String::new(), false, None, None),
-                }
-            };
+            let resolved = self.engine().resolve_call(self, matched);
+            let callee = resolved.callee;
+            let is_method = resolved.is_method;
+            let obj_name = resolved.object_name;
+            let callee_function_node = resolved.callee_function_node;
 
             if callee.is_empty() {
                 continue;
             }
-            if self.language() == "python"
-                && python::should_skip_call(call_node, &callee, obj_name.as_deref())
+            if !self
+                .engine()
+                .include_call(self, call_node, &callee, obj_name.as_deref())
             {
                 continue;
             }
@@ -573,11 +565,7 @@ impl ParseContext {
     }
 
     pub(crate) fn collect_annotations(&self) -> Vec<AnnotationInfo> {
-        match self.language() {
-            "java" => java::extract_annotations(self),
-            "python" => python::extract_decorators(self),
-            _ => Vec::new(),
-        }
+        self.engine().annotations(self)
     }
 
     pub(crate) fn collect_refs(&self) -> Vec<RefInfo> {
@@ -657,15 +645,9 @@ impl ParseContext {
         let mut stack = vec![self.tree().root_node()];
         while let Some(node) = stack.pop() {
             if node.is_named() {
-                let is_ref = match self.language() {
-                    "python" => python::is_ref_node(node),
-                    "javascript" | "typescript" | "tsx" => javascript::is_ref_node(node),
-                    "java" => java::is_ref_node(node),
-                    "go" => go::is_ref_node(node),
-                    _ => false,
-                };
+                let is_ref = self.engine().is_ref_node(node);
                 if is_ref {
-                    if self.language() == "python" && python::should_skip_import_ref(node) {
+                    if !self.engine().ref_filter(self, node) {
                         continue;
                     }
                     if let Some(reference) = map_node(node) {
@@ -746,6 +728,40 @@ fn class_kind(context: &ParseContext, node: Node<'_>) -> String {
             .unwrap_or("struct")
             .to_string(),
         _ => "class".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ParseContext;
+
+    #[test]
+    fn python_decorated_functions_are_normalized_before_extraction() {
+        let source = br#"
+@decorator
+def hello(name: str):
+    return name
+"#
+        .to_vec();
+
+        let parser = ParseContext::from_source("sample.py", source).expect("parser");
+        let functions = parser.collect_functions(false);
+
+        assert_eq!(functions.len(), 1);
+        assert_eq!(functions[0].name, "hello");
+        assert_eq!(functions[0].location.start_line, 3);
+        assert_eq!(functions[0].params.len(), 1);
+        assert_eq!(functions[0].params[0].name, "name");
+        assert_eq!(functions[0].params[0].param_type.as_deref(), Some("str"));
+    }
+
+    #[test]
+    fn parse_context_caches_language_engine() {
+        let parser = ParseContext::from_source("sample.py", b"def hello():\n    pass\n".to_vec())
+            .expect("parser");
+
+        assert!(std::ptr::eq(parser.engine(), parser.input.engine));
+        assert_eq!(parser.engine().id(), parser.language());
     }
 }
 

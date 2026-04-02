@@ -50,11 +50,15 @@ pub(crate) struct ParseInput {
 
 #[derive(Default)]
 pub(crate) struct JsParseCaches {
-    pub(crate) alias_events_by_function:
-        HashMap<NodeId, Vec<super::languages::javascript::JsAliasEvent>>,
-    pub(crate) identifier_targets: HashMap<(NodeId, usize, String), Vec<String>>,
+    pub(crate) alias_resolvers_by_function:
+        HashMap<NodeId, super::languages::javascript::JsAliasResolverState>,
+    pub(crate) receiver_resolvers_by_function:
+        HashMap<NodeId, super::languages::javascript::JsReceiverResolverState>,
     pub(crate) type_facts: Option<Rc<super::languages::javascript::JsTypeFacts>>,
-    pub(crate) member_call_object_resolution: HashMap<NodeId, Option<String>>,
+    pub(crate) receiver_facts: Option<Rc<super::languages::javascript::JsReceiverFacts>>,
+    pub(crate) class_names: Option<Rc<HashSet<String>>>,
+    #[cfg(test)]
+    pub(crate) identifier_targets: HashMap<(NodeId, usize, String), Vec<String>>,
 }
 
 pub(crate) struct PythonPropertyIndexes {

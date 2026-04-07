@@ -4,7 +4,7 @@ use std::rc::Rc;
 use tree_sitter::Node;
 
 use super::super::capture::{self, CallCaptureMatch};
-use super::super::ParseContext;
+use super::super::{EnclosingContext, ParseContext};
 use crate::languages::{find_language_info, LanguageEngine, LanguageInfo, QueryKind, ResolvedCall};
 use crate::models::{FieldInfo, FunctionParamInfo};
 
@@ -104,10 +104,10 @@ impl JsReceiverResolverState {
         }
     }
 
-    pub(crate) fn resolve_symbolic(
-        &mut self,
+    pub(crate) fn resolve_symbolic<'a>(
+        &'a mut self,
         call_start: usize,
-        identifier_name: &str,
+        identifier_name: &'a str,
     ) -> Vec<String> {
         if call_start < self.last_call_start {
             self.next_event_idx = 0;
@@ -124,34 +124,41 @@ impl JsReceiverResolverState {
             self.next_event_idx += 1;
         }
 
-        let mut visited = HashSet::new();
+        let mut visited: HashSet<&'a str> = HashSet::new();
         let mut symbolic_targets = Vec::new();
-        let mut queue = VecDeque::new();
-        queue.push_back(identifier_name.to_string());
+        let mut symbolic_seen: HashSet<&'a str> = HashSet::new();
+        let mut queue: VecDeque<&'a str> = VecDeque::new();
+        queue.push_back(identifier_name);
 
         while let Some(current) = queue.pop_front() {
-            if !visited.insert(current.clone()) {
+            if !visited.insert(current) {
                 continue;
             }
-            if let Some(targets) = self.active_receivers.get(&current) {
+            if let Some(targets) = self.active_receivers.get(current) {
                 for target in targets {
-                    queue.push_back(target.clone());
+                    queue.push_back(target.as_str());
                 }
-            } else {
+            } else if symbolic_seen.insert(current) {
                 symbolic_targets.push(current);
             }
         }
 
         symbolic_targets.sort_unstable();
-        symbolic_targets.dedup();
-        symbolic_targets
+        symbolic_targets.into_iter().map(str::to_string).collect()
     }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct JsSemanticFacts {
+    pub(crate) class_names: HashSet<String>,
+    pub(crate) constructor_arg_types: HashMap<(String, usize), Option<String>>,
+    pub(crate) field_types_by_class: HashMap<String, HashMap<String, Option<String>>>,
+    pub(crate) field_infos_by_class: HashMap<String, Vec<FieldInfo>>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct JsTypeFacts {
     pub(crate) class_names: HashSet<String>,
-    pub(crate) constructor_arg_types: HashMap<(String, usize), Option<String>>,
     pub(crate) field_types_by_class: HashMap<String, HashMap<String, Option<String>>>,
     pub(crate) field_infos_by_class: HashMap<String, Vec<FieldInfo>>,
 }
@@ -170,32 +177,27 @@ struct PendingFieldInference {
     param_index: usize,
 }
 
-struct JsTypeFactsBuilder<'a> {
+struct JsSemanticFactsBuilder<'a> {
     parser: &'a ParseContext,
-    facts: JsTypeFacts,
+    facts: JsSemanticFacts,
     pending_fields: Vec<PendingFieldInference>,
-}
-
-#[derive(Clone)]
-struct PendingReceiverInference {
-    class_name: String,
-    field_name: String,
-    param_index: usize,
-}
-
-struct JsReceiverFactsBuilder<'a> {
-    parser: &'a ParseContext,
-    facts: JsReceiverFacts,
-    pending_fields: Vec<PendingReceiverInference>,
 }
 
 struct JsTypeHelper<'a> {
     parser: &'a ParseContext,
 }
 
+#[derive(Clone)]
+struct TraversalContext<'a> {
+    function_node: Option<Node<'a>>,
+    class_name: Option<String>,
+}
+
 struct ExpressionTargetResolver<'a> {
     parser: &'a ParseContext,
     call_node: Node<'a>,
+    function_node: Option<Node<'a>>,
+    class_name: Option<String>,
     facts: &'a JsTypeFacts,
     seen: HashSet<String>,
 }
@@ -264,6 +266,7 @@ impl LanguageEngine for JavaScriptFamilyEngine {
         &self,
         ctx: &ParseContext,
         matched: &CallCaptureMatch<'a>,
+        enclosing: &EnclosingContext<'a>,
     ) -> ResolvedCall<'a> {
         let call_node = matched.call;
         let mut callee = String::new();
@@ -287,9 +290,7 @@ impl LanguageEngine for JavaScriptFamilyEngine {
                                 split_attribute_parts(ctx, func_node);
                             callee = callee_name;
                             object_name = resolved_object_name;
-                            if let Some(function_node) =
-                                ctx.find_enclosing_context(call_node).function_node
-                            {
+                            if let Some(function_node) = enclosing.function_node {
                                 if let Some(object_node) = func_node.child_by_field_name("object") {
                                     if let Some(receiver_class_name) = resolve_receiver_class_name(
                                         ctx,
@@ -407,7 +408,7 @@ impl LanguageEngine for JavaScriptFamilyEngine {
     }
 }
 
-impl<'a> JsTypeFactsBuilder<'a> {
+impl<'a> JsSemanticFactsBuilder<'a> {
     fn type_helper(&self) -> JsTypeHelper<'a> {
         JsTypeHelper::new(self.parser)
     }
@@ -420,15 +421,15 @@ impl<'a> JsTypeFactsBuilder<'a> {
             .collect::<HashSet<_>>();
         Self {
             parser,
-            facts: JsTypeFacts {
+            facts: JsSemanticFacts {
                 class_names,
-                ..JsTypeFacts::default()
+                ..JsSemanticFacts::default()
             },
             pending_fields: Vec::new(),
         }
     }
 
-    fn build(mut self) -> JsTypeFacts {
+    fn build(mut self) -> JsSemanticFacts {
         for (class_node, name_node) in
             capture::collect_capture_pairs(self.parser, QueryKind::Class, "class", "name")
         {
@@ -696,10 +697,21 @@ impl<'a> JsTypeFactsBuilder<'a> {
             return;
         }
 
+        let type_facts = JsTypeFacts {
+            class_names: self.facts.class_names.clone(),
+            field_types_by_class: self.facts.field_types_by_class.clone(),
+            field_infos_by_class: self.facts.field_infos_by_class.clone(),
+        };
         let mut candidates_by_param: HashMap<(String, usize), Vec<String>> = HashMap::new();
-        let mut stack = vec![self.parser.tree().root_node()];
+        let mut stack = vec![(
+            self.parser.tree().root_node(),
+            TraversalContext {
+                function_node: None,
+                class_name: None,
+            },
+        )];
 
-        while let Some(node) = stack.pop() {
+        while let Some((node, context)) = stack.pop() {
             if node.kind() == "new_expression" {
                 let type_helper = self.type_helper();
                 let constructor_name = node
@@ -713,9 +725,14 @@ impl<'a> JsTypeFactsBuilder<'a> {
                                 else {
                                     continue;
                                 };
-                                let mut targets =
-                                    ExpressionTargetResolver::new(self.parser, node, &self.facts)
-                                        .resolve_expression_targets(argument);
+                                let mut targets = ExpressionTargetResolver::new(
+                                    self.parser,
+                                    node,
+                                    context.function_node,
+                                    context.class_name.clone(),
+                                    &type_facts,
+                                )
+                                .resolve_expression_targets(argument);
                                 targets.sort_unstable();
                                 targets.dedup();
                                 if targets.len() == 1 {
@@ -730,9 +747,23 @@ impl<'a> JsTypeFactsBuilder<'a> {
                     }
                 }
             }
+
+            let mut child_context = context;
+            if matches!(node.kind(), "class_declaration" | "class_expression") {
+                child_context.class_name = self.parser.cached_class_name(node);
+            }
+            if matches!(
+                node.kind(),
+                "function_declaration"
+                    | "function_expression"
+                    | "arrow_function"
+                    | "method_definition"
+            ) {
+                child_context.function_node = Some(node);
+            }
             for i in (0..node.named_child_count()).rev() {
                 if let Some(child) = node.named_child(i as u32) {
-                    stack.push(child);
+                    stack.push((child, child_context.clone()));
                 }
             }
         }
@@ -778,450 +809,6 @@ impl<'a> JsTypeFactsBuilder<'a> {
             field_type,
             class_name: Some(class_name.to_string()),
         });
-    }
-}
-
-impl<'a> JsReceiverFactsBuilder<'a> {
-    fn type_helper(&self) -> JsTypeHelper<'a> {
-        JsTypeHelper::new(self.parser)
-    }
-
-    fn new(parser: &'a ParseContext) -> Self {
-        let class_names = capture::collect_capture_pairs(parser, QueryKind::Class, "class", "name")
-            .into_iter()
-            .map(|(_, name_node)| parser.node_text(name_node))
-            .filter(|name| !name.is_empty())
-            .collect::<HashSet<_>>();
-        Self {
-            parser,
-            facts: JsReceiverFacts {
-                class_names,
-                ..JsReceiverFacts::default()
-            },
-            pending_fields: Vec::new(),
-        }
-    }
-
-    fn build(mut self) -> JsReceiverFacts {
-        for (class_node, name_node) in
-            capture::collect_capture_pairs(self.parser, QueryKind::Class, "class", "name")
-        {
-            let class_name = self.parser.node_text(name_node);
-            if class_name.is_empty() {
-                continue;
-            }
-            let class_node = self
-                .parser
-                .engine()
-                .normalize_class_node(self.parser, class_node);
-            self.collect_class_facts(class_node, &class_name);
-        }
-
-        if !self.pending_fields.is_empty() {
-            self.collect_constructor_arg_targets();
-        }
-
-        self.facts
-    }
-
-    fn collect_class_facts(&mut self, class_node: Node<'a>, class_name: &str) {
-        let body = class_node.child_by_field_name("body").or_else(|| {
-            (0..class_node.child_count())
-                .filter_map(|i| class_node.child(i as u32))
-                .find(|child| child.kind() == "class_body")
-        });
-        let Some(body) = body else {
-            return;
-        };
-
-        for i in 0..body.child_count() {
-            let Some(member) = body.child(i as u32) else {
-                continue;
-            };
-            if !member.is_named() {
-                continue;
-            }
-
-            if member.kind().ends_with("field_definition")
-                || matches!(member.kind(), "property_definition" | "field_definition")
-            {
-                self.collect_declared_field_targets(member, class_name);
-                continue;
-            }
-
-            if member.kind() != "method_definition" {
-                continue;
-            }
-            let Some(name_node) = member.child_by_field_name("name") else {
-                continue;
-            };
-            if !self.parser.node_text_eq(name_node, "constructor") {
-                continue;
-            }
-            let Some(params) = member.child_by_field_name("parameters") else {
-                continue;
-            };
-            let constructor_params = self.type_helper().collect_constructor_params(params);
-            self.collect_constructor_param_targets(params, class_name);
-            if let Some(body_node) = member.child_by_field_name("body") {
-                self.collect_constructor_field_targets(body_node, class_name, &constructor_params);
-            }
-        }
-    }
-
-    fn collect_declared_field_targets(&mut self, member: Node<'a>, class_name: &str) {
-        let name_node = member
-            .child_by_field_name("name")
-            .or_else(|| member.child_by_field_name("property"))
-            .or_else(|| member.child_by_field_name("pattern"));
-        let Some(name_node) = name_node else {
-            return;
-        };
-        if !matches!(
-            name_node.kind(),
-            "identifier"
-                | "property_identifier"
-                | "private_property_identifier"
-                | "field_identifier"
-        ) {
-            return;
-        }
-        let name = self.parser.node_text(name_node);
-        if name.is_empty() {
-            return;
-        }
-
-        let type_helper = self.type_helper();
-        let targets = member
-            .child_by_field_name("type")
-            .map(|type_node| {
-                extract_class_targets_from_type_text(
-                    &self.facts.class_names,
-                    &type_helper.normalize_type_text(&self.parser.node_text(type_node)),
-                )
-            })
-            .or_else(|| {
-                member
-                    .child_by_field_name("value")
-                    .map(|value| self.targets_from_value_node(value))
-            })
-            .or_else(|| {
-                type_helper
-                    .field_type_from_member(member, name_node.id())
-                    .map(|field_type| {
-                        extract_class_targets_from_type_text(&self.facts.class_names, &field_type)
-                    })
-            })
-            .unwrap_or_default();
-        self.upsert_field_targets(class_name, &name, targets);
-    }
-
-    fn collect_constructor_param_targets(&mut self, params: Node<'a>, class_name: &str) {
-        for j in 0..params.child_count() {
-            let Some(param) = params.child(j as u32) else {
-                continue;
-            };
-            if !param.is_named() {
-                continue;
-            }
-            let has_modifier = (0..param.child_count()).any(|k| {
-                let child = param.child(k as u32).unwrap();
-                matches!(child.kind(), "accessibility_modifier" | "readonly")
-            });
-            if !has_modifier {
-                continue;
-            }
-            let mut pattern = param
-                .child_by_field_name("pattern")
-                .or_else(|| param.child_by_field_name("name"));
-            if let Some(pattern_node) = pattern {
-                if pattern_node.kind() == "assignment_pattern" {
-                    pattern = pattern_node
-                        .child_by_field_name("left")
-                        .or(Some(pattern_node));
-                }
-            }
-            let Some(pattern) = pattern else {
-                continue;
-            };
-            if !matches!(pattern.kind(), "identifier" | "property_identifier") {
-                continue;
-            }
-            let param_name = self.parser.node_text(pattern);
-            if param_name.is_empty() {
-                continue;
-            }
-            let targets = param
-                .child_by_field_name("type")
-                .map(|type_node| {
-                    extract_class_targets_from_type_text(
-                        &self.facts.class_names,
-                        &self
-                            .type_helper()
-                            .normalize_type_text(&self.parser.node_text(type_node)),
-                    )
-                })
-                .unwrap_or_default();
-            self.upsert_field_targets(class_name, &param_name, targets);
-        }
-    }
-
-    fn collect_constructor_field_targets(
-        &mut self,
-        body_node: Node<'a>,
-        class_name: &str,
-        constructor_params: &[FunctionParamInfo],
-    ) {
-        let mut stack = vec![body_node];
-        while let Some(node) = stack.pop() {
-            if node.kind() == "assignment_expression" {
-                let Some(left) = node.child_by_field_name("left") else {
-                    continue;
-                };
-                if left.kind() != "member_expression" {
-                    continue;
-                }
-                let Some(obj) = left.child_by_field_name("object") else {
-                    continue;
-                };
-                let Some(prop) = left.child_by_field_name("property") else {
-                    continue;
-                };
-                if !self.parser.node_text_eq(obj, "this") {
-                    continue;
-                }
-
-                let field_name = self.parser.node_text(prop);
-                if field_name.is_empty() {
-                    continue;
-                }
-
-                let right = node.child_by_field_name("right");
-                let direct_targets = right
-                    .map(|value| {
-                        let mut targets = self.targets_from_value_node(value);
-                        if targets.is_empty() {
-                            targets =
-                                self.targets_from_constructor_param(value, constructor_params);
-                        }
-                        targets
-                    })
-                    .unwrap_or_default();
-                if !direct_targets.is_empty() {
-                    self.upsert_field_targets(class_name, &field_name, direct_targets);
-                    continue;
-                }
-
-                let param_index = right
-                    .filter(|value_node| value_node.kind() == "identifier")
-                    .and_then(|value_node| {
-                        let param_name = self.parser.node_text(value_node);
-                        constructor_params
-                            .iter()
-                            .position(|param| param.name == param_name)
-                    });
-                if let Some(param_index) = param_index {
-                    self.pending_fields.push(PendingReceiverInference {
-                        class_name: class_name.to_string(),
-                        field_name,
-                        param_index,
-                    });
-                }
-            }
-            if matches!(
-                node.kind(),
-                "function_declaration"
-                    | "function_expression"
-                    | "arrow_function"
-                    | "method_definition"
-                    | "class_declaration"
-                    | "class_expression"
-            ) && node.id() != body_node.id()
-            {
-                continue;
-            }
-            for i in (0..node.child_count()).rev() {
-                if let Some(child) = node.child(i as u32) {
-                    stack.push(child);
-                }
-            }
-        }
-    }
-
-    fn collect_constructor_arg_targets(&mut self) {
-        let mut required_params: HashMap<String, HashSet<usize>> = HashMap::new();
-        for pending in &self.pending_fields {
-            required_params
-                .entry(pending.class_name.clone())
-                .or_default()
-                .insert(pending.param_index);
-        }
-        if required_params.is_empty() {
-            return;
-        }
-
-        let mut candidates_by_param: HashMap<(String, usize), Vec<String>> = HashMap::new();
-        let mut stack = vec![self.parser.tree().root_node()];
-
-        while let Some(node) = stack.pop() {
-            if node.kind() == "new_expression" {
-                let type_helper = self.type_helper();
-                let constructor_name = node
-                    .child_by_field_name("constructor")
-                    .and_then(|constructor| type_helper.type_name_from_node(constructor));
-                if let Some(class_name) = constructor_name {
-                    if let Some(required_indexes) = required_params.get(&class_name) {
-                        if let Some(arguments) = node.child_by_field_name("arguments") {
-                            for &param_index in required_indexes {
-                                let Some(argument) = arguments.named_child(param_index as u32)
-                                else {
-                                    continue;
-                                };
-                                let mut targets = self.resolve_argument_targets(node, argument);
-                                targets.sort_unstable();
-                                targets.dedup();
-                                if targets.len() == 1 {
-                                    let target = targets.pop().expect("single target");
-                                    candidates_by_param
-                                        .entry((class_name.clone(), param_index))
-                                        .or_default()
-                                        .push(target);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            for i in (0..node.named_child_count()).rev() {
-                if let Some(child) = node.named_child(i as u32) {
-                    stack.push(child);
-                }
-            }
-        }
-
-        for pending in std::mem::take(&mut self.pending_fields) {
-            let mut candidates = candidates_by_param
-                .remove(&(pending.class_name.clone(), pending.param_index))
-                .unwrap_or_default();
-            candidates.sort_unstable();
-            candidates.dedup();
-            self.upsert_field_targets(&pending.class_name, &pending.field_name, candidates);
-        }
-    }
-
-    fn resolve_argument_targets(&self, call_node: Node<'a>, argument: Node<'a>) -> Vec<String> {
-        match argument.kind() {
-            "new_expression" => argument
-                .child_by_field_name("constructor")
-                .and_then(|constructor| self.type_helper().type_name_from_node(constructor))
-                .into_iter()
-                .collect(),
-            "identifier" => {
-                let name = self.parser.node_text(argument);
-                if self.facts.class_names.contains(&name) {
-                    return vec![name];
-                }
-                self.parser
-                    .find_enclosing_context(call_node)
-                    .class_name
-                    .into_iter()
-                    .flat_map(|class_name| self.field_targets_for_class(&class_name, &name))
-                    .collect()
-            }
-            "member_expression" => {
-                let value = self.parser.node_text(argument);
-                if let Some(chain) = value.strip_prefix("this.") {
-                    return self
-                        .parser
-                        .find_enclosing_context(call_node)
-                        .class_name
-                        .into_iter()
-                        .flat_map(|class_name| self.resolve_field_chain(&class_name, chain))
-                        .collect();
-                }
-                Vec::new()
-            }
-            _ => Vec::new(),
-        }
-    }
-
-    fn targets_from_value_node(&self, value_node: Node<'a>) -> Vec<String> {
-        let type_helper = self.type_helper();
-        if let Some(field_type) = type_helper.field_type_from_value(value_node) {
-            return extract_class_targets_from_type_text(&self.facts.class_names, &field_type);
-        }
-        Vec::new()
-    }
-
-    fn targets_from_constructor_param(
-        &self,
-        value_node: Node<'a>,
-        constructor_params: &[FunctionParamInfo],
-    ) -> Vec<String> {
-        if value_node.kind() != "identifier" {
-            return Vec::new();
-        }
-        let param_name = self.parser.node_text(value_node);
-        constructor_params
-            .iter()
-            .find(|param| param.name == param_name)
-            .and_then(|param| param.param_type.as_ref())
-            .map(|param_type| {
-                extract_class_targets_from_type_text(&self.facts.class_names, param_type)
-            })
-            .unwrap_or_default()
-    }
-
-    fn upsert_field_targets(
-        &mut self,
-        class_name: &str,
-        field_name: &str,
-        mut targets: Vec<String>,
-    ) {
-        targets.sort_unstable();
-        targets.dedup();
-        let fields = self
-            .facts
-            .field_targets_by_class
-            .entry(class_name.to_string())
-            .or_default();
-        let entry = fields.entry(field_name.to_string()).or_default();
-        if entry.is_empty() {
-            *entry = targets;
-            return;
-        }
-        entry.extend(targets);
-        entry.sort_unstable();
-        entry.dedup();
-    }
-
-    fn field_targets_for_class(&self, class_name: &str, field_name: &str) -> Vec<String> {
-        self.facts
-            .field_targets_by_class
-            .get(class_name)
-            .and_then(|fields| fields.get(field_name))
-            .cloned()
-            .unwrap_or_default()
-    }
-
-    fn resolve_field_chain(&self, root_class: &str, chain: &str) -> Vec<String> {
-        let mut current = vec![root_class.to_string()];
-        for segment in chain.split('.') {
-            if segment.is_empty() {
-                return Vec::new();
-            }
-            let mut next = Vec::new();
-            for class_name in &current {
-                next.extend(self.field_targets_for_class(class_name, segment));
-            }
-            next.sort_unstable();
-            next.dedup();
-            if next.is_empty() {
-                return Vec::new();
-            }
-            current = next;
-        }
-        current
     }
 }
 
@@ -1275,6 +862,10 @@ fn resolve_receiver_targets_for_identifier(
         resolver.resolve_symbolic(call_node.start_byte(), identifier_name)
     };
 
+    if symbolic_targets.len() == 1 {
+        return resolve_symbolic_class_targets(parser, call_node, &symbolic_targets[0]);
+    }
+
     let mut resolved = symbolic_targets
         .into_iter()
         .flat_map(|target| resolve_symbolic_class_targets(parser, call_node, &target))
@@ -1289,6 +880,16 @@ fn collect_alias_events(parser: &ParseContext, function_node: Node<'_>) -> Vec<J
     let mut aliases: HashMap<String, Vec<String>> = HashMap::new();
     let mut events = Vec::new();
 
+    fn sorted_unique_targets(targets: impl IntoIterator<Item = String>) -> Vec<String> {
+        let mut normalized: Vec<String> = targets
+            .into_iter()
+            .filter(|target| !target.is_empty())
+            .collect();
+        normalized.sort_unstable();
+        normalized.dedup();
+        normalized
+    }
+
     fn add_alias(
         aliases: &mut HashMap<String, Vec<String>>,
         name: Option<String>,
@@ -1298,15 +899,28 @@ fn collect_alias_events(parser: &ParseContext, function_node: Node<'_>) -> Vec<J
         if name.is_empty() {
             return None;
         }
+        let normalized = sorted_unique_targets(targets);
+        if normalized.is_empty() {
+            return None;
+        }
         let entry = aliases.entry(name.clone()).or_default();
-        for target in targets {
-            if !target.is_empty() {
+        let mut changed = false;
+        for target in normalized {
+            if entry.binary_search(&target).is_err() {
                 entry.push(target);
+                changed = true;
             }
         }
+        if !changed {
+            return None;
+        }
         entry.sort_unstable();
-        entry.dedup();
-        Some((name, entry.clone()))
+        let targets = if entry.len() == 1 {
+            vec![entry[0].clone()]
+        } else {
+            entry.to_vec()
+        };
+        Some((name, targets))
     }
 
     let find_loop_var_name = |node: Node<'_>| -> Option<String> {
@@ -1421,6 +1035,16 @@ fn collect_receiver_events(
     let mut receivers: HashMap<String, Vec<String>> = HashMap::new();
     let mut events = Vec::new();
 
+    fn sorted_unique_targets(targets: impl IntoIterator<Item = String>) -> Vec<String> {
+        let mut normalized: Vec<String> = targets
+            .into_iter()
+            .filter(|target| !target.is_empty())
+            .collect();
+        normalized.sort_unstable();
+        normalized.dedup();
+        normalized
+    }
+
     fn add_receiver(
         receivers: &mut HashMap<String, Vec<String>>,
         name: Option<String>,
@@ -1430,16 +1054,16 @@ fn collect_receiver_events(
         if name.is_empty() {
             return None;
         }
-        let entry = receivers.entry(name.clone()).or_default();
-        entry.clear();
-        for target in targets {
-            if !target.is_empty() {
-                entry.push(target);
-            }
+        let normalized = sorted_unique_targets(targets);
+        if normalized.is_empty() {
+            return None;
         }
-        entry.sort_unstable();
-        entry.dedup();
-        (!entry.is_empty()).then(|| (name, entry.clone()))
+        let entry = receivers.entry(name.clone()).or_default();
+        if *entry == normalized {
+            return None;
+        }
+        *entry = normalized.clone();
+        Some((name, normalized))
     }
 
     let mut stack = vec![function_node];
@@ -1460,7 +1084,7 @@ fn collect_receiver_events(
                 "identifier" => {
                     let value_name = parser.node_text(value_node);
                     let targets = if let Some(existing) = receivers.get(&value_name) {
-                        existing.clone()
+                        existing.iter().cloned().collect::<Vec<_>>()
                     } else if class_names.contains(&value_name) {
                         vec![value_name]
                     } else {
@@ -1524,13 +1148,7 @@ fn js_class_names(parser: &ParseContext) -> Rc<HashSet<String>> {
         return Rc::clone(cached);
     }
 
-    let class_names = Rc::new(
-        capture::collect_capture_pairs(parser, QueryKind::Class, "class", "name")
-            .into_iter()
-            .map(|(_, name_node)| parser.node_text(name_node))
-            .filter(|name| !name.is_empty())
-            .collect::<HashSet<_>>(),
-    );
+    let class_names = Rc::new(semantic_facts(parser).class_names.clone());
     parser.caches.borrow_mut().language.js.class_names = Some(Rc::clone(&class_names));
     class_names
 }
@@ -1549,7 +1167,30 @@ fn receiver_facts(parser: &ParseContext) -> Rc<JsReceiverFacts> {
         return cached;
     }
 
-    let facts = Rc::new(JsReceiverFactsBuilder::new(parser).build());
+    let semantic = semantic_facts(parser);
+    let mut field_targets_by_class = HashMap::new();
+    for (class_name, fields) in &semantic.field_types_by_class {
+        let mut targets_by_field = HashMap::new();
+        for (field_name, field_type) in fields {
+            let targets = field_type
+                .as_deref()
+                .map(|field_type| {
+                    extract_class_targets_from_type_text(&semantic.class_names, field_type)
+                })
+                .unwrap_or_default();
+            if !targets.is_empty() {
+                targets_by_field.insert(field_name.clone(), targets);
+            }
+        }
+        if !targets_by_field.is_empty() {
+            field_targets_by_class.insert(class_name.clone(), targets_by_field);
+        }
+    }
+
+    let facts = Rc::new(JsReceiverFacts {
+        class_names: semantic.class_names.clone(),
+        field_targets_by_class,
+    });
     parser.caches.borrow_mut().language.js.receiver_facts = Some(Rc::clone(&facts));
     facts
 }
@@ -1749,10 +1390,18 @@ impl<'a> ExpressionTargetResolver<'a> {
         JsTypeHelper::new(self.parser)
     }
 
-    fn new(parser: &'a ParseContext, call_node: Node<'a>, facts: &'a JsTypeFacts) -> Self {
+    fn new(
+        parser: &'a ParseContext,
+        call_node: Node<'a>,
+        function_node: Option<Node<'a>>,
+        class_name: Option<String>,
+        facts: &'a JsTypeFacts,
+    ) -> Self {
         Self {
             parser,
             call_node,
+            function_node,
+            class_name,
             facts,
             seen: HashSet::new(),
         }
@@ -1766,9 +1415,17 @@ impl<'a> ExpressionTargetResolver<'a> {
 
         match expression_node.kind() {
             "identifier" | "property_identifier" => self
-                .parser
-                .resolve_call_targets(self.call_node, &expr_text)
+                .function_node
                 .into_iter()
+                .flat_map(|function_node| {
+                    self.parser
+                        .resolve_call_targets_with_function_node(
+                            function_node,
+                            self.call_node,
+                            &expr_text,
+                        )
+                        .into_iter()
+                })
                 .flat_map(|target| self.resolve_symbolic_class_targets(&target))
                 .collect(),
             "new_expression" => expression_node
@@ -1790,9 +1447,8 @@ impl<'a> ExpressionTargetResolver<'a> {
 
                 if self.parser.node_text_eq(object_node, "this") {
                     return self
-                        .parser
-                        .find_enclosing_context(self.call_node)
                         .class_name
+                        .clone()
                         .into_iter()
                         .flat_map(|class_name| {
                             self.field_type_candidates(&class_name, &property_name)
@@ -1828,18 +1484,12 @@ impl<'a> ExpressionTargetResolver<'a> {
             return vec![target.to_string()];
         }
         if target == "this" {
-            return self
-                .parser
-                .find_enclosing_context(self.call_node)
-                .class_name
-                .into_iter()
-                .collect();
+            return self.class_name.clone().into_iter().collect();
         }
         if let Some(chain) = target.strip_prefix("this.") {
             return self
-                .parser
-                .find_enclosing_context(self.call_node)
                 .class_name
+                .clone()
                 .into_iter()
                 .flat_map(|class_name| self.resolve_field_chain(&class_name, chain))
                 .collect();
@@ -1952,12 +1602,27 @@ fn field_type_candidates(parser: &ParseContext, class_name: &str, field_name: &s
         .unwrap_or_default()
 }
 
+pub(crate) fn semantic_facts(parser: &ParseContext) -> Rc<JsSemanticFacts> {
+    if let Some(cached) = parser.caches.borrow().language.js.semantic_facts.as_ref() {
+        return Rc::clone(cached);
+    }
+
+    let facts = Rc::new(JsSemanticFactsBuilder::new(parser).build());
+    parser.caches.borrow_mut().language.js.semantic_facts = Some(Rc::clone(&facts));
+    facts
+}
+
 pub(crate) fn type_facts(parser: &ParseContext) -> Rc<JsTypeFacts> {
     if let Some(cached) = parser.caches.borrow().language.js.type_facts.as_ref() {
         return Rc::clone(cached);
     }
 
-    let facts = Rc::new(JsTypeFactsBuilder::new(parser).build());
+    let semantic = semantic_facts(parser);
+    let facts = Rc::new(JsTypeFacts {
+        class_names: semantic.class_names.clone(),
+        field_types_by_class: semantic.field_types_by_class.clone(),
+        field_infos_by_class: semantic.field_infos_by_class.clone(),
+    });
     parser.caches.borrow_mut().language.js.type_facts = Some(Rc::clone(&facts));
     facts
 }
@@ -2097,242 +1762,5 @@ fn collect_super_types_from_expr(
                 }
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::fs;
-
-    use tempfile::tempdir;
-
-    use crate::parser::ParseContext;
-
-    fn parse_context(name: &str, source: &str) -> ParseContext {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join(name);
-        fs::write(&path, source).unwrap();
-        ParseContext::new(path.to_str().unwrap()).unwrap()
-    }
-
-    #[test]
-    fn collect_calls_resolves_unique_member_expression_receiver_to_class_name() {
-        let parser = parse_context(
-            "sample.ts",
-            r#"
-class Service {
-  run() {}
-}
-
-function main() {
-  const service = new Service();
-  service.run();
-}
-"#,
-        );
-
-        let calls = parser.collect_calls();
-        let member_call = calls.iter().find(|call| call.callee == "run").unwrap();
-
-        assert_eq!(member_call.object_name.as_deref(), Some("Service"));
-    }
-
-    #[test]
-    fn collect_calls_keeps_unknown_member_expression_receiver_symbolic() {
-        let parser = parse_context(
-            "sample.js",
-            r#"
-function loadService() {
-  return {};
-}
-
-function main() {
-  const service = loadService();
-  service.run();
-}
-"#,
-        );
-
-        let calls = parser.collect_calls();
-        let member_call = calls.iter().find(|call| call.callee == "run").unwrap();
-
-        assert_eq!(member_call.object_name.as_deref(), Some("service"));
-    }
-
-    #[test]
-    fn collect_calls_does_not_cache_identifier_targets_per_call_site() {
-        let parser = parse_context(
-            "sample.js",
-            r#"
-function helper() {}
-
-function main() {
-  const alias = helper;
-  alias();
-  alias();
-}
-"#,
-        );
-
-        let calls = parser.collect_calls();
-
-        assert_eq!(
-            calls.iter().filter(|call| call.callee == "helper").count(),
-            2
-        );
-        assert!(
-            parser
-                .caches
-                .borrow()
-                .language
-                .js
-                .identifier_targets
-                .is_empty(),
-            "source-mode call extraction should not memoize each call site separately"
-        );
-    }
-
-    #[test]
-    fn collect_calls_reuses_single_alias_resolver_per_function() {
-        let parser = parse_context(
-            "sample.js",
-            r#"
-function helper() {}
-
-function main() {
-  const alias = helper;
-  alias();
-  alias();
-}
-"#,
-        );
-
-        let calls = parser.collect_calls();
-        let caches = parser.caches.borrow();
-
-        assert_eq!(
-            calls.iter().filter(|call| call.callee == "helper").count(),
-            2
-        );
-        assert_eq!(caches.language.js.alias_resolvers_by_function.len(), 1);
-    }
-
-    #[test]
-    fn collect_alias_events_preserves_new_and_member_expression_targets() {
-        let parser = parse_context(
-            "sample.ts",
-            r#"
-class Service {
-  run() {}
-}
-
-function main() {
-  const service = new Service();
-  const alias = service.run;
-}
-"#,
-        );
-
-        let function_node = parser
-            .tree()
-            .root_node()
-            .named_children(&mut parser.tree().walk())
-            .find(|node| node.kind() == "function_declaration")
-            .unwrap();
-        let events = super::collect_alias_events(&parser, function_node);
-
-        assert!(events
-            .iter()
-            .any(|event| event.name == "service" && event.targets == vec!["Service"]));
-        assert!(events
-            .iter()
-            .any(|event| event.name == "alias" && event.targets == vec!["service.run"]));
-    }
-
-    #[test]
-    fn collect_calls_receiver_resolution_does_not_build_full_type_facts() {
-        let parser = parse_context(
-            "sample.ts",
-            r#"
-class C {
-  func() {}
-}
-
-class B {
-  constructor(c) {
-    this.c = c;
-  }
-
-  func() {
-    this.c.func();
-  }
-}
-
-class A {
-  constructor() {
-    this.c = new C();
-  }
-
-  func() {
-    const b = new B(this.c);
-    b.func();
-  }
-}
-"#,
-        );
-
-        let calls = parser.collect_calls();
-        let member_call = calls
-            .iter()
-            .find(|call| call.callee == "func" && call.object_name.as_deref() == Some("B"))
-            .unwrap();
-
-        assert_eq!(member_call.object_name.as_deref(), Some("B"));
-        assert!(
-            parser.caches.borrow().language.js.type_facts.is_none(),
-            "receiver resolution should not build full JS type facts in source-mode queries"
-        );
-    }
-
-    #[test]
-    fn collect_receiver_events_skip_nested_function_bindings() {
-        let parser = parse_context(
-            "sample.js",
-            r#"
-class Service {
-  run() {}
-}
-
-function main() {
-  const service = new Service();
-  function nested() {
-    const service = {};
-    service.run();
-  }
-  service.run();
-}
-"#,
-        );
-
-        let function_node = parser
-            .tree()
-            .root_node()
-            .named_children(&mut parser.tree().walk())
-            .find(|node| node.kind() == "function_declaration")
-            .unwrap();
-        let events = super::collect_receiver_events(
-            &parser,
-            function_node,
-            super::js_class_names(&parser).as_ref(),
-        );
-
-        assert_eq!(
-            events
-                .iter()
-                .filter(|event| event.name == "service")
-                .count(),
-            1
-        );
-        assert_eq!(events[0].targets, vec!["Service"]);
     }
 }

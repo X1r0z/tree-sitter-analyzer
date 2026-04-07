@@ -7,7 +7,7 @@ use tree_sitter::{Node, Query};
 use crate::models::{AnnotationInfo, FieldInfo, FunctionParamInfo};
 use crate::parser::capture::CallCaptureMatch;
 use crate::parser::languages::{go, java, javascript, python};
-use crate::parser::ParseContext;
+use crate::parser::{EnclosingContext, ParseContext};
 
 pub struct LanguageInfo {
     pub name: &'static str,
@@ -73,6 +73,7 @@ pub trait LanguageEngine: Sync {
         &self,
         ctx: &ParseContext,
         matched: &CallCaptureMatch<'a>,
+        enclosing: &EnclosingContext<'a>,
     ) -> ResolvedCall<'a>;
 
     fn resolve_call_targets(

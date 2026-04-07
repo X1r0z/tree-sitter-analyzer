@@ -54,11 +54,10 @@ pub(crate) struct JsParseCaches {
         HashMap<NodeId, super::languages::javascript::JsAliasResolverState>,
     pub(crate) receiver_resolvers_by_function:
         HashMap<NodeId, super::languages::javascript::JsReceiverResolverState>,
+    pub(crate) semantic_facts: Option<Rc<super::languages::javascript::JsSemanticFacts>>,
     pub(crate) type_facts: Option<Rc<super::languages::javascript::JsTypeFacts>>,
     pub(crate) receiver_facts: Option<Rc<super::languages::javascript::JsReceiverFacts>>,
     pub(crate) class_names: Option<Rc<HashSet<String>>>,
-    #[cfg(test)]
-    pub(crate) identifier_targets: HashMap<(NodeId, usize, String), Vec<String>>,
 }
 
 pub(crate) struct PythonPropertyIndexes {
@@ -151,15 +150,12 @@ impl ParseContext {
         self.input.engine
     }
 
-    pub(crate) fn resolve_call_targets(
+    pub(crate) fn resolve_call_targets_with_function_node(
         &self,
+        function_node: Node<'_>,
         call_node: Node<'_>,
         identifier_name: &str,
     ) -> Vec<String> {
-        let Some(function_node) = self.find_enclosing_context(call_node).function_node else {
-            return Vec::new();
-        };
-
         self.engine()
             .resolve_call_targets(self, function_node, call_node, identifier_name)
     }
@@ -472,7 +468,7 @@ impl ParseContext {
             return cached.clone();
         }
         if matches!(self.language(), "javascript" | "typescript" | "tsx") {
-            let fields = super::languages::javascript::type_facts(self)
+            let fields = super::languages::javascript::semantic_facts(self)
                 .field_infos_by_class
                 .get(class_name)
                 .cloned()
@@ -522,7 +518,7 @@ impl ParseContext {
         for matched in &matched_calls {
             let call_node = matched.call;
             let enclosing = self.find_enclosing_context(call_node);
-            let resolved = self.engine().resolve_call(self, matched);
+            let resolved = self.engine().resolve_call(self, matched, &enclosing);
             let callee = resolved.callee;
             let is_method = resolved.is_method;
             let obj_name = resolved.object_name;
@@ -547,7 +543,11 @@ impl ParseContext {
                     .unwrap_or(false)
                 && enclosing.function_node.is_some()
             {
-                let resolved = self.resolve_call_targets(call_node, &callee);
+                let resolved = self.resolve_call_targets_with_function_node(
+                    enclosing.function_node.unwrap(),
+                    call_node,
+                    &callee,
+                );
                 if !resolved.is_empty() {
                     for resolved_callee in resolved {
                         calls.push(CallInfo {

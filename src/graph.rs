@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
+use std::path::Path;
 
 use crate::models::{
     CallGraphPath, CallInfo, ClassInfo, FieldInfo, FunctionInfo, FunctionKey, GraphDirection,
@@ -34,23 +35,21 @@ struct GraphNeighbor {
     call_site: CallSite,
 }
 
-#[derive(Debug, Clone, Eq, Hash, PartialEq)]
-struct GraphEdgeKey {
-    neighbor_key: FunctionKey,
-    call_site: CallSite,
-}
-
-type FunctionsByFileContext = HashMap<(String, String, Option<String>), Vec<FunctionInfo>>;
-type FunctionsByFileName = HashMap<(String, String), Vec<FunctionInfo>>;
-type ResolutionCacheKey = (String, String, Option<String>, usize);
+type DefinitionsByName = HashMap<String, Vec<FunctionKey>>;
+type FunctionsByFileContext = HashMap<(String, String, Option<String>), Vec<FunctionKey>>;
+type FunctionsByFileName = HashMap<(String, String), Vec<FunctionKey>>;
+type EnclosingResolutionCacheKey = (String, String, Option<String>, usize);
+type CallTargetResolutionCacheKey = (FunctionKey, String, Option<String>);
+type PropertyTargetResolutionCacheKey = (FunctionKey, String, Option<String>, Option<String>, bool);
 type ParentsByFileClass = HashMap<(String, String), Vec<String>>;
 
 #[derive(Debug, Clone)]
 pub(crate) struct CallGraph {
     functions_by_key: HashMap<FunctionKey, FunctionInfo>,
-    starting_keys: Vec<FunctionKey>,
+    starting_keys_by_name: HashMap<String, Vec<FunctionKey>>,
     forward_edges: HashMap<FunctionKey, Vec<GraphNeighbor>>,
     backward_edges: HashMap<FunctionKey, Vec<GraphNeighbor>>,
+    file_display_names: HashMap<String, String>,
 }
 
 impl CallGraph {
@@ -63,16 +62,22 @@ impl CallGraph {
         property_callers: Vec<RawPropertyCaller>,
     ) -> Self {
         let mut functions_by_key = HashMap::new();
-        let mut starting_keys = Vec::new();
-        let mut defs_by_name: HashMap<String, Vec<FunctionInfo>> = HashMap::new();
+        let mut starting_keys_by_name: HashMap<String, Vec<FunctionKey>> = HashMap::new();
+        let mut defs_by_name: DefinitionsByName = HashMap::new();
         for function in functions {
             let key = FunctionKey::from(&function);
-            starting_keys.push(key.clone());
+            starting_keys_by_name
+                .entry(function.name.clone())
+                .or_default()
+                .push(key.clone());
             defs_by_name
                 .entry(function.name.clone())
                 .or_default()
-                .push(function.clone());
+                .push(key.clone());
             functions_by_key.insert(key, function);
+        }
+        for keys in starting_keys_by_name.values_mut() {
+            keys.sort_by(compare_keys);
         }
 
         let mut fields_by_file_class: HashMap<(String, String), Vec<FieldInfo>> = HashMap::new();
@@ -95,13 +100,9 @@ impl CallGraph {
             .map(|property| (property.name, property.class_name))
             .collect();
 
-        let mut functions_by_file_context: HashMap<
-            (String, String, Option<String>),
-            Vec<FunctionInfo>,
-        > = HashMap::new();
-        let mut functions_by_file_name: HashMap<(String, String), Vec<FunctionInfo>> =
-            HashMap::new();
-        for function in functions_by_key.values() {
+        let mut functions_by_file_context: FunctionsByFileContext = HashMap::new();
+        let mut functions_by_file_name: FunctionsByFileName = HashMap::new();
+        for (key, function) in &functions_by_key {
             functions_by_file_context
                 .entry((
                     function.location.file.clone(),
@@ -109,26 +110,34 @@ impl CallGraph {
                     function.class_name.clone(),
                 ))
                 .or_default()
-                .push(function.clone());
+                .push(key.clone());
             functions_by_file_name
                 .entry((function.location.file.clone(), function.name.clone()))
                 .or_default()
-                .push(function.clone());
+                .push(key.clone());
         }
         for functions in functions_by_file_context.values_mut() {
-            functions
-                .sort_by_key(|function| (function.location.start_line, function.location.end_line));
+            functions.sort_by(compare_keys);
         }
         for functions in functions_by_file_name.values_mut() {
-            functions
-                .sort_by_key(|function| (function.location.start_line, function.location.end_line));
+            functions.sort_by(compare_keys);
         }
 
-        let mut forward_edge_sets: HashMap<FunctionKey, HashSet<GraphEdgeKey>> = HashMap::new();
-        let mut resolution_cache: HashMap<ResolutionCacheKey, Option<FunctionInfo>> =
-            HashMap::new();
+        let mut forward_edge_sets: HashMap<FunctionKey, Vec<GraphNeighbor>> = HashMap::new();
+        let mut enclosing_resolution_cache: HashMap<
+            EnclosingResolutionCacheKey,
+            Option<FunctionKey>,
+        > = HashMap::new();
+        let mut call_target_resolution_cache: HashMap<
+            CallTargetResolutionCacheKey,
+            Vec<FunctionKey>,
+        > = HashMap::new();
+        let mut property_target_resolution_cache: HashMap<
+            PropertyTargetResolutionCacheKey,
+            Vec<FunctionKey>,
+        > = HashMap::new();
         for call in calls {
-            let caller = match call.caller.as_deref() {
+            let caller_key = match call.caller.as_deref() {
                 None => {
                     let caller = FunctionInfo {
                         name: "<module>".to_string(),
@@ -143,32 +152,37 @@ impl CallGraph {
                     };
                     let module_key = FunctionKey::from(&caller);
                     functions_by_key
-                        .entry(module_key)
+                        .entry(module_key.clone())
                         .or_insert_with(|| caller.clone());
-                    caller
+                    module_key
                 }
                 Some(caller_name) => {
-                    let Some(caller) = resolve_enclosing_function(
+                    let Some(caller_key) = resolve_enclosing_function(
                         &functions_by_file_context,
                         &functions_by_file_name,
                         &call.location.file,
                         Some(caller_name),
                         call.caller_class_name.as_deref(),
                         call.location.start_line,
-                        &mut resolution_cache,
+                        &mut enclosing_resolution_cache,
                     ) else {
                         continue;
                     };
-                    caller
+                    caller_key
                 }
+            };
+            let Some(_caller) = functions_by_key.get(&caller_key) else {
+                continue;
             };
 
             let mut callees = resolve_call_targets(
                 &call,
-                &caller,
+                &caller_key,
+                &functions_by_key,
                 &defs_by_name,
                 &fields_by_file_class,
                 &parents_by_file_class,
+                &mut call_target_resolution_cache,
             );
             if callees.is_empty() {
                 let unresolved_name = unresolved_name(call.object_name.as_deref(), &call.callee);
@@ -198,16 +212,15 @@ impl CallGraph {
             }
 
             for callee in callees {
-                let caller_key = FunctionKey::from(&caller);
                 let call_site = CallSite {
                     file: call.location.file.clone(),
                     line: call.location.start_line,
                 };
                 forward_edge_sets
-                    .entry(caller_key)
+                    .entry(caller_key.clone())
                     .or_default()
-                    .insert(GraphEdgeKey {
-                        neighbor_key: callee,
+                    .push(GraphNeighbor {
+                        key: callee,
                         call_site,
                     });
             }
@@ -215,7 +228,7 @@ impl CallGraph {
 
         for property_caller in property_callers {
             let module_level = property_caller.caller == "<module>";
-            let caller = if module_level {
+            let caller_key = if module_level {
                 let caller = FunctionInfo {
                     name: "<module>".to_string(),
                     location: Location {
@@ -229,65 +242,50 @@ impl CallGraph {
                 };
                 let module_key = FunctionKey::from(&caller);
                 functions_by_key
-                    .entry(module_key)
+                    .entry(module_key.clone())
                     .or_insert_with(|| caller.clone());
-                caller
+                module_key
             } else {
-                let Some(caller) = resolve_enclosing_function(
+                let Some(caller_key) = resolve_enclosing_function(
                     &functions_by_file_context,
                     &functions_by_file_name,
                     &property_caller.location.file,
                     Some(&property_caller.caller),
                     property_caller.caller_class_name.as_deref(),
                     property_caller.location.start_line,
-                    &mut resolution_cache,
+                    &mut enclosing_resolution_cache,
                 ) else {
                     continue;
                 };
-                caller
+                caller_key
+            };
+            let Some(caller) = functions_by_key.get(&caller_key) else {
+                continue;
             };
 
-            let candidate_defs = defs_by_name
-                .get(&property_caller.property_name)
-                .cloned()
-                .unwrap_or_default();
+            let candidate_defs = resolve_property_targets(
+                caller_key.clone(),
+                caller,
+                &property_caller,
+                module_level,
+                &functions_by_key,
+                &defs_by_name,
+                &property_keys,
+                &fields_by_file_class,
+                &parents_by_file_class,
+                &mut property_target_resolution_cache,
+            );
             let mut matched = false;
-            for property in candidate_defs {
-                if !property_keys.contains(&(property.name.clone(), property.class_name.clone())) {
-                    continue;
-                }
-                let Some(target_class_name) = property.class_name.as_deref() else {
-                    continue;
-                };
-                let matches_target = if module_level {
-                    matches_module_property_target(
-                        property_caller.object_name.as_deref(),
-                        property_caller.object_type.as_deref(),
-                        target_class_name,
-                    )
-                } else {
-                    matches_property_target(
-                        &caller,
-                        property_caller.object_name.as_deref(),
-                        Some(target_class_name),
-                        &fields_by_file_class,
-                        &parents_by_file_class,
-                    )
-                };
-                if !matches_target {
-                    continue;
-                }
-                let caller_key = FunctionKey::from(&caller);
-                let property_key = FunctionKey::from(&property);
+            for property_key in candidate_defs {
                 let call_site = CallSite {
                     file: property_caller.location.file.clone(),
                     line: property_caller.location.start_line,
                 };
                 forward_edge_sets
-                    .entry(caller_key)
+                    .entry(caller_key.clone())
                     .or_default()
-                    .insert(GraphEdgeKey {
-                        neighbor_key: property_key,
+                    .push(GraphNeighbor {
+                        key: property_key,
                         call_site,
                     });
                 matched = true;
@@ -320,40 +318,42 @@ impl CallGraph {
                         class_name: None,
                         params: Vec::new(),
                     });
-                let caller_key = FunctionKey::from(&caller);
                 let call_site = CallSite {
                     file: property_caller.location.file.clone(),
                     line: property_caller.location.start_line,
                 };
                 forward_edge_sets
-                    .entry(caller_key)
+                    .entry(caller_key.clone())
                     .or_default()
-                    .insert(GraphEdgeKey {
-                        neighbor_key: unresolved,
+                    .push(GraphNeighbor {
+                        key: unresolved,
                         call_site,
                     });
             }
         }
 
         let forward_edges = freeze_edges(forward_edge_sets);
-        let mut backward_edge_sets: HashMap<FunctionKey, HashSet<GraphEdgeKey>> = HashMap::new();
+        let mut backward_edge_sets: HashMap<FunctionKey, Vec<GraphNeighbor>> = HashMap::new();
         for (caller, callees) in &forward_edges {
             for callee in callees {
                 backward_edge_sets
                     .entry(callee.key.clone())
                     .or_default()
-                    .insert(GraphEdgeKey {
-                        neighbor_key: caller.clone(),
+                    .push(GraphNeighbor {
+                        key: caller.clone(),
                         call_site: callee.call_site.clone(),
                     });
             }
         }
 
+        let file_display_names = collect_file_display_names(&functions_by_key);
+
         Self {
             functions_by_key,
-            starting_keys,
+            starting_keys_by_name,
             forward_edges,
             backward_edges: freeze_edges(backward_edge_sets),
+            file_display_names,
         }
     }
 
@@ -362,18 +362,21 @@ impl CallGraph {
         function_name: &str,
         class_name: Option<&str>,
     ) -> Vec<FunctionKey> {
-        let mut matches: Vec<_> = self
-            .starting_keys
+        let Some(candidates) = self.starting_keys_by_name.get(function_name) else {
+            return Vec::new();
+        };
+        let mut matches: Vec<_> = candidates
             .iter()
             .filter_map(|key| {
                 self.functions_by_key.get(key).and_then(|function| {
-                    (function.name == function_name
-                        && (class_name.is_none() || function.class_name.as_deref() == class_name))
+                    (class_name.is_none() || function.class_name.as_deref() == class_name)
                         .then(|| key.clone())
                 })
             })
             .collect();
-        matches.sort_by(compare_keys);
+        if matches.len() > 1 {
+            matches.sort_by(compare_keys);
+        }
         matches
     }
 
@@ -389,17 +392,8 @@ impl CallGraph {
             max_depth,
             |key: &FunctionKey| key.clone(),
             |current| {
-                let neighbors = match direction {
-                    GraphDirection::Backward => self.backward_edges.get(current),
-                    GraphDirection::Forward => self.forward_edges.get(current),
-                };
                 Ok::<Vec<(FunctionKey, CallSite)>, Infallible>(
-                    neighbors
-                        .into_iter()
-                        .flatten()
-                        .cloned()
-                        .map(|neighbor| (neighbor.key, neighbor.call_site))
-                        .collect(),
+                    self.collect_neighbor_pairs(current, direction),
                 )
             },
             |steps: &[TraversalPathStep<FunctionKey, CallSite>]| {
@@ -411,7 +405,9 @@ impl CallGraph {
             |direction, steps| self.materialize_graph(direction, steps),
         )
         .unwrap_or_else(|never| match never {});
-        paths.sort_by(compare_graphs);
+        if paths.len() > 1 {
+            paths.sort_by(compare_graphs);
+        }
         paths
     }
 
@@ -420,30 +416,74 @@ impl CallGraph {
         direction: GraphDirection,
         steps: &[TraversalPathStep<FunctionKey, CallSite>],
     ) -> CallGraphPath {
-        let path: Vec<GraphPathNode> = steps
-            .iter()
-            .filter_map(|step| self.functions_by_key.get(&step.node))
-            .map(GraphPathNode::from)
-            .collect();
-        let stacktrace = direction.order_stacktrace(
-            path.iter()
-                .zip(steps.iter())
-                .map(|(node, step)| {
-                    let (file, line) = step
-                        .edge
-                        .as_ref()
-                        .map(|call_site| (call_site.file.as_str(), call_site.line))
-                        .unwrap_or((node.location.file.as_str(), node.location.start_line));
-                    node.stacktrace_name(file, line)
-                })
-                .collect(),
-        );
+        let mut path = Vec::with_capacity(steps.len());
+        let mut stacktrace = Vec::with_capacity(steps.len());
+        for step in steps {
+            let Some(function) = self.functions_by_key.get(&step.node) else {
+                continue;
+            };
+            let node = GraphPathNode::from(function);
+            let (file, line) = step
+                .edge
+                .as_ref()
+                .map(|call_site| (call_site.file.as_str(), call_site.line))
+                .unwrap_or((node.location.file.as_str(), node.location.start_line));
+            stacktrace.push(self.stacktrace_name(&node, file, line));
+            path.push(node);
+        }
+        let stacktrace = direction.order_stacktrace(stacktrace);
         CallGraphPath {
             depth: path.len().saturating_sub(1),
             stacktrace,
             path,
         }
     }
+
+    fn collect_neighbor_pairs(
+        &self,
+        current: &FunctionKey,
+        direction: GraphDirection,
+    ) -> Vec<(FunctionKey, CallSite)> {
+        let neighbors = match direction {
+            GraphDirection::Backward => self.backward_edges.get(current),
+            GraphDirection::Forward => self.forward_edges.get(current),
+        };
+        let Some(neighbors) = neighbors else {
+            return Vec::new();
+        };
+        let mut pairs = Vec::with_capacity(neighbors.len());
+        for neighbor in neighbors {
+            pairs.push((neighbor.key.clone(), neighbor.call_site.clone()));
+        }
+        pairs
+    }
+
+    fn stacktrace_name(&self, node: &GraphPathNode, file: &str, line: usize) -> String {
+        let filename = self
+            .file_display_names
+            .get(file)
+            .map(String::as_str)
+            .unwrap_or(file);
+        format!("{}({}:{})", node.display_name(), filename, line)
+    }
+}
+
+fn collect_file_display_names(
+    functions_by_key: &HashMap<FunctionKey, FunctionInfo>,
+) -> HashMap<String, String> {
+    let mut file_display_names = HashMap::new();
+    for key in functions_by_key.keys() {
+        file_display_names
+            .entry(key.location.file.clone())
+            .or_insert_with(|| {
+                Path::new(&key.location.file)
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or(&key.location.file)
+                    .to_string()
+            });
+    }
+    file_display_names
 }
 
 fn matches_property_target(
@@ -506,22 +546,18 @@ fn matches_property_target(
 }
 
 fn freeze_edges(
-    edges: HashMap<FunctionKey, HashSet<GraphEdgeKey>>,
+    edges: HashMap<FunctionKey, Vec<GraphNeighbor>>,
 ) -> HashMap<FunctionKey, Vec<GraphNeighbor>> {
     edges
         .into_iter()
         .map(|(key, values)| {
-            let mut values: Vec<_> = values
-                .into_iter()
-                .map(|edge| GraphNeighbor {
-                    key: edge.neighbor_key,
-                    call_site: edge.call_site,
-                })
-                .collect();
+            let mut values = values;
             values.sort_by(|left, right| {
                 compare_keys(&left.key, &right.key)
                     .then(compare_call_sites(&left.call_site, &right.call_site))
             });
+            values
+                .dedup_by(|left, right| left.key == right.key && left.call_site == right.call_site);
             (key, values)
         })
         .collect()
@@ -534,8 +570,8 @@ fn resolve_enclosing_function(
     function_name: Option<&str>,
     class_name: Option<&str>,
     line: usize,
-    resolution_cache: &mut HashMap<ResolutionCacheKey, Option<FunctionInfo>>,
-) -> Option<FunctionInfo> {
+    resolution_cache: &mut HashMap<EnclosingResolutionCacheKey, Option<FunctionKey>>,
+) -> Option<FunctionKey> {
     let function_name = function_name?;
     let cache_key = (
         file.to_string(),
@@ -554,8 +590,8 @@ fn resolve_enclosing_function(
             class_name.map(str::to_string),
         ))
         .and_then(|candidates| {
-            select_most_specific_by_line(candidates, line, |function| {
-                (function.location.start_line, function.location.end_line)
+            select_most_specific_by_line(candidates, line, |key| {
+                (key.location.start_line, key.location.end_line)
             })
         })
         .cloned()
@@ -566,8 +602,8 @@ fn resolve_enclosing_function(
             functions_by_file_name
                 .get(&(file.to_string(), function_name.to_string()))
                 .and_then(|candidates| {
-                    select_most_specific_by_line(candidates, line, |function| {
-                        (function.location.start_line, function.location.end_line)
+                    select_most_specific_by_line(candidates, line, |key| {
+                        (key.location.start_line, key.location.end_line)
                     })
                 })
                 .cloned()
@@ -579,11 +615,25 @@ fn resolve_enclosing_function(
 
 fn resolve_call_targets(
     call: &CallInfo,
-    caller: &FunctionInfo,
-    defs_by_name: &HashMap<String, Vec<FunctionInfo>>,
+    caller_key: &FunctionKey,
+    functions_by_key: &HashMap<FunctionKey, FunctionInfo>,
+    defs_by_name: &DefinitionsByName,
     fields_by_file_class: &HashMap<(String, String), Vec<FieldInfo>>,
     parents_by_file_class: &ParentsByFileClass,
+    resolution_cache: &mut HashMap<CallTargetResolutionCacheKey, Vec<FunctionKey>>,
 ) -> Vec<FunctionKey> {
+    let cache_key = (
+        caller_key.clone(),
+        call.callee.clone(),
+        call.object_name.clone(),
+    );
+    if let Some(cached) = resolution_cache.get(&cache_key) {
+        return cached.clone();
+    }
+    let Some(caller) = functions_by_key.get(caller_key) else {
+        return Vec::new();
+    };
+
     let Some(candidates) = defs_by_name.get(&call.callee) else {
         return Vec::new();
     };
@@ -598,6 +648,7 @@ fn resolve_call_targets(
         };
         let mut matched: Vec<_> = candidates
             .iter()
+            .filter_map(|candidate_key| functions_by_key.get(candidate_key))
             .filter(|candidate| {
                 candidate
                     .class_name
@@ -608,16 +659,21 @@ fn resolve_call_targets(
             .collect();
         matched.sort_by(compare_keys);
         matched.dedup();
+        resolution_cache.insert(cache_key, matched.clone());
         return matched;
     }
+    let candidate_refs = candidates
+        .iter()
+        .filter_map(|candidate_key| functions_by_key.get(candidate_key))
+        .collect::<Vec<_>>();
     let matched: Vec<_> = resolve_forward_targets_with_fallback(
         ForwardTargetContext {
             caller_class_name: caller.class_name.as_deref(),
             caller_file: &caller.location.file,
             object_name: call.object_name.as_deref(),
         },
-        candidates,
-        |candidate: &FunctionInfo| FunctionKey::from(candidate),
+        &candidate_refs,
+        |candidate: &&FunctionInfo| FunctionKey::from(*candidate),
         |candidate| candidate.class_name.as_deref(),
         |candidate| candidate.location.file.as_str(),
         |attr_name, candidate_class_name| {
@@ -643,11 +699,79 @@ fn resolve_call_targets(
         },
     )
     .into_iter()
-    .map(|candidate| FunctionKey::from(&candidate))
+    .map(FunctionKey::from)
     .collect();
     let mut matched = matched;
     matched.sort_by(compare_keys);
+    matched.dedup();
+    resolution_cache.insert(cache_key, matched.clone());
     matched
+}
+
+fn resolve_property_targets(
+    caller_key: FunctionKey,
+    caller: &FunctionInfo,
+    property_caller: &RawPropertyCaller,
+    module_level: bool,
+    functions_by_key: &HashMap<FunctionKey, FunctionInfo>,
+    defs_by_name: &DefinitionsByName,
+    property_keys: &HashSet<(String, Option<String>)>,
+    fields_by_file_class: &HashMap<(String, String), Vec<FieldInfo>>,
+    parents_by_file_class: &ParentsByFileClass,
+    resolution_cache: &mut HashMap<PropertyTargetResolutionCacheKey, Vec<FunctionKey>>,
+) -> Vec<FunctionKey> {
+    let cache_key = (
+        caller_key,
+        property_caller.property_name.clone(),
+        property_caller.object_name.clone(),
+        property_caller.object_type.clone(),
+        module_level,
+    );
+    if let Some(cached) = resolution_cache.get(&cache_key) {
+        return cached.clone();
+    }
+
+    let Some(candidate_defs) = defs_by_name.get(&property_caller.property_name) else {
+        return Vec::new();
+    };
+
+    let mut matched_keys = Vec::new();
+    for property_key in candidate_defs {
+        let Some(property) = functions_by_key.get(property_key) else {
+            continue;
+        };
+        if !property_keys.contains(&(property.name.clone(), property.class_name.clone())) {
+            continue;
+        }
+        let Some(target_class_name) = property.class_name.as_deref() else {
+            continue;
+        };
+        let matches_target = if module_level {
+            matches_module_property_target(
+                property_caller.object_name.as_deref(),
+                property_caller.object_type.as_deref(),
+                target_class_name,
+            )
+        } else {
+            matches_property_target(
+                caller,
+                property_caller.object_name.as_deref(),
+                Some(target_class_name),
+                fields_by_file_class,
+                parents_by_file_class,
+            )
+        };
+        if matches_target {
+            matched_keys.push(property_key.clone());
+        }
+    }
+
+    matched_keys.sort_by(compare_keys);
+    matched_keys.dedup();
+    if !matched_keys.is_empty() {
+        resolution_cache.insert(cache_key, matched_keys.clone());
+    }
+    matched_keys
 }
 
 fn compare_keys(left: &FunctionKey, right: &FunctionKey) -> std::cmp::Ordering {

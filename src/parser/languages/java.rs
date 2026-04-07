@@ -1,6 +1,6 @@
 use tree_sitter::Node;
 
-use super::super::{context, ParseContext};
+use super::super::{context, EnclosingContext, ParseContext};
 use crate::languages::{find_language_info, LanguageEngine, LanguageInfo, ResolvedCall};
 use crate::models::{AnnotationInfo, FieldInfo, FunctionParamInfo};
 
@@ -78,7 +78,9 @@ impl LanguageEngine for JavaEngine {
         &self,
         ctx: &ParseContext,
         matched: &super::super::capture::CallCaptureMatch<'a>,
+        enclosing: &EnclosingContext<'a>,
     ) -> ResolvedCall<'a> {
+        let _ = enclosing;
         let call_node = matched.call;
         let (callee, is_method, object_name) =
             if call_node.kind() == "explicit_constructor_invocation" {

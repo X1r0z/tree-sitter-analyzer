@@ -121,22 +121,22 @@ where
                 }
             }
 
-            let same_file_globals: Vec<_> = candidates
-                .iter()
-                .filter(|candidate| {
-                    class_name_of(candidate).is_none() && file_of(candidate) == context.caller_file
-                })
-                .cloned()
-                .collect();
-            if same_file_globals.is_empty() {
+            let has_same_file_global = candidates.iter().any(|candidate| {
+                class_name_of(candidate).is_none() && file_of(candidate) == context.caller_file
+            });
+            if has_same_file_global {
                 for candidate in candidates {
-                    if class_name_of(candidate).is_none() {
+                    if class_name_of(candidate).is_none()
+                        && file_of(candidate) == context.caller_file
+                    {
                         push_unique(&mut results, &mut seen, candidate, &key_of);
                     }
                 }
             } else {
-                for candidate in &same_file_globals {
-                    push_unique(&mut results, &mut seen, candidate, &key_of);
+                for candidate in candidates {
+                    if class_name_of(candidate).is_none() {
+                        push_unique(&mut results, &mut seen, candidate, &key_of);
+                    }
                 }
             }
         }

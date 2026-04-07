@@ -393,16 +393,22 @@ impl SourceAnalyzer {
         direction: GraphDirection,
         max_depth: usize,
     ) -> anyhow::Result<Vec<CallGraphPath>> {
-        let snapshots = match direction {
+        let start_definitions =
+            self.collect_graph_start_definitions(function_name, class_name, direction);
+        if start_definitions.is_empty() {
+            anyhow::bail!("Function '{}' not found", function_name);
+        }
+
+        let snapshots: Vec<anyhow::Result<GraphFileSnapshot>> = match direction {
             GraphDirection::Forward => self
-                .collect_forward_graph_results(function_name, class_name)
+                .collect_forward_graph_snapshots()
                 .into_iter()
-                .map(|result| result.map(|entry| entry.snapshot))
+                .map(anyhow::Result::Ok)
                 .collect::<Vec<_>>(),
             GraphDirection::Backward => self
                 .collect_backward_graph_results(function_name, class_name)?
                 .into_iter()
-                .map(Ok)
+                .map(anyhow::Result::Ok)
                 .collect::<Vec<_>>(),
         };
 
@@ -446,6 +452,33 @@ impl SourceAnalyzer {
         }
 
         Ok(graph.collect_graphs(&start_nodes, direction, max_depth))
+    }
+
+    fn collect_graph_start_definitions(
+        &self,
+        function_name: &str,
+        class_name: Option<&str>,
+        direction: GraphDirection,
+    ) -> Vec<FunctionInfo> {
+        match direction {
+            GraphDirection::Forward => {
+                let candidate_files = self.search.filter_by_text(function_name);
+                self.collect_function_definition_results(
+                    &candidate_files,
+                    function_name,
+                    class_name,
+                )
+            }
+            GraphDirection::Backward => {
+                let base_function_name = split_function_target(function_name).0;
+                let candidate_files = self.search.filter_by_text(base_function_name);
+                self.collect_function_definition_results(
+                    &candidate_files,
+                    base_function_name,
+                    class_name,
+                )
+            }
+        }
     }
 
     pub(crate) fn find_refs(&self, name: &str) -> Vec<RefInfo> {
@@ -613,13 +646,12 @@ impl SourceAnalyzer {
         })
     }
 
-    fn collect_forward_graph_results(
-        &self,
-        function_name: &str,
-        class_name: Option<&str>,
-    ) -> Vec<anyhow::Result<GraphFileResult>> {
+    fn collect_forward_graph_snapshots(&self) -> Vec<GraphFileSnapshot> {
         let candidate_files = self.search.files().to_vec();
-        self.collect_graph_file_results(&candidate_files, function_name, class_name)
+        self.analyze_files_with_progress(&candidate_files, |file: &String| {
+            self.analyze_file(file, |extractor| vec![extractor.build_graph_snapshot()])
+                .unwrap_or_default()
+        })
     }
 
     fn collect_backward_graph_results(

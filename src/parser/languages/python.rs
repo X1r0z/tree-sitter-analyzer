@@ -5,7 +5,8 @@ use tree_sitter::Node;
 
 use super::super::capture::CallCaptureMatch;
 use super::super::{
-    ParseContext, PythonPropertyCallers, PythonPropertyDefinitions, PythonPropertyIndexes,
+    EnclosingContext, ParseContext, PythonPropertyCallers, PythonPropertyDefinitions,
+    PythonPropertyIndexes,
 };
 use crate::languages::{find_language_info, LanguageEngine, LanguageInfo, ResolvedCall};
 use crate::models::{
@@ -82,7 +83,9 @@ impl LanguageEngine for PythonEngine {
         &self,
         ctx: &ParseContext,
         matched: &CallCaptureMatch<'a>,
+        enclosing: &EnclosingContext<'a>,
     ) -> ResolvedCall<'a> {
+        let _ = enclosing;
         let call_node = matched.call;
         let mut callee = String::new();
         let mut is_method = false;

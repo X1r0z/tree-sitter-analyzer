@@ -1,7 +1,7 @@
 use tree_sitter::Node;
 
 use super::super::capture::CallCaptureMatch;
-use super::super::{context, ParseContext};
+use super::super::{context, EnclosingContext, ParseContext};
 use crate::languages::{find_language_info, LanguageEngine, LanguageInfo, ResolvedCall};
 use crate::models::{FieldInfo, FunctionParamInfo};
 
@@ -108,7 +108,9 @@ impl LanguageEngine for GoEngine {
         &self,
         ctx: &ParseContext,
         matched: &CallCaptureMatch<'a>,
+        enclosing: &EnclosingContext<'a>,
     ) -> ResolvedCall<'a> {
+        let _ = enclosing;
         let call_node = matched.call;
         let mut callee = String::new();
         let mut is_method = false;

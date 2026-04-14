@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use tree_sitter::{Node, Parser, Tree};
 
@@ -74,9 +75,10 @@ pub(crate) struct PythonParseCaches {
 pub(crate) struct CommonParseCaches {
     pub(crate) function_names_by_node: HashMap<NodeId, Option<String>>,
     pub(crate) class_names_by_node: HashMap<NodeId, Option<String>>,
+    pub(crate) enclosing_names_by_node: HashMap<NodeId, CachedEnclosingNames>,
+    enclosing_interval_index: Option<EnclosingIntervalIndex>,
     pub(crate) functions_without_bodies: Option<Vec<FunctionInfo>>,
-    pub(crate) classes: Option<Vec<ClassInfo>>,
-    pub(crate) field_infos_by_class: HashMap<String, Vec<FieldInfo>>,
+    pub(crate) class_snapshot: Option<ClassSnapshotData>,
 }
 
 #[derive(Default)]
@@ -97,9 +99,121 @@ pub(crate) struct EnclosingContext<'a> {
     pub(crate) function_node: Option<Node<'a>>,
 }
 
+#[derive(Clone, Default)]
+pub(crate) struct CachedEnclosingNames {
+    pub(crate) function_name: Option<String>,
+    pub(crate) class_name: Option<String>,
+}
+
 pub(crate) struct ParseContext {
     pub(crate) input: ParseInput,
     pub(crate) caches: RefCell<ParseCaches>,
+}
+
+#[derive(Clone)]
+pub(crate) struct ClassSnapshotData {
+    pub(crate) classes: Vec<ClassInfo>,
+    pub(crate) fields: Vec<FieldInfo>,
+    pub(crate) field_infos_by_class: HashMap<String, Vec<FieldInfo>>,
+}
+
+#[derive(Clone)]
+struct EnclosingIntervalIndex {
+    function_ranges: Vec<FunctionRange>,
+    class_ranges: Vec<ClassRange>,
+}
+
+#[derive(Clone)]
+struct FunctionRange {
+    start_byte: usize,
+    end_byte: usize,
+    function_name: String,
+}
+
+#[derive(Clone)]
+struct ClassRange {
+    start_byte: usize,
+    end_byte: usize,
+    class_name: String,
+}
+
+struct EnclosingIntervalLookup {
+    function_ranges: Vec<FunctionRange>,
+    class_ranges: Vec<ClassRange>,
+    next_function_idx: usize,
+    next_class_idx: usize,
+    active_function_indices: Vec<usize>,
+    active_class_indices: Vec<usize>,
+}
+
+impl EnclosingIntervalLookup {
+    fn new(index: EnclosingIntervalIndex) -> Self {
+        Self {
+            function_ranges: index.function_ranges,
+            class_ranges: index.class_ranges,
+            next_function_idx: 0,
+            next_class_idx: 0,
+            active_function_indices: Vec::new(),
+            active_class_indices: Vec::new(),
+        }
+    }
+
+    fn lookup(&mut self, node: Node<'_>) -> CachedEnclosingNames {
+        let start = node.start_byte();
+        let end = node.end_byte();
+
+        while self.next_function_idx < self.function_ranges.len()
+            && self.function_ranges[self.next_function_idx].start_byte <= start
+        {
+            self.active_function_indices.push(self.next_function_idx);
+            self.next_function_idx += 1;
+        }
+        self.active_function_indices
+            .retain(|&idx| end <= self.function_ranges[idx].end_byte);
+
+        while self.next_class_idx < self.class_ranges.len()
+            && self.class_ranges[self.next_class_idx].start_byte <= start
+        {
+            self.active_class_indices.push(self.next_class_idx);
+            self.next_class_idx += 1;
+        }
+        self.active_class_indices
+            .retain(|&idx| end <= self.class_ranges[idx].end_byte);
+
+        let function_name = self
+            .active_function_indices
+            .iter()
+            .filter_map(|&idx| {
+                let range = &self.function_ranges[idx];
+                (range.start_byte <= start && end <= range.end_byte).then_some(range)
+            })
+            .min_by_key(|range| (range.end_byte - range.start_byte, range.start_byte))
+            .map(|range| range.function_name.clone());
+
+        let class_name = self
+            .active_class_indices
+            .iter()
+            .filter_map(|&idx| {
+                let range = &self.class_ranges[idx];
+                (range.start_byte <= start && end <= range.end_byte).then_some(range)
+            })
+            .min_by_key(|range| (range.end_byte - range.start_byte, range.start_byte))
+            .map(|range| range.class_name.clone());
+
+        CachedEnclosingNames {
+            function_name,
+            class_name,
+        }
+    }
+}
+
+#[derive(Default, Clone, Copy)]
+pub(crate) struct CallCollectionTimings {
+    pub(crate) capture_query: Duration,
+    pub(crate) enclosing: Duration,
+    pub(crate) resolve_call: Duration,
+    pub(crate) include_filter: Duration,
+    pub(crate) resolve_targets: Duration,
 }
 
 impl ParseContext {
@@ -217,46 +331,34 @@ impl ParseContext {
             };
         }
 
-        let mut current = node.parent();
-        let mut function_name: Option<String> = None;
-        let mut class_name: Option<String> = None;
-        let mut function_node: Option<Node<'a>> = None;
-
-        while let Some(current_node) = current {
-            if function_name.is_none() && is_function_like(current_node.kind()) {
-                function_name = self.cached_function_name(current_node);
-                function_node = Some(current_node);
-            }
-
-            if class_name.is_none() {
-                class_name = self.engine().enclosing_class_name(self, current_node);
-            }
-
-            if class_name.is_none()
-                && matches!(
-                    current_node.kind(),
-                    "class_definition"
-                        | "class_declaration"
-                        | "class_body"
-                        | "interface_declaration"
-                        | "enum_declaration"
-                        | "record_declaration"
-                        | "annotation_type_declaration"
-                )
-            {
-                class_name = self.cached_class_name(current_node);
-                current = current_node.parent();
-                continue;
-            }
-
-            current = current_node.parent();
-        }
+        let enclosing = self.cached_enclosing_names(node);
 
         EnclosingContext {
-            function_name,
-            class_name,
-            function_node,
+            function_name: enclosing.function_name,
+            class_name: enclosing.class_name,
+            function_node: self.find_enclosing_function_node(node),
         }
+    }
+
+    pub(crate) fn cached_enclosing_names(&self, node: Node<'_>) -> CachedEnclosingNames {
+        let node_id = self.node_id(node);
+        if let Some(names) = self
+            .caches
+            .borrow()
+            .common
+            .enclosing_names_by_node
+            .get(&node_id)
+        {
+            return names.clone();
+        }
+
+        let names = self.compute_enclosing_names_by_walk(node);
+        self.caches
+            .borrow_mut()
+            .common
+            .enclosing_names_by_node
+            .insert(node_id, names.clone());
+        names
     }
 
     pub(crate) fn cached_function_name(&self, node: Node) -> Option<String> {
@@ -373,152 +475,91 @@ impl ParseContext {
     }
 
     pub(crate) fn collect_classes(&self) -> Vec<ClassInfo> {
-        if let Some(cached) = self.caches.borrow().common.classes.as_ref() {
-            return cached.clone();
-        }
-        let mut methods_by_class = std::collections::HashMap::new();
-        if self.language() == "go" {
-            for function in self.collect_functions(false) {
-                if let Some(class_name) = function.class_name {
-                    methods_by_class
-                        .entry(class_name)
-                        .or_insert_with(Vec::new)
-                        .push(function.name);
-                }
-            }
-            for methods in methods_by_class.values_mut() {
-                methods.sort_unstable();
-                methods.dedup();
-            }
-        }
-
-        let mut class_pairs: Vec<(Node<'_>, Node<'_>)> =
-            capture::collect_capture_pairs(self, QueryKind::Class, "class", "name");
-        class_pairs.sort_by_key(|(class_node, _)| {
-            (
-                class_node.start_byte(),
-                std::cmp::Reverse(class_node.end_byte()),
-            )
-        });
-
-        let mut classes = Vec::new();
-        let mut active_ranges: Vec<usize> = Vec::new();
-        let mut seen = HashSet::new();
-        let allow_nested_classes = matches!(self.language(), "python" | "java");
-
-        for (class_node, name_node) in class_pairs {
-            let class_node = self.engine().normalize_class_node(self, class_node);
-            let name = self
-                .cached_class_name(class_node)
-                .unwrap_or_else(|| self.node_text(name_node));
-            if name.is_empty() {
-                continue;
-            }
-            let start = class_node.start_byte();
-            let end = class_node.end_byte();
-            if !seen.insert((start, end, name.clone())) {
-                continue;
-            }
-            while let Some(&active_end) = active_ranges.last() {
-                if start >= active_end {
-                    active_ranges.pop();
-                } else {
-                    break;
-                }
-            }
-            let is_nested = !active_ranges.is_empty();
-            if is_nested && !allow_nested_classes {
-                continue;
-            }
-            active_ranges.push(end);
-
-            let mut method_names = class_method_names(self, class_node);
-            if self.language() == "go" {
-                if let Some(go_methods) = methods_by_class.get(&name) {
-                    method_names.extend(go_methods.iter().cloned());
-                    method_names.sort_unstable();
-                    method_names.dedup();
-                }
-            }
-            let field_names = class_field_names(self, class_node);
-            let super_class_names = self.engine().super_types(self, class_node);
-
-            classes.push(ClassInfo {
-                name,
-                kind: class_kind(self, class_node),
-                location: self.node_location(class_node),
-                methods: method_names,
-                fields: field_names,
-                super_classes: super_class_names,
-            });
-        }
-
-        self.caches.borrow_mut().common.classes = Some(classes.clone());
-        classes
+        self.ensure_class_snapshot();
+        self.caches
+            .borrow()
+            .common
+            .class_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.classes.clone())
+            .unwrap_or_default()
     }
 
     pub(crate) fn collect_field_infos_for_class(&self, class_name: &str) -> Vec<FieldInfo> {
-        if let Some(cached) = self
-            .caches
+        self.ensure_class_snapshot();
+        self.caches
             .borrow()
             .common
-            .field_infos_by_class
-            .get(class_name)
-        {
-            return cached.clone();
-        }
-        if matches!(self.language(), "javascript" | "typescript" | "tsx") {
-            let fields = super::languages::javascript::semantic_facts(self)
-                .field_infos_by_class
-                .get(class_name)
-                .cloned()
-                .unwrap_or_default();
-            self.caches
-                .borrow_mut()
-                .common
-                .field_infos_by_class
-                .insert(class_name.to_string(), fields.clone());
-            return fields;
-        }
-        let mut candidates: Vec<Node<'_>> = Vec::new();
-        for (class_node, name_node) in
-            capture::collect_capture_pairs(self, QueryKind::Class, "class", "name")
-        {
-            if self.node_text_eq(name_node, class_name) {
-                candidates.push(class_node);
-            }
-        }
-        if candidates.is_empty() {
-            return Vec::new();
-        }
+            .class_snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.field_infos_by_class.get(class_name))
+            .cloned()
+            .unwrap_or_default()
+    }
 
-        candidates.sort_by_key(|node| {
-            let size = node.end_byte() - node.start_byte();
-            (size, node.start_byte())
-        });
-        let class_node = self.engine().normalize_class_node(self, candidates[0]);
-        let fields = self.engine().class_fields(self, class_node, class_name);
+    pub(crate) fn collect_class_snapshot(&self) -> ClassSnapshotData {
+        self.ensure_class_snapshot();
         self.caches
-            .borrow_mut()
+            .borrow()
             .common
-            .field_infos_by_class
-            .insert(class_name.to_string(), fields.clone());
-        fields
+            .class_snapshot
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| ClassSnapshotData {
+                classes: Vec::new(),
+                fields: Vec::new(),
+                field_infos_by_class: HashMap::new(),
+            })
     }
 
     pub(crate) fn collect_calls(&self) -> Vec<CallInfo> {
+        self.collect_calls_with_timings().0
+    }
+
+    pub(crate) fn collect_calls_with_timings(&self) -> (Vec<CallInfo>, CallCollectionTimings) {
+        let mut timings = CallCollectionTimings::default();
+        let started = Instant::now();
         let mut matched_calls: Vec<CallCaptureMatch<'_>> =
             capture::collect_call_capture_matches(self, QueryKind::Call);
+        timings.capture_query = started.elapsed();
+        matched_calls.sort_by_key(|m| m.call.start_byte());
         let is_js_family = matches!(self.language(), "javascript" | "typescript" | "tsx");
-        if is_js_family {
-            matched_calls.sort_by_key(|m| m.call.start_byte());
-        }
+        let mut interval_lookup = if is_js_family {
+            None
+        } else {
+            self.ensure_enclosing_interval_index();
+            let index = self
+                .caches
+                .borrow()
+                .common
+                .enclosing_interval_index
+                .as_ref()
+                .cloned();
+            index.map(EnclosingIntervalLookup::new)
+        };
 
         let mut calls = Vec::new();
         for matched in &matched_calls {
             let call_node = matched.call;
-            let enclosing = self.find_enclosing_context(call_node);
+            let started = Instant::now();
+            let enclosing = if is_js_family {
+                self.find_enclosing_context(call_node)
+            } else {
+                let enclosing = interval_lookup
+                    .as_mut()
+                    .map(|lookup| lookup.lookup(call_node))
+                    .unwrap_or_default();
+                EnclosingContext {
+                    function_name: enclosing.function_name,
+                    class_name: enclosing.class_name,
+                    function_node: None,
+                }
+            };
+            timings.enclosing += started.elapsed();
+
+            let started = Instant::now();
             let resolved = self.engine().resolve_call(self, matched, &enclosing);
+            timings.resolve_call += started.elapsed();
             let callee = resolved.callee;
             let is_method = resolved.is_method;
             let obj_name = resolved.object_name;
@@ -527,12 +568,15 @@ impl ParseContext {
             if callee.is_empty() {
                 continue;
             }
+            let started = Instant::now();
             if !self
                 .engine()
                 .include_call(self, call_node, &callee, obj_name.as_deref())
             {
+                timings.include_filter += started.elapsed();
                 continue;
             }
+            timings.include_filter += started.elapsed();
 
             let call_location = self.node_location(call_node);
             let mut used_resolved_calls = false;
@@ -543,11 +587,13 @@ impl ParseContext {
                     .unwrap_or(false)
                 && enclosing.function_node.is_some()
             {
+                let started = Instant::now();
                 let resolved = self.resolve_call_targets_with_function_node(
                     enclosing.function_node.unwrap(),
                     call_node,
                     &callee,
                 );
+                timings.resolve_targets += started.elapsed();
                 if !resolved.is_empty() {
                     for resolved_callee in resolved {
                         calls.push(CallInfo {
@@ -573,7 +619,7 @@ impl ParseContext {
             }
         }
 
-        calls
+        (calls, timings)
     }
 
     pub(crate) fn collect_imports(&self) -> Vec<ImportInfo> {
@@ -684,6 +730,262 @@ impl ParseContext {
             }
         }
         refs
+    }
+
+    fn ensure_class_snapshot(&self) {
+        if self.caches.borrow().common.class_snapshot.is_some() {
+            return;
+        }
+        let snapshot = self.build_class_snapshot();
+        self.caches.borrow_mut().common.class_snapshot = Some(snapshot);
+    }
+
+    fn build_class_snapshot(&self) -> ClassSnapshotData {
+        let mut methods_by_class = std::collections::HashMap::new();
+        if self.language() == "go" {
+            for function in self.collect_functions(false) {
+                if let Some(class_name) = function.class_name {
+                    methods_by_class
+                        .entry(class_name)
+                        .or_insert_with(Vec::new)
+                        .push(function.name);
+                }
+            }
+            for methods in methods_by_class.values_mut() {
+                methods.sort_unstable();
+                methods.dedup();
+            }
+        }
+
+        let mut class_pairs: Vec<(Node<'_>, Node<'_>)> =
+            capture::collect_capture_pairs(self, QueryKind::Class, "class", "name");
+        class_pairs.sort_by_key(|(class_node, _)| {
+            (
+                class_node.start_byte(),
+                std::cmp::Reverse(class_node.end_byte()),
+            )
+        });
+
+        let mut classes = Vec::new();
+        let mut active_ranges: Vec<usize> = Vec::new();
+        let mut seen = HashSet::new();
+        let allow_nested_classes = matches!(self.language(), "python" | "java");
+        let mut chosen_fields_by_class: HashMap<String, (usize, usize, Vec<FieldInfo>)> =
+            HashMap::new();
+
+        for (class_node, name_node) in class_pairs {
+            let class_node = self.engine().normalize_class_node(self, class_node);
+            let name = self
+                .cached_class_name(class_node)
+                .unwrap_or_else(|| self.node_text(name_node));
+            if name.is_empty() {
+                continue;
+            }
+            let start = class_node.start_byte();
+            let end = class_node.end_byte();
+            if !seen.insert((start, end, name.clone())) {
+                continue;
+            }
+            while let Some(&active_end) = active_ranges.last() {
+                if start >= active_end {
+                    active_ranges.pop();
+                } else {
+                    break;
+                }
+            }
+            let is_nested = !active_ranges.is_empty();
+            if is_nested && !allow_nested_classes {
+                continue;
+            }
+            active_ranges.push(end);
+
+            let field_infos = self.engine().class_fields(self, class_node, &name);
+            let field_names = field_infos.iter().map(|field| field.name.clone()).collect();
+            let class_size = end - start;
+            match chosen_fields_by_class.get(&name) {
+                Some((best_size, best_start, _))
+                    if (*best_size, *best_start) <= (class_size, start) => {}
+                _ => {
+                    chosen_fields_by_class
+                        .insert(name.clone(), (class_size, start, field_infos.clone()));
+                }
+            }
+
+            let mut method_names = class_method_names(self, class_node);
+            if self.language() == "go" {
+                if let Some(go_methods) = methods_by_class.get(&name) {
+                    method_names.extend(go_methods.iter().cloned());
+                    method_names.sort_unstable();
+                    method_names.dedup();
+                }
+            }
+            let super_class_names = self.engine().super_types(self, class_node);
+
+            classes.push(ClassInfo {
+                name,
+                kind: class_kind(self, class_node),
+                location: self.node_location(class_node),
+                methods: method_names,
+                fields: field_names,
+                super_classes: super_class_names,
+            });
+        }
+
+        let field_infos_by_class = chosen_fields_by_class
+            .into_iter()
+            .map(|(name, (_, _, fields))| (name, fields))
+            .collect::<HashMap<_, _>>();
+        let fields = classes
+            .iter()
+            .flat_map(|class| {
+                field_infos_by_class
+                    .get(&class.name)
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .collect();
+
+        ClassSnapshotData {
+            classes,
+            fields,
+            field_infos_by_class,
+        }
+    }
+
+    fn ensure_enclosing_interval_index(&self) {
+        if self
+            .caches
+            .borrow()
+            .common
+            .enclosing_interval_index
+            .is_some()
+        {
+            return;
+        }
+        let index = self.build_enclosing_interval_index();
+        self.caches.borrow_mut().common.enclosing_interval_index = Some(index);
+    }
+
+    fn build_enclosing_interval_index(&self) -> EnclosingIntervalIndex {
+        let mut function_pairs: Vec<(Node<'_>, Node<'_>)> =
+            capture::collect_capture_pairs(self, QueryKind::Function, "function", "name");
+        function_pairs.sort_by_key(|(function_node, _)| {
+            (
+                function_node.start_byte(),
+                std::cmp::Reverse(function_node.end_byte()),
+            )
+        });
+
+        let mut function_ranges = Vec::new();
+        let mut seen_functions = HashSet::new();
+        for (function_node, name_node) in function_pairs {
+            let normalized = self.engine().normalize_function_node(self, function_node);
+            let name = self
+                .cached_function_name(normalized)
+                .unwrap_or_else(|| self.node_text(name_node));
+            if name.is_empty() {
+                continue;
+            }
+            let start_byte = normalized.start_byte();
+            let end_byte = normalized.end_byte();
+            let class_name = self.compute_enclosing_names_by_walk(normalized).class_name;
+            if !seen_functions.insert((start_byte, end_byte, name.clone(), class_name.clone())) {
+                continue;
+            }
+            function_ranges.push(FunctionRange {
+                start_byte,
+                end_byte,
+                function_name: name,
+            });
+        }
+
+        let mut class_pairs: Vec<(Node<'_>, Node<'_>)> =
+            capture::collect_capture_pairs(self, QueryKind::Class, "class", "name");
+        class_pairs.sort_by_key(|(class_node, _)| {
+            (
+                class_node.start_byte(),
+                std::cmp::Reverse(class_node.end_byte()),
+            )
+        });
+
+        let mut class_ranges = Vec::new();
+        let mut seen_classes = HashSet::new();
+        for (class_node, name_node) in class_pairs {
+            let normalized = self.engine().normalize_class_node(self, class_node);
+            let name = self
+                .cached_class_name(normalized)
+                .unwrap_or_else(|| self.node_text(name_node));
+            if name.is_empty() {
+                continue;
+            }
+            let start_byte = normalized.start_byte();
+            let end_byte = normalized.end_byte();
+            if !seen_classes.insert((start_byte, end_byte, name.clone())) {
+                continue;
+            }
+            class_ranges.push(ClassRange {
+                start_byte,
+                end_byte,
+                class_name: name,
+            });
+        }
+
+        EnclosingIntervalIndex {
+            function_ranges,
+            class_ranges,
+        }
+    }
+
+    fn find_enclosing_function_node<'a>(&self, node: Node<'a>) -> Option<Node<'a>> {
+        let mut current = Some(node);
+        while let Some(current_node) = current {
+            if is_function_like(current_node.kind()) {
+                return Some(current_node);
+            }
+            current = current_node.parent();
+        }
+        None
+    }
+
+    fn compute_enclosing_names_by_walk(&self, node: Node<'_>) -> CachedEnclosingNames {
+        let mut current = Some(node);
+        let mut function_name: Option<String> = None;
+        let mut class_name: Option<String> = None;
+
+        while let Some(current_node) = current {
+            if function_name.is_none() && is_function_like(current_node.kind()) {
+                function_name = self.cached_function_name(current_node);
+            }
+
+            if class_name.is_none() {
+                class_name = self.engine().enclosing_class_name(self, current_node);
+            }
+
+            if class_name.is_none()
+                && matches!(
+                    current_node.kind(),
+                    "class_definition"
+                        | "class_declaration"
+                        | "class_body"
+                        | "interface_declaration"
+                        | "enum_declaration"
+                        | "record_declaration"
+                        | "annotation_type_declaration"
+                )
+            {
+                class_name = self.cached_class_name(current_node);
+            }
+
+            if function_name.is_some() && class_name.is_some() {
+                break;
+            }
+            current = current_node.parent();
+        }
+
+        CachedEnclosingNames {
+            function_name,
+            class_name,
+        }
     }
 }
 
@@ -904,19 +1206,6 @@ fn class_method_names(parser: &ParseContext, class_node: Node<'_>) -> Vec<String
         }
     }
     methods
-}
-
-fn class_field_names(parser: &ParseContext, class_node: Node<'_>) -> Vec<String> {
-    let class_name = class_node
-        .child_by_field_name("name")
-        .map(|child| parser.node_text(child))
-        .unwrap_or_default();
-    parser
-        .engine()
-        .class_fields(parser, class_node, &class_name)
-        .into_iter()
-        .map(|field| field.name)
-        .collect()
 }
 
 fn is_nested_class_boundary(kind: &str) -> bool {

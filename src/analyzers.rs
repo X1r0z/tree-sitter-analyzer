@@ -14,7 +14,8 @@ use crate::query::{CallEdgeQuery, CallGraphQuery, ClassHierarchyQuery, LookupQue
 use crate::search::{FileSearch, QueryMatcher};
 use crate::traversal::collect_reachable_bfs;
 use crate::utils::{
-    find_files, progress_bar, sort_callees_by_file_line, sort_callers_by_file_line,
+    find_files, progress_bar, select_most_specific_by_line, sort_callees_by_file_line,
+    sort_callers_by_file_line,
 };
 
 pub(crate) struct SourceAnalyzer {
@@ -36,6 +37,15 @@ struct GraphFileResult {
     file: String,
     definitions: Vec<FunctionInfo>,
     snapshot: GraphFileSnapshot,
+}
+
+#[derive(Clone, Eq, Hash, PartialEq)]
+struct GraphFunctionKey {
+    file: String,
+    name: String,
+    class_name: Option<String>,
+    start_line: usize,
+    end_line: usize,
 }
 
 #[derive(Default)]
@@ -401,7 +411,7 @@ impl SourceAnalyzer {
 
         let snapshots: Vec<anyhow::Result<GraphFileSnapshot>> = match direction {
             GraphDirection::Forward => self
-                .collect_forward_graph_snapshots()
+                .collect_forward_graph_results(&start_definitions, max_depth)?
                 .into_iter()
                 .map(anyhow::Result::Ok)
                 .collect::<Vec<_>>(),
@@ -646,12 +656,117 @@ impl SourceAnalyzer {
         })
     }
 
-    fn collect_forward_graph_snapshots(&self) -> Vec<GraphFileSnapshot> {
-        let candidate_files = self.search.files().to_vec();
-        self.analyze_files_with_progress(&candidate_files, |file: &String| {
-            self.analyze_file(file, |extractor| vec![extractor.build_graph_snapshot()])
-                .unwrap_or_default()
-        })
+    fn collect_forward_graph_results(
+        &self,
+        start_definitions: &[FunctionInfo],
+        max_depth: usize,
+    ) -> anyhow::Result<Vec<GraphFileSnapshot>> {
+        if start_definitions.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut snapshots_by_file = HashMap::new();
+        let mut pending_files: Vec<String> = start_definitions
+            .iter()
+            .map(|function| function.location.file.clone())
+            .collect();
+        pending_files.sort();
+        pending_files.dedup();
+
+        let mut frontier: Vec<FunctionInfo> = start_definitions.to_vec();
+        for _ in 0..max_depth {
+            let new_files: Vec<_> = pending_files
+                .iter()
+                .filter(|file| !snapshots_by_file.contains_key(file.as_str()))
+                .cloned()
+                .collect();
+            let results = self.collect_graph_file_results(&new_files, "", None);
+            for result in results {
+                let result = result?;
+                snapshots_by_file.insert(result.file, result.snapshot);
+            }
+
+            if frontier.is_empty() {
+                break;
+            }
+
+            let reachable_names =
+                self.collect_forward_reachable_names(&frontier, &snapshots_by_file);
+            if reachable_names.is_empty() {
+                break;
+            }
+
+            let mut next_files = Vec::new();
+            for function_name in &reachable_names {
+                let base_name = split_function_target(function_name).0;
+                next_files.extend(self.search.filter_by_text(base_name));
+            }
+            next_files.retain(|file| !snapshots_by_file.contains_key(file.as_str()));
+            next_files.sort();
+            next_files.dedup();
+            if next_files.is_empty() {
+                break;
+            }
+
+            let next_results = self.collect_graph_file_results(&next_files, "", None);
+            let mut next_frontier = Vec::new();
+            for result in next_results {
+                let result = result?;
+                next_frontier.extend(
+                    result
+                        .snapshot
+                        .functions
+                        .iter()
+                        .filter(|function| reachable_names.contains(function.name.as_str()))
+                        .cloned(),
+                );
+                snapshots_by_file.insert(result.file, result.snapshot);
+            }
+            let mut seen = HashSet::new();
+            frontier = next_frontier
+                .into_iter()
+                .filter(|function| seen.insert(GraphFunctionKey::from(function)))
+                .collect();
+            pending_files = Vec::new();
+        }
+
+        Ok(snapshots_by_file.into_values().collect())
+    }
+
+    fn collect_forward_reachable_names(
+        &self,
+        frontier: &[FunctionInfo],
+        snapshots_by_file: &HashMap<String, GraphFileSnapshot>,
+    ) -> HashSet<String> {
+        let frontier_keys: HashSet<_> = frontier.iter().map(GraphFunctionKey::from).collect();
+        let mut reachable = HashSet::new();
+
+        for function in frontier {
+            let Some(snapshot) = snapshots_by_file.get(function.location.file.as_str()) else {
+                continue;
+            };
+            let functions_in_file = &snapshot.functions;
+            for call in &snapshot.calls {
+                let Some(caller_name) = call.caller.as_deref() else {
+                    continue;
+                };
+                let Some(caller) = select_most_specific_by_line(
+                    functions_in_file,
+                    call.location.start_line,
+                    |candidate| (candidate.location.start_line, candidate.location.end_line),
+                ) else {
+                    continue;
+                };
+                if caller.name != caller_name || caller.class_name != call.caller_class_name {
+                    continue;
+                }
+                if frontier_keys.contains(&GraphFunctionKey::from(caller)) {
+                    reachable.insert(call.callee.clone());
+                }
+            }
+        }
+
+        reachable
     }
 
     fn collect_backward_graph_results(
@@ -726,6 +841,18 @@ impl SourceAnalyzer {
         });
         for (file, classes) in parsed_results {
             cache.insert_file_classes(file, classes);
+        }
+    }
+}
+
+impl From<&FunctionInfo> for GraphFunctionKey {
+    fn from(function: &FunctionInfo) -> Self {
+        Self {
+            file: function.location.file.clone(),
+            name: function.name.clone(),
+            class_name: function.class_name.clone(),
+            start_line: function.location.start_line,
+            end_line: function.location.end_line,
         }
     }
 }

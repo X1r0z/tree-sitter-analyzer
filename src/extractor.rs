@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 use crate::models::*;
 use crate::parser::call_targets::{
@@ -15,11 +16,28 @@ struct ParseCache {
     functions: Option<Vec<FunctionInfo>>,
     functions_with_bodies: Option<Vec<FunctionInfo>>,
     classes: Option<Vec<ClassInfo>>,
+    snapshot_fields: Option<Vec<FieldInfo>>,
     calls: Option<Vec<CallInfo>>,
     calls_by_callee: Option<HashMap<String, Vec<usize>>>,
     calls_by_caller: Option<HashMap<String, Vec<usize>>>,
     imports: Option<Vec<ImportInfo>>,
     fields_by_class: HashMap<String, Vec<FieldInfo>>,
+}
+
+#[derive(Default, Clone, Copy)]
+pub(crate) struct SnapshotBuildTimings {
+    pub(crate) functions: Duration,
+    pub(crate) classes_fields: Duration,
+    pub(crate) calls: Duration,
+    pub(crate) call_capture_query: Duration,
+    pub(crate) call_enclosing: Duration,
+    pub(crate) call_resolve: Duration,
+    pub(crate) call_include_filter: Duration,
+    pub(crate) call_resolve_targets: Duration,
+    pub(crate) imports: Duration,
+    pub(crate) annotations: Duration,
+    pub(crate) refs: Duration,
+    pub(crate) python_properties: Duration,
 }
 
 pub struct CodeExtractor {
@@ -45,6 +63,7 @@ impl CodeExtractor {
                 functions: None,
                 functions_with_bodies: None,
                 classes: None,
+                snapshot_fields: None,
                 calls: None,
                 calls_by_callee: None,
                 calls_by_caller: None,
@@ -352,9 +371,7 @@ impl CodeExtractor {
     }
 
     pub fn collect_classes(&mut self) -> Vec<ClassInfo> {
-        if self.cache.classes.is_none() {
-            self.cache.classes = Some(self.parser.collect_classes());
-        }
+        self.ensure_class_snapshot();
         self.cache.classes.as_deref().unwrap_or(&[]).to_vec()
     }
 
@@ -390,50 +407,95 @@ impl CodeExtractor {
     }
 
     pub fn build_snapshot(&mut self) -> FileSnapshot {
+        self.build_snapshot_with_timings().0
+    }
+
+    pub(crate) fn build_snapshot_with_timings(&mut self) -> (FileSnapshot, SnapshotBuildTimings) {
+        let mut timings = SnapshotBuildTimings::default();
+
+        let started = Instant::now();
         let functions = self.collect_functions();
-        let classes = self.collect_classes();
+        timings.functions = started.elapsed();
 
-        let mut fields = Vec::new();
-        for class in &classes {
-            fields.extend(self.collect_fields(&class.name));
-        }
+        let started = Instant::now();
+        self.ensure_class_snapshot();
+        let classes = self.cache.classes.as_deref().unwrap_or(&[]).to_vec();
+        let fields = self
+            .cache
+            .snapshot_fields
+            .as_deref()
+            .unwrap_or(&[])
+            .to_vec();
+        timings.classes_fields = started.elapsed();
 
-        let calls = self.collect_calls();
+        let started = Instant::now();
+        let (calls, call_timings) = if self.cache.calls.is_some() {
+            (
+                self.cache.calls.as_deref().unwrap_or(&[]).to_vec(),
+                crate::parser::CallCollectionTimings::default(),
+            )
+        } else {
+            self.parser.collect_calls_with_timings()
+        };
+        self.cache.calls = Some(calls.clone());
+        timings.calls = started.elapsed();
+        timings.call_capture_query = call_timings.capture_query;
+        timings.call_enclosing = call_timings.enclosing;
+        timings.call_resolve = call_timings.resolve_call;
+        timings.call_include_filter = call_timings.include_filter;
+        timings.call_resolve_targets = call_timings.resolve_targets;
+
+        let started = Instant::now();
         let imports = self.collect_imports();
-        let annotations = self.collect_annotations();
-        let refs = self.parser.collect_refs();
-        let python_properties = self.parser.collect_python_properties();
-        let python_property_callers = self.parser.collect_python_property_callers(None);
+        timings.imports = started.elapsed();
 
-        FileSnapshot {
-            functions,
-            classes,
-            fields,
-            calls,
-            imports,
-            annotations,
-            refs,
-            python_properties,
-            python_property_callers,
-        }
+        let started = Instant::now();
+        let annotations = self.collect_annotations();
+        timings.annotations = started.elapsed();
+
+        let started = Instant::now();
+        let refs = self.parser.collect_refs();
+        timings.refs = started.elapsed();
+
+        let started = Instant::now();
+        let (python_properties, python_property_callers) = self.collect_python_index_artifacts();
+        timings.python_properties = started.elapsed();
+
+        (
+            FileSnapshot {
+                functions,
+                classes,
+                fields,
+                calls,
+                imports,
+                annotations,
+                refs,
+                python_properties,
+                python_property_callers,
+            },
+            timings,
+        )
     }
 
     pub fn build_graph_snapshot(&mut self) -> GraphFileSnapshot {
         let functions = self.collect_functions();
-        let classes = self.collect_classes();
-
-        let mut fields = Vec::new();
-        for class in &classes {
-            fields.extend(self.collect_fields(&class.name));
-        }
+        self.ensure_class_snapshot();
+        let classes = self.cache.classes.as_deref().unwrap_or(&[]).to_vec();
+        let fields = self
+            .cache
+            .snapshot_fields
+            .as_deref()
+            .unwrap_or(&[])
+            .to_vec();
+        let (python_properties, python_property_callers) = self.collect_python_index_artifacts();
 
         GraphFileSnapshot {
             functions,
             classes,
             fields,
             calls: self.collect_calls(),
-            python_properties: self.parser.collect_python_properties(),
-            python_property_callers: self.parser.collect_python_property_callers(None),
+            python_properties,
+            python_property_callers,
         }
     }
 
@@ -625,7 +687,32 @@ impl CodeExtractor {
     }
 
     pub fn collect_annotations(&self) -> Vec<AnnotationInfo> {
+        if !matches!(self.parser.language(), "python" | "java") {
+            return Vec::new();
+        }
         self.parser.collect_annotations()
+    }
+
+    fn ensure_class_snapshot(&mut self) {
+        if self.cache.classes.is_some() && self.cache.snapshot_fields.is_some() {
+            return;
+        }
+        let snapshot = self.parser.collect_class_snapshot();
+        self.cache.classes = Some(snapshot.classes);
+        self.cache.snapshot_fields = Some(snapshot.fields);
+        self.cache.fields_by_class = snapshot.field_infos_by_class;
+    }
+
+    fn collect_python_index_artifacts(
+        &self,
+    ) -> (Vec<PythonPropertyInfo>, Vec<PythonPropertyCallerInfo>) {
+        if self.parser.language() != "python" {
+            return (Vec::new(), Vec::new());
+        }
+        (
+            self.parser.collect_python_properties(),
+            self.parser.collect_python_property_callers(None),
+        )
     }
 
     pub fn find_refs(&mut self, name: &str) -> Vec<RefInfo> {

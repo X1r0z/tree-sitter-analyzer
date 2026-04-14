@@ -10,20 +10,21 @@
 This tool primarily assists LLM Agents in code auditing. SAST analysis intentionally allows over-approximations (false positives) to avoid missing real issues—prefer recall over precision.
 
 ## Architecture
-Rust CLI tool using **clap** (derive) for arg parsing. Parses source code via **tree-sitter** grammars (Python, JS, TS, TSX, Java, Go) and provides structural analysis (functions, classes, imports, call graphs, inheritance, symbol references).
+Rust CLI tool using **clap** (derive) for arg parsing. Parses source code via **tree-sitter** grammars (Python, JS, TS, TSX, Java, Go) and provides structural analysis (functions, classes, imports, call graphs, inheritance, symbol references). Supports both live source analysis and SQLite-backed indexed queries.
 Entry point: `src/main.rs`.
-- `src/models.rs` – Core data types (`FunctionInfo`, `ClassInfo`, `Location`, etc.), all `Serialize`/`Deserialize`.
-- `src/commands.rs` – Subcommand dispatch; uses `CommandContext` with `AnalyzerBackend` (source or indexed DB).
-- `src/analyzers.rs` – `SourceAnalyzer` (live parse) and `StoreAnalyzer` (SQLite `tsa.db` index).
-- `src/db/` – SQLite persistence via `rusqlite`; indexing, sync, and query.
-- `src/parser/`, `src/query/` – Tree-sitter parsing and S-expression queries per language.
-- `src/extractor.rs` – Extracts AST info from parsed trees.
-- `src/graph.rs` – Multi-level call graph tracing.
-- `src/languages.rs` – Language detection by extension.
-- `src/search.rs` – Symbol reference search.
-- `src/output.rs` – JSON output formatting.
-- `src/traversal.rs` – File tree walking via `ignore` crate.
-- `src/utils.rs` – Shared helpers: file discovery, progress bars, path relativization, result sorting.
+- `src/models.rs` – Core data types (`FunctionInfo`, `ClassInfo`, `Location`, `IndexInfo`, etc.), all shared across extraction, analysis, traversal, and JSON output.
+- `src/commands.rs` – Subcommand dispatch and command execution flow; chooses between source analysis and indexed analysis automatically.
+- `src/analyzers.rs` – Main analysis backends: live parsing from source files and query execution from SQLite index data.
+- `src/extractor.rs` – Extracts AST information from parsed trees.
+- `src/graph.rs` – Multi-level call graph tracing and graph result assembly.
+- `src/languages.rs` – Language detection by extension and supported-language metadata.
+- `src/search.rs` – Candidate file filtering and symbol/text search helpers.
+- `src/output.rs` – JSON output formatting for stdout.
+- `src/traversal.rs` – Shared traversal utilities for graph and hierarchy analysis.
+- `src/utils.rs` – Shared helpers: file discovery, progress bars, path relativization, and result sorting.
+- `src/parser/` – Tree-sitter parsing support and language-specific parsing helpers.
+- `src/query/` – Indexed query layer for lookups, call edges, call graphs, and class hierarchy queries.
+- `src/db/` – SQLite persistence, index snapshots, synchronization, and store/query support.
 
 ## Code Style
 - Rust 2021 edition. Use `anyhow::Result` for fallible functions.
@@ -31,3 +32,4 @@ Entry point: `src/main.rs`.
 - Structs derive `Debug, Clone, Serialize, Deserialize`; use `#[serde(...)]` attributes for JSON field control.
 - Parallelism via `rayon`; file walking via `ignore` crate (respects `.gitignore`).
 - All output is JSON to stdout; errors/progress to stderr. No `println!` for data—use `serde_json`.
+- Do not write unnecessary wrapper functions. If a function is only called from one place, prefer inlining it unless the extraction materially improves readability or reuse.

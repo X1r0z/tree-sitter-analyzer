@@ -4,7 +4,6 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::time::{Duration, Instant};
 
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Node, Parser, Tree};
@@ -227,21 +226,6 @@ impl EnclosingIntervalLookup {
             class_name,
         }
     }
-}
-
-#[derive(Default, Clone, Copy)]
-pub(crate) struct CallCollectionTimings {
-    pub(crate) capture_query: Duration,
-    pub(crate) enclosing: Duration,
-    pub(crate) resolve_call: Duration,
-    pub(crate) resolve_call_python: Duration,
-    pub(crate) resolve_call_javascript: Duration,
-    pub(crate) resolve_call_typescript: Duration,
-    pub(crate) resolve_call_tsx: Duration,
-    pub(crate) resolve_call_java: Duration,
-    pub(crate) resolve_call_go: Duration,
-    pub(crate) include_filter: Duration,
-    pub(crate) resolve_targets: Duration,
 }
 
 impl ParseContext {
@@ -537,16 +521,11 @@ impl ParseContext {
     }
 
     pub(crate) fn collect_calls(&self) -> Vec<CallInfo> {
-        self.collect_calls_with_timings().0
-    }
-
-    pub(crate) fn collect_calls_with_timings(&self) -> (Vec<CallInfo>, CallCollectionTimings) {
-        let mut timings = CallCollectionTimings::default();
         let Some(query) = compiled_query(self.language(), QueryKind::Call) else {
-            return (Vec::new(), timings);
+            return Vec::new();
         };
         let Some(capture_indices) = capture::CallCaptureIndices::for_query(query) else {
-            return (Vec::new(), timings);
+            return Vec::new();
         };
 
         let is_js_family = matches!(self.language(), "javascript" | "typescript" | "tsx");
@@ -569,12 +548,10 @@ impl ParseContext {
         let mut calls = Vec::new();
         let mut last_call_start = None;
         loop {
-            let started = Instant::now();
             capture_matches.advance();
             let matched = capture_matches.get().and_then(|capture_match| {
                 capture::decode_call_capture_match(capture_match, capture_indices)
             });
-            timings.capture_query += started.elapsed();
 
             let Some(matched) = matched else {
                 break;
@@ -585,7 +562,6 @@ impl ParseContext {
                 "call query matches should be emitted in start-byte order"
             );
             last_call_start = Some(call_node.start_byte());
-            let started = Instant::now();
             let enclosing = if is_js_family {
                 self.find_enclosing_context(call_node)
             } else {
@@ -599,21 +575,8 @@ impl ParseContext {
                     function_node: None,
                 }
             };
-            timings.enclosing += started.elapsed();
 
-            let started = Instant::now();
             let resolved = self.engine().resolve_call(self, &matched, &enclosing);
-            let resolve_elapsed = started.elapsed();
-            timings.resolve_call += resolve_elapsed;
-            match self.language() {
-                "python" => timings.resolve_call_python += resolve_elapsed,
-                "javascript" => timings.resolve_call_javascript += resolve_elapsed,
-                "typescript" => timings.resolve_call_typescript += resolve_elapsed,
-                "tsx" => timings.resolve_call_tsx += resolve_elapsed,
-                "java" => timings.resolve_call_java += resolve_elapsed,
-                "go" => timings.resolve_call_go += resolve_elapsed,
-                _ => {}
-            }
             let callee = resolved.callee;
             let is_method = resolved.is_method;
             let obj_name = resolved.object_name;
@@ -622,15 +585,12 @@ impl ParseContext {
             if callee.is_empty() {
                 continue;
             }
-            let started = Instant::now();
             if !self
                 .engine()
                 .include_call(self, call_node, &callee, obj_name.as_deref())
             {
-                timings.include_filter += started.elapsed();
                 continue;
             }
-            timings.include_filter += started.elapsed();
 
             let call_location = self.node_location(call_node);
             let mut used_resolved_calls = false;
@@ -641,13 +601,11 @@ impl ParseContext {
                     .unwrap_or(false)
                 && enclosing.function_node.is_some()
             {
-                let started = Instant::now();
                 let resolved = self.resolve_call_targets_with_function_node(
                     enclosing.function_node.unwrap(),
                     call_node,
                     &callee,
                 );
-                timings.resolve_targets += started.elapsed();
                 if !resolved.is_empty() {
                     for resolved_callee in resolved {
                         calls.push(CallInfo {
@@ -673,7 +631,7 @@ impl ParseContext {
             }
         }
 
-        (calls, timings)
+        calls
     }
 
     pub(crate) fn collect_imports(&self) -> Vec<ImportInfo> {

@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::time::{Duration, Instant};
 
 use crate::models::*;
 use crate::parser::call_targets::{
@@ -22,28 +21,6 @@ struct ParseCache {
     calls_by_caller: Option<HashMap<String, Vec<usize>>>,
     imports: Option<Vec<ImportInfo>>,
     fields_by_class: HashMap<String, Vec<FieldInfo>>,
-}
-
-#[derive(Default, Clone, Copy)]
-pub(crate) struct SnapshotBuildTimings {
-    pub(crate) functions: Duration,
-    pub(crate) classes_fields: Duration,
-    pub(crate) calls: Duration,
-    pub(crate) call_capture_query: Duration,
-    pub(crate) call_enclosing: Duration,
-    pub(crate) call_resolve: Duration,
-    pub(crate) call_resolve_python: Duration,
-    pub(crate) call_resolve_javascript: Duration,
-    pub(crate) call_resolve_typescript: Duration,
-    pub(crate) call_resolve_tsx: Duration,
-    pub(crate) call_resolve_java: Duration,
-    pub(crate) call_resolve_go: Duration,
-    pub(crate) call_include_filter: Duration,
-    pub(crate) call_resolve_targets: Duration,
-    pub(crate) imports: Duration,
-    pub(crate) annotations: Duration,
-    pub(crate) refs: Duration,
-    pub(crate) python_properties: Duration,
 }
 
 pub struct CodeExtractor {
@@ -413,17 +390,7 @@ impl CodeExtractor {
     }
 
     pub fn build_snapshot(&mut self) -> FileSnapshot {
-        self.build_snapshot_with_timings().0
-    }
-
-    pub(crate) fn build_snapshot_with_timings(&mut self) -> (FileSnapshot, SnapshotBuildTimings) {
-        let mut timings = SnapshotBuildTimings::default();
-
-        let started = Instant::now();
         let functions = self.collect_functions();
-        timings.functions = started.elapsed();
-
-        let started = Instant::now();
         self.ensure_class_snapshot();
         let classes = self.cache.classes.as_deref().unwrap_or(&[]).to_vec();
         let fields = self
@@ -432,61 +399,23 @@ impl CodeExtractor {
             .as_deref()
             .unwrap_or(&[])
             .to_vec();
-        timings.classes_fields = started.elapsed();
-
-        let started = Instant::now();
-        let (calls, call_timings) = if self.cache.calls.is_some() {
-            (
-                self.cache.calls.as_deref().unwrap_or(&[]).to_vec(),
-                crate::parser::CallCollectionTimings::default(),
-            )
-        } else {
-            self.parser.collect_calls_with_timings()
-        };
-        self.cache.calls = Some(calls.clone());
-        timings.calls = started.elapsed();
-        timings.call_capture_query = call_timings.capture_query;
-        timings.call_enclosing = call_timings.enclosing;
-        timings.call_resolve = call_timings.resolve_call;
-        timings.call_resolve_python = call_timings.resolve_call_python;
-        timings.call_resolve_javascript = call_timings.resolve_call_javascript;
-        timings.call_resolve_typescript = call_timings.resolve_call_typescript;
-        timings.call_resolve_tsx = call_timings.resolve_call_tsx;
-        timings.call_resolve_java = call_timings.resolve_call_java;
-        timings.call_resolve_go = call_timings.resolve_call_go;
-        timings.call_include_filter = call_timings.include_filter;
-        timings.call_resolve_targets = call_timings.resolve_targets;
-
-        let started = Instant::now();
+        let calls = self.collect_calls();
         let imports = self.collect_imports();
-        timings.imports = started.elapsed();
-
-        let started = Instant::now();
         let annotations = self.collect_annotations();
-        timings.annotations = started.elapsed();
-
-        let started = Instant::now();
         let refs = self.parser.collect_refs();
-        timings.refs = started.elapsed();
-
-        let started = Instant::now();
         let (python_properties, python_property_callers) = self.collect_python_index_artifacts();
-        timings.python_properties = started.elapsed();
 
-        (
-            FileSnapshot {
-                functions,
-                classes,
-                fields,
-                calls,
-                imports,
-                annotations,
-                refs,
-                python_properties,
-                python_property_callers,
-            },
-            timings,
-        )
+        FileSnapshot {
+            functions,
+            classes,
+            fields,
+            calls,
+            imports,
+            annotations,
+            refs,
+            python_properties,
+            python_property_callers,
+        }
     }
 
     pub fn build_graph_snapshot(&mut self) -> GraphFileSnapshot {

@@ -1,6 +1,4 @@
 use std::path::Path;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
 use rayon::prelude::*;
 use serde_json::{json, Value};
@@ -15,121 +13,6 @@ use crate::languages::detect_language;
 use crate::models::{GraphDirection, IndexInfo};
 use crate::output::{self, FunctionView};
 use crate::utils::{print_warning, progress_bar};
-
-#[derive(Default)]
-struct IndexProfileTotals {
-    file_parse_total: Duration,
-    db_sync_total: Duration,
-    functions: Duration,
-    classes_fields: Duration,
-    calls: Duration,
-    call_capture_query: Duration,
-    call_enclosing: Duration,
-    call_resolve: Duration,
-    call_resolve_python: Duration,
-    call_resolve_javascript: Duration,
-    call_resolve_typescript: Duration,
-    call_resolve_tsx: Duration,
-    call_resolve_java: Duration,
-    call_resolve_go: Duration,
-    call_include_filter: Duration,
-    call_resolve_targets: Duration,
-    imports: Duration,
-    annotations: Duration,
-    refs: Duration,
-    python_properties: Duration,
-    reparsed_files: usize,
-}
-
-#[derive(Clone)]
-struct IndexProfiler {
-    enabled: bool,
-    totals: Arc<Mutex<IndexProfileTotals>>,
-}
-
-impl IndexProfiler {
-    fn from_env() -> Self {
-        let enabled = std::env::var_os("TSA_INDEX_PROFILE").is_some();
-        Self {
-            enabled,
-            totals: Arc::new(Mutex::new(IndexProfileTotals::default())),
-        }
-    }
-
-    fn enabled(&self) -> bool {
-        self.enabled
-    }
-
-    fn record_snapshot(
-        &self,
-        parse_total: Duration,
-        timings: crate::extractor::SnapshotBuildTimings,
-    ) {
-        if !self.enabled {
-            return;
-        }
-        let mut totals = self.totals.lock().expect("index profiler mutex");
-        totals.file_parse_total += parse_total;
-        totals.functions += timings.functions;
-        totals.classes_fields += timings.classes_fields;
-        totals.calls += timings.calls;
-        totals.call_capture_query += timings.call_capture_query;
-        totals.call_enclosing += timings.call_enclosing;
-        totals.call_resolve += timings.call_resolve;
-        totals.call_resolve_python += timings.call_resolve_python;
-        totals.call_resolve_javascript += timings.call_resolve_javascript;
-        totals.call_resolve_typescript += timings.call_resolve_typescript;
-        totals.call_resolve_tsx += timings.call_resolve_tsx;
-        totals.call_resolve_java += timings.call_resolve_java;
-        totals.call_resolve_go += timings.call_resolve_go;
-        totals.call_include_filter += timings.call_include_filter;
-        totals.call_resolve_targets += timings.call_resolve_targets;
-        totals.imports += timings.imports;
-        totals.annotations += timings.annotations;
-        totals.refs += timings.refs;
-        totals.python_properties += timings.python_properties;
-        totals.reparsed_files += 1;
-    }
-
-    fn record_db_sync(&self, sync_total: Duration) {
-        if !self.enabled {
-            return;
-        }
-        let mut totals = self.totals.lock().expect("index profiler mutex");
-        totals.db_sync_total += sync_total;
-    }
-
-    fn print_summary(&self) {
-        if !self.enabled {
-            return;
-        }
-        let totals = self.totals.lock().expect("index profiler mutex");
-        eprintln!(
-            "index profile: reparsed_files={} parse_total={:.3}s db_sync_total={:.3}s functions={:.3}s classes_fields={:.3}s calls={:.3}s call_capture_query={:.3}s call_enclosing={:.3}s call_resolve={:.3}s call_resolve_python={:.3}s call_resolve_javascript={:.3}s call_resolve_typescript={:.3}s call_resolve_tsx={:.3}s call_resolve_java={:.3}s call_resolve_go={:.3}s call_include_filter={:.3}s call_resolve_targets={:.3}s imports={:.3}s annotations={:.3}s refs={:.3}s python_properties={:.3}s",
-            totals.reparsed_files,
-            totals.file_parse_total.as_secs_f64(),
-            totals.db_sync_total.as_secs_f64(),
-            totals.functions.as_secs_f64(),
-            totals.classes_fields.as_secs_f64(),
-            totals.calls.as_secs_f64(),
-            totals.call_capture_query.as_secs_f64(),
-            totals.call_enclosing.as_secs_f64(),
-            totals.call_resolve.as_secs_f64(),
-            totals.call_resolve_python.as_secs_f64(),
-            totals.call_resolve_javascript.as_secs_f64(),
-            totals.call_resolve_typescript.as_secs_f64(),
-            totals.call_resolve_tsx.as_secs_f64(),
-            totals.call_resolve_java.as_secs_f64(),
-            totals.call_resolve_go.as_secs_f64(),
-            totals.call_include_filter.as_secs_f64(),
-            totals.call_resolve_targets.as_secs_f64(),
-            totals.imports.as_secs_f64(),
-            totals.annotations.as_secs_f64(),
-            totals.refs.as_secs_f64(),
-            totals.python_properties.as_secs_f64(),
-        );
-    }
-}
 
 enum AnalyzerBackend {
     Store(StoreAnalyzer),
@@ -171,7 +54,6 @@ impl CommandContext {
 
 pub(crate) fn index(path: &str, language: Option<&str>) -> Value {
     let real_path = resolve_path(path);
-    let profiler = IndexProfiler::from_env();
     let source_backend = match SourceAnalyzer::new_with_language(&real_path, language) {
         Ok(source_backend) => source_backend,
         Err(error) => return error_response(error),
@@ -203,7 +85,7 @@ pub(crate) fn index(path: &str, language: Option<&str>) -> Value {
         .files()
         .par_iter()
         .map(|file| {
-            let result = build_file_index(file, existing.get(file), &profiler);
+            let result = build_file_index(file, existing.get(file));
             progress.inc(1);
             result.map_err(|error| format!("{}: {}", file, error))
         })
@@ -231,16 +113,13 @@ pub(crate) fn index(path: &str, language: Option<&str>) -> Value {
     };
 
     let db_progress = progress_bar(0, "steps", "green/blue", "Persisting index data");
-    let sync_started = Instant::now();
     let update_result =
         IndexSynchronizer::sync(&db_path, &real_path, language, &plan, &db_progress);
-    profiler.record_db_sync(sync_started.elapsed());
     db_progress.finish_and_clear();
 
     if let Err(error) = update_result {
         return error_response(error);
     }
-    profiler.print_summary();
 
     let index = IndexInfo {
         database: db_path.to_string_lossy().to_string(),
@@ -642,7 +521,6 @@ fn error_response(error: impl std::fmt::Display) -> Value {
 fn build_file_index(
     file: &str,
     existing: Option<&IndexedFileRecord>,
-    profiler: &IndexProfiler,
 ) -> anyhow::Result<(IndexedFileRecord, Option<FileIndexData>)> {
     use std::fs;
 
@@ -660,17 +538,8 @@ fn build_file_index(
     let source = fs::read(file)?;
     let file_record = file_record_with_hash_from_source(file, &language, &source)?;
 
-    let parse_started = Instant::now();
     let mut extractor = CodeExtractor::from_source(file, source)?;
-    let (snapshot, timings) = if profiler.enabled() {
-        extractor.build_snapshot_with_timings()
-    } else {
-        (
-            extractor.build_snapshot(),
-            crate::extractor::SnapshotBuildTimings::default(),
-        )
-    };
-    profiler.record_snapshot(parse_started.elapsed(), timings);
+    let snapshot = extractor.build_snapshot();
     Ok((
         file_record.clone(),
         Some(FileIndexData {

@@ -117,15 +117,23 @@ impl LanguageEngine for GoEngine {
         let mut object_name: Option<String> = None;
         let mut callee_function_node: Option<Node<'_>> = None;
 
-        if let Some(func_node) = call_node.child_by_field_name("function") {
+        let function_node = call_node.child_by_field_name("function");
+        if let Some(func_node) = function_node {
             callee_function_node = Some(func_node);
-            if func_node.kind() == "identifier" {
-                callee = ctx.node_text(func_node);
-            } else if func_node.kind() == "selector_expression" {
-                is_method = true;
-                let (callee_name, resolved_object_name) = split_attribute_parts(ctx, func_node);
-                callee = callee_name;
-                object_name = resolved_object_name;
+            match func_node.kind() {
+                "identifier" => {
+                    callee = ctx.node_text(func_node);
+                }
+                "selector_expression" => {
+                    is_method = true;
+                    let field_node = func_node.child_by_field_name("field");
+                    let operand_node = func_node.child_by_field_name("operand");
+                    if let Some(node) = field_node {
+                        callee = ctx.node_text(node);
+                    }
+                    object_name = operand_node.map(|node| ctx.node_text(node));
+                }
+                _ => {}
             }
         }
         if callee.is_empty() {
@@ -271,23 +279,6 @@ pub(crate) fn base_type_name(parser: &ParseContext, type_node: Node<'_>) -> Opti
         }
         _ => None,
     }
-}
-
-pub(crate) fn split_attribute_parts(
-    parser: &ParseContext,
-    node: Node<'_>,
-) -> (String, Option<String>) {
-    let mut callee = String::new();
-    let mut obj_name: Option<String> = None;
-
-    if let Some(field_node) = node.child_by_field_name("field") {
-        callee = parser.node_text(field_node);
-    }
-    if let Some(operand_node) = node.child_by_field_name("operand") {
-        obj_name = Some(parser.node_text(operand_node));
-    }
-
-    (callee, obj_name)
 }
 
 fn embedded_type_from_field_declaration(

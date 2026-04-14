@@ -32,6 +32,12 @@ pub(crate) struct SnapshotBuildTimings {
     pub(crate) call_capture_query: Duration,
     pub(crate) call_enclosing: Duration,
     pub(crate) call_resolve: Duration,
+    pub(crate) call_resolve_python: Duration,
+    pub(crate) call_resolve_javascript: Duration,
+    pub(crate) call_resolve_typescript: Duration,
+    pub(crate) call_resolve_tsx: Duration,
+    pub(crate) call_resolve_java: Duration,
+    pub(crate) call_resolve_go: Duration,
     pub(crate) call_include_filter: Duration,
     pub(crate) call_resolve_targets: Duration,
     pub(crate) imports: Duration,
@@ -442,6 +448,12 @@ impl CodeExtractor {
         timings.call_capture_query = call_timings.capture_query;
         timings.call_enclosing = call_timings.enclosing;
         timings.call_resolve = call_timings.resolve_call;
+        timings.call_resolve_python = call_timings.resolve_call_python;
+        timings.call_resolve_javascript = call_timings.resolve_call_javascript;
+        timings.call_resolve_typescript = call_timings.resolve_call_typescript;
+        timings.call_resolve_tsx = call_timings.resolve_call_tsx;
+        timings.call_resolve_java = call_timings.resolve_call_java;
+        timings.call_resolve_go = call_timings.resolve_call_go;
         timings.call_include_filter = call_timings.include_filter;
         timings.call_resolve_targets = call_timings.resolve_targets;
 

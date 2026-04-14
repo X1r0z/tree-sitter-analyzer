@@ -26,6 +26,12 @@ struct IndexProfileTotals {
     call_capture_query: Duration,
     call_enclosing: Duration,
     call_resolve: Duration,
+    call_resolve_python: Duration,
+    call_resolve_javascript: Duration,
+    call_resolve_typescript: Duration,
+    call_resolve_tsx: Duration,
+    call_resolve_java: Duration,
+    call_resolve_go: Duration,
     call_include_filter: Duration,
     call_resolve_targets: Duration,
     imports: Duration,
@@ -70,6 +76,12 @@ impl IndexProfiler {
         totals.call_capture_query += timings.call_capture_query;
         totals.call_enclosing += timings.call_enclosing;
         totals.call_resolve += timings.call_resolve;
+        totals.call_resolve_python += timings.call_resolve_python;
+        totals.call_resolve_javascript += timings.call_resolve_javascript;
+        totals.call_resolve_typescript += timings.call_resolve_typescript;
+        totals.call_resolve_tsx += timings.call_resolve_tsx;
+        totals.call_resolve_java += timings.call_resolve_java;
+        totals.call_resolve_go += timings.call_resolve_go;
         totals.call_include_filter += timings.call_include_filter;
         totals.call_resolve_targets += timings.call_resolve_targets;
         totals.imports += timings.imports;
@@ -93,7 +105,7 @@ impl IndexProfiler {
         }
         let totals = self.totals.lock().expect("index profiler mutex");
         eprintln!(
-            "index profile: reparsed_files={} parse_total={:.3}s db_sync_total={:.3}s functions={:.3}s classes_fields={:.3}s calls={:.3}s call_capture_query={:.3}s call_enclosing={:.3}s call_resolve={:.3}s call_include_filter={:.3}s call_resolve_targets={:.3}s imports={:.3}s annotations={:.3}s refs={:.3}s python_properties={:.3}s",
+            "index profile: reparsed_files={} parse_total={:.3}s db_sync_total={:.3}s functions={:.3}s classes_fields={:.3}s calls={:.3}s call_capture_query={:.3}s call_enclosing={:.3}s call_resolve={:.3}s call_resolve_python={:.3}s call_resolve_javascript={:.3}s call_resolve_typescript={:.3}s call_resolve_tsx={:.3}s call_resolve_java={:.3}s call_resolve_go={:.3}s call_include_filter={:.3}s call_resolve_targets={:.3}s imports={:.3}s annotations={:.3}s refs={:.3}s python_properties={:.3}s",
             totals.reparsed_files,
             totals.file_parse_total.as_secs_f64(),
             totals.db_sync_total.as_secs_f64(),
@@ -103,6 +115,12 @@ impl IndexProfiler {
             totals.call_capture_query.as_secs_f64(),
             totals.call_enclosing.as_secs_f64(),
             totals.call_resolve.as_secs_f64(),
+            totals.call_resolve_python.as_secs_f64(),
+            totals.call_resolve_javascript.as_secs_f64(),
+            totals.call_resolve_typescript.as_secs_f64(),
+            totals.call_resolve_tsx.as_secs_f64(),
+            totals.call_resolve_java.as_secs_f64(),
+            totals.call_resolve_go.as_secs_f64(),
             totals.call_include_filter.as_secs_f64(),
             totals.call_resolve_targets.as_secs_f64(),
             totals.imports.as_secs_f64(),

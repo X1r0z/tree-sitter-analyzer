@@ -82,45 +82,52 @@ impl LanguageEngine for JavaEngine {
     ) -> ResolvedCall<'a> {
         let _ = enclosing;
         let call_node = matched.call;
-        let (callee, is_method, object_name) =
-            if call_node.kind() == "explicit_constructor_invocation" {
-                if let Some(constructor_node) = call_node.child_by_field_name("constructor") {
-                    (ctx.node_text(constructor_node), false, None)
-                } else {
-                    (String::new(), false, None)
-                }
-            } else if call_node.kind() == "object_creation_expression" {
-                if let Some(type_node) = call_node.child_by_field_name("type") {
-                    if type_node.kind() == "generic_type" {
-                        let mut callee = String::new();
+        let (callee, is_method, object_name) = match call_node.kind() {
+            "explicit_constructor_invocation" => (
+                call_node
+                    .child_by_field_name("constructor")
+                    .map(|node| ctx.node_text(node))
+                    .unwrap_or_default(),
+                false,
+                None,
+            ),
+            "object_creation_expression" => {
+                let callee = call_node
+                    .child_by_field_name("type")
+                    .map(|type_node| {
+                        if type_node.kind() != "generic_type" {
+                            return ctx.node_text(type_node);
+                        }
+
                         for i in 0..type_node.named_child_count() {
                             let child = type_node.named_child(i as u32).unwrap();
                             if child.kind() == "type_identifier" {
-                                callee = ctx.node_text(child);
-                                break;
+                                return ctx.node_text(child);
                             }
                         }
-                        (callee, false, None)
-                    } else {
-                        (ctx.node_text(type_node), false, None)
-                    }
-                } else {
-                    (String::new(), false, None)
-                }
-            } else {
+
+                        String::new()
+                    })
+                    .unwrap_or_default();
+                (callee, false, None)
+            }
+            _ => {
                 let callee = call_node
                     .child_by_field_name("name")
                     .map(|node| ctx.node_text(node))
                     .unwrap_or_default();
-                let object_name = call_node.child_by_field_name("object").map(|node| {
-                    if ctx.node_text_eq(node, "super") {
+                let object_node = call_node.child_by_field_name("object");
+                let object_name = object_node.map(|node| {
+                    let text = ctx.node_text(node);
+                    if text == "super" {
                         "super()".to_string()
                     } else {
-                        ctx.node_text(node)
+                        text
                     }
                 });
                 (callee, object_name.is_some(), object_name)
-            };
+            }
+        };
         ResolvedCall {
             callee,
             is_method,

@@ -5,7 +5,7 @@ description: >
   Use for "who calls X?", "what does X call?", "where is X defined?", "list functions/classes", "class fields/methods",
   "subclasses/superclasses", "find symbol references", "trace call graph", "trace call chain", and any structural code understanding across files or directories.
   Supports multi-level call graph tracing with `tsa graph` for deep forward/backward call chain analysis.
-  Supports optional project indexing with `tsa index` for repeated queries on the same repository.
+  Uses a SQLite project index for all queries and can prebuild it with `tsa index`.
   Prefer over Grep for code understanding — Grep is for exact literal text matches only.
   Supports Python, JavaScript/TypeScript, Java, Go.
 allowed-tools: Bash(tsa:*)
@@ -32,7 +32,7 @@ Use this skill whenever you need answers about code structure or relationships:
 - **Symbol tracking** — "Find all references to this identifier across the project"
 - **Inventory** — "List all functions/classes/imports/annotations in this directory"
 - **Impact analysis** — "If I change this function, what else is affected?" — use `graph --backward` to find all upstream callers at arbitrary depth, or `graph --forward` to see everything downstream
-- **Repeated project queries** — When you'll ask several structural questions about the same repo, build an index first with `tsa index`
+- **Repeated project queries** — When you'll ask several structural questions about the same repo, prebuild the index first with `tsa index` to avoid first-query indexing latency
 
 ### Code Auditing & Security Review
 
@@ -90,14 +90,14 @@ cargo install --git https://github.com/X1r0z/tree-sitter-analyzer
 tsa <command> <path> [options]
 ```
 
-If you expect multiple queries against the same project, build the cache first:
+If you expect multiple queries against the same project, building the cache first still helps reduce first-query latency:
 
 ```bash
 tsa index .
 tsa index . -l java
 ```
 
-`tsa index` writes `tsa.db` to the current working directory. When a compatible cache is present, all the commands will use it automatically.
+`tsa index` writes `tsa.db` to the current working directory. Query commands always use the SQLite index; if `tsa.db` is missing or incompatible with the requested root/language, `tsa` will rebuild it automatically before answering.
 
 **After indexing, always query from the project root directory** (e.g., `tsa callers . -f foo` instead of `tsa callers ./src/subdir -f foo`). Indexed lookups are fast enough that there is no need to narrow the query path — using the root ensures you never miss results from other parts of the project.
 

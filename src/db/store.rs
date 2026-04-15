@@ -20,19 +20,6 @@ impl IndexStore {
         Ok(Self { conn })
     }
 
-    pub(crate) fn open_if_compatible(
-        path: &Path,
-        root_path: &str,
-        language: Option<&str>,
-    ) -> anyhow::Result<Option<Self>> {
-        let store = Self::open(path)?;
-        if store.is_compatible_with(root_path, language)? {
-            Ok(Some(store))
-        } else {
-            Ok(None)
-        }
-    }
-
     pub(crate) fn into_connection(self) -> Connection {
         self.conn
     }

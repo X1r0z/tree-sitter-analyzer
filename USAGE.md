@@ -60,14 +60,14 @@ tsa index /path/to/project -l python
 
 Notes:
 
-- The cache file is always written to the current working directory as `tsa.db`
+- Query commands always run against the SQLite index
 - Indexing shows a progress bar with processed files and total files
-- If a compatible `tsa.db` is present, all commands will use the cache automatically
-- If no compatible cache is found, queries fall back to direct AST analysis
+- The cache file is always written to the current working directory as `tsa.db`
+- If `tsa.db` is missing or incompatible with the requested root/language, queries rebuild it automatically before running
 
 ### `functions` - Extract Function Definitions
 
-Extract all function/method definitions from source code.
+Extract all indexed function/method definitions.
 
 ```bash
 tsa functions <path> [-l LANGUAGE] [-q QUERY]
@@ -142,7 +142,7 @@ tsa fields ./src/ -c DatabaseConfig
 
 ### `imports` - Extract Import Statements
 
-Extract all import statements from source code.
+Extract all indexed import statements.
 
 ```bash
 tsa imports <path> [-l LANGUAGE] [-q QUERY]

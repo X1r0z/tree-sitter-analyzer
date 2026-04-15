@@ -10,11 +10,11 @@
 This tool primarily assists LLM Agents in code auditing. SAST analysis intentionally allows over-approximations (false positives) to avoid missing real issues—prefer recall over precision.
 
 ## Architecture
-Rust CLI tool using **clap** (derive) for arg parsing. Parses source code via **tree-sitter** grammars (Python, JS, TS, TSX, Java, Go) and provides structural analysis (functions, classes, imports, call graphs, inheritance, symbol references). Supports both live source analysis and SQLite-backed indexed queries.
+Rust CLI tool using **clap** (derive) for arg parsing. Parses source code via **tree-sitter** grammars (Python, JS, TS, TSX, Java, Go) to build a SQLite index, then answers structural queries (functions, classes, imports, call graphs, inheritance, symbol references) from that index.
 Entry point: `src/main.rs`.
 - `src/models.rs` – Core data types (`FunctionInfo`, `ClassInfo`, `Location`, `IndexInfo`, etc.), all shared across extraction, analysis, traversal, and JSON output.
-- `src/commands.rs` – Subcommand dispatch and command execution flow; chooses between source analysis and indexed analysis automatically.
-- `src/analyzers.rs` – Main analysis backends: live parsing from source files and query execution from SQLite index data.
+- `src/commands.rs` – Subcommand dispatch and command execution flow; ensures `tsa.db` exists and is compatible before running queries.
+- `src/analyzers.rs` – SQLite-backed query backend used by all query commands.
 - `src/extractor.rs` – Extracts AST information from parsed trees.
 - `src/graph.rs` – Multi-level call graph tracing and graph result assembly.
 - `src/languages.rs` – Language detection by extension and supported-language metadata.

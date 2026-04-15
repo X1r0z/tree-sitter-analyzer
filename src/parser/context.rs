@@ -599,13 +599,12 @@ impl ParseContext {
                 && callee_function_node
                     .map(|node| node.kind() == "identifier")
                     .unwrap_or(false)
-                && enclosing.function_node.is_some()
             {
-                let resolved = self.resolve_call_targets_with_function_node(
-                    enclosing.function_node.unwrap(),
-                    call_node,
-                    &callee,
-                );
+                let Some(function_node) = enclosing.function_node else {
+                    continue;
+                };
+                let resolved =
+                    self.resolve_call_targets_with_function_node(function_node, call_node, &callee);
                 if !resolved.is_empty() {
                     for resolved_callee in resolved {
                         calls.push(CallInfo {
@@ -658,36 +657,6 @@ impl ParseContext {
                 start_column: node.start_position().column,
                 end_column: node.end_position().column,
                 context: String::new(),
-            })
-        })
-    }
-
-    pub(crate) fn find_refs(&self, name: &str, with_context: bool) -> Vec<RefInfo> {
-        let name_bytes = name.as_bytes();
-        if name_bytes.is_empty()
-            || !self
-                .input
-                .source
-                .windows(name_bytes.len())
-                .any(|window| window == name_bytes)
-        {
-            return Vec::new();
-        }
-
-        self.scan_refs(|node| {
-            (self.node_bytes(node) == name_bytes).then(|| RefInfo {
-                name: name.to_string(),
-                node_type: node.kind().to_string(),
-                location: self.node_location(node),
-                start_column: node.start_position().column,
-                end_column: node.end_position().column,
-                context: if with_context {
-                    node.parent()
-                        .map(|parent| self.node_text(parent))
-                        .unwrap_or_default()
-                } else {
-                    String::new()
-                },
             })
         })
     }

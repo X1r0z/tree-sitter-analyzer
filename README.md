@@ -24,6 +24,8 @@ A code analysis toolkit using [tree-sitter](https://tree-sitter.github.io/tree-s
 
 Use `-l, --language <LANGUAGE>` to restrict AST parsing to one language. Allowed values: `python`, `java`, `go`, `javascript`, `typescript`, `tsx`.
 
+All query commands run against the SQLite index in the current working directory. If `tsa.db` is missing or incompatible with the requested root/language, `tsa` rebuilds the index automatically before executing the query. `tsa index` remains available when you want to prebuild or refresh the cache explicitly.
+
 ## Installation
 
 ```bash
@@ -36,11 +38,11 @@ cargo install --git https://github.com/X1r0z/tree-sitter-analyzer
 # List all classes in a directory
 tsa classes ./src/
 
-# Build an index for all supported languages in the current project
-tsa index .
+# Queries auto-build `tsa.db` when needed
+tsa functions ./src/
 
-# Build an index for Java files only
-tsa index . -l java
+# You can still prebuild the index explicitly
+tsa index .
 
 # Only analyze Python files
 tsa functions ./src/ -l python

@@ -1084,7 +1084,7 @@ fn collect_receiver_events(
                 "identifier" => {
                     let value_name = parser.node_text(value_node);
                     let targets = if let Some(existing) = receivers.get(&value_name) {
-                        existing.iter().cloned().collect::<Vec<_>>()
+                        existing.to_vec()
                     } else if class_names.contains(&value_name) {
                         vec![value_name]
                     } else {

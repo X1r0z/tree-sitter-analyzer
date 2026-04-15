@@ -2,13 +2,11 @@ mod analyzers;
 mod commands;
 mod db;
 mod extractor;
-mod graph;
 mod languages;
 mod models;
 mod output;
 mod parser;
 mod query;
-mod search;
 mod traversal;
 mod utils;
 

@@ -242,13 +242,3 @@ pub struct FileSnapshot {
     pub python_properties: Vec<PythonPropertyInfo>,
     pub python_property_callers: Vec<PythonPropertyCallerInfo>,
 }
-
-#[derive(Debug, Clone)]
-pub struct GraphFileSnapshot {
-    pub functions: Vec<FunctionInfo>,
-    pub classes: Vec<ClassInfo>,
-    pub fields: Vec<FieldInfo>,
-    pub calls: Vec<CallInfo>,
-    pub python_properties: Vec<PythonPropertyInfo>,
-    pub python_property_callers: Vec<PythonPropertyCallerInfo>,
-}

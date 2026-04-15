@@ -18,13 +18,6 @@ pub struct LanguageInfo {
     pub import_query: &'static str,
 }
 
-pub struct LanguageQueries {
-    pub function_query: &'static str,
-    pub class_query: &'static str,
-    pub call_query: &'static str,
-    pub import_query: &'static str,
-}
-
 pub struct ResolvedCall<'a> {
     pub callee: String,
     pub is_method: bool,
@@ -41,16 +34,6 @@ pub trait LanguageEngine: Sync {
 
     fn ts_language(&self) -> tree_sitter::Language {
         find_language(self.id()).expect("supported language")
-    }
-
-    fn queries(&self) -> LanguageQueries {
-        let info = self.language_info();
-        LanguageQueries {
-            function_query: info.function_query,
-            class_query: info.class_query,
-            call_query: info.call_query,
-            import_query: info.import_query,
-        }
     }
 
     fn normalize_function_node<'a>(&self, _ctx: &ParseContext, node: Node<'a>) -> Node<'a> {
@@ -201,35 +184,28 @@ impl CompiledQueries {
     }
 }
 
-fn compile_queries(engine: &'static dyn LanguageEngine) -> CompiledQueries {
-    let queries = engine.queries();
-    let language = engine.ts_language();
+fn compile_queries(
+    info: &'static LanguageInfo,
+    language: tree_sitter::Language,
+) -> CompiledQueries {
     CompiledQueries {
-        function_query: Query::new(&language, queries.function_query)
-            .expect("valid function query"),
-        class_query: Query::new(&language, queries.class_query).expect("valid class query"),
-        call_query: Query::new(&language, queries.call_query).expect("valid call query"),
-        import_query: Query::new(&language, queries.import_query).expect("valid import query"),
+        function_query: Query::new(&language, info.function_query).expect("valid function query"),
+        class_query: Query::new(&language, info.class_query).expect("valid class query"),
+        call_query: Query::new(&language, info.call_query).expect("valid call query"),
+        import_query: Query::new(&language, info.import_query).expect("valid import query"),
     }
 }
-
-static PYTHON_QUERIES: LazyLock<CompiledQueries> =
-    LazyLock::new(|| compile_queries(&python::PYTHON_ENGINE));
-static JAVASCRIPT_QUERIES: LazyLock<CompiledQueries> =
-    LazyLock::new(|| compile_queries(&javascript::JAVASCRIPT_ENGINE));
-static TYPESCRIPT_QUERIES: LazyLock<CompiledQueries> =
-    LazyLock::new(|| compile_queries(&javascript::TYPESCRIPT_ENGINE));
-static TSX_QUERIES: LazyLock<CompiledQueries> =
-    LazyLock::new(|| compile_queries(&javascript::TSX_ENGINE));
-static JAVA_QUERIES: LazyLock<CompiledQueries> =
-    LazyLock::new(|| compile_queries(&java::JAVA_ENGINE));
-static GO_QUERIES: LazyLock<CompiledQueries> = LazyLock::new(|| compile_queries(&go::GO_ENGINE));
 
 struct LanguageRegistryEntry {
     info: &'static LanguageInfo,
     engine: &'static dyn LanguageEngine,
     ts_language: fn() -> tree_sitter::Language,
-    compiled_queries: &'static LazyLock<CompiledQueries>,
+}
+
+impl LanguageRegistryEntry {
+    fn language(&self) -> tree_sitter::Language {
+        (self.ts_language)()
+    }
 }
 
 static LANGUAGE_REGISTRY: &[LanguageRegistryEntry] = &[
@@ -237,51 +213,51 @@ static LANGUAGE_REGISTRY: &[LanguageRegistryEntry] = &[
         info: &PYTHON_INFO,
         engine: &python::PYTHON_ENGINE,
         ts_language: || tree_sitter_python::LANGUAGE.into(),
-        compiled_queries: &PYTHON_QUERIES,
     },
     LanguageRegistryEntry {
         info: &JAVASCRIPT_INFO,
         engine: &javascript::JAVASCRIPT_ENGINE,
         ts_language: || tree_sitter_javascript::LANGUAGE.into(),
-        compiled_queries: &JAVASCRIPT_QUERIES,
     },
     LanguageRegistryEntry {
         info: &TYPESCRIPT_INFO,
         engine: &javascript::TYPESCRIPT_ENGINE,
         ts_language: || tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-        compiled_queries: &TYPESCRIPT_QUERIES,
     },
     LanguageRegistryEntry {
         info: &TSX_INFO,
         engine: &javascript::TSX_ENGINE,
         ts_language: || tree_sitter_typescript::LANGUAGE_TSX.into(),
-        compiled_queries: &TSX_QUERIES,
     },
     LanguageRegistryEntry {
         info: &JAVA_INFO,
         engine: &java::JAVA_ENGINE,
         ts_language: || tree_sitter_java::LANGUAGE.into(),
-        compiled_queries: &JAVA_QUERIES,
     },
     LanguageRegistryEntry {
         info: &GO_INFO,
         engine: &go::GO_ENGINE,
         ts_language: || tree_sitter_go::LANGUAGE.into(),
-        compiled_queries: &GO_QUERIES,
     },
 ];
-
-fn find_registry_entry(name: &str) -> Option<&'static LanguageRegistryEntry> {
-    LANGUAGE_REGISTRY
-        .iter()
-        .find(|entry| entry.info.name == name)
-}
 
 fn find_registry_entry_by_extension(file_path: &Path) -> Option<&'static LanguageRegistryEntry> {
     let ext = file_path.extension()?.to_str()?;
     let dotted = format!(".{ext}");
     FILE_EXTENSION_MAP.get(dotted.as_str()).copied()
 }
+
+fn find_registry_entry(name: &str) -> Option<&'static LanguageRegistryEntry> {
+    LANGUAGE_NAME_MAP.get(name).copied()
+}
+
+static LANGUAGE_NAME_MAP: LazyLock<HashMap<&'static str, &'static LanguageRegistryEntry>> =
+    LazyLock::new(|| {
+        LANGUAGE_REGISTRY
+            .iter()
+            .map(|entry| (entry.info.name, entry))
+            .collect()
+    });
 
 static FILE_EXTENSION_MAP: LazyLock<HashMap<&'static str, &'static LanguageRegistryEntry>> =
     LazyLock::new(|| {
@@ -294,10 +270,16 @@ static FILE_EXTENSION_MAP: LazyLock<HashMap<&'static str, &'static LanguageRegis
         map
     });
 
-static SUPPORTED_EXTENSIONS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
-    let mut extensions = FILE_EXTENSION_MAP.keys().copied().collect::<Vec<_>>();
-    extensions.sort();
-    extensions
+static COMPILED_QUERY_MAP: LazyLock<HashMap<&'static str, CompiledQueries>> = LazyLock::new(|| {
+    LANGUAGE_REGISTRY
+        .iter()
+        .map(|entry| {
+            (
+                entry.info.name,
+                compile_queries(entry.info, entry.language()),
+            )
+        })
+        .collect()
 });
 
 static SUPPORTED_LANGUAGE_NAMES: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
@@ -314,7 +296,7 @@ pub fn detect_language(file_path: &Path) -> Option<&'static str> {
 }
 
 pub fn find_language(name: &str) -> Option<tree_sitter::Language> {
-    find_registry_entry(name).map(|entry| (entry.ts_language)())
+    find_registry_entry(name).map(LanguageRegistryEntry::language)
 }
 
 pub fn find_language_info(name: &str) -> Option<&'static LanguageInfo> {
@@ -325,18 +307,12 @@ pub fn detect_language_engine(path: &Path) -> Option<&'static dyn LanguageEngine
     find_registry_entry_by_extension(path).map(|entry| entry.engine)
 }
 
-pub fn supported_extensions() -> &'static [&'static str] {
-    &SUPPORTED_EXTENSIONS
-}
-
 pub fn supported_language_names() -> &'static [&'static str] {
     &SUPPORTED_LANGUAGE_NAMES
 }
 
-pub fn language_extensions(name: &str) -> Option<&'static [&'static str]> {
-    find_registry_entry(name).map(|entry| entry.info.extensions)
-}
-
 pub fn compiled_query(language: &str, kind: QueryKind) -> Option<&'static Query> {
-    find_registry_entry(language).map(|entry| entry.compiled_queries.get(kind))
+    COMPILED_QUERY_MAP
+        .get(language)
+        .map(|queries| queries.get(kind))
 }

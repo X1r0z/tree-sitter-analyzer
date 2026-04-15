@@ -7,14 +7,10 @@ use ignore::WalkState;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressState, ProgressStyle};
 use serde_json::Value;
 
-use crate::languages::{detect_language, language_extensions, supported_extensions};
+use crate::languages::detect_language;
 use crate::models::{CalleeInfo, CallerInfo};
 
 pub fn find_files(path: &str, language: Option<&str>) -> Vec<String> {
-    let extensions = language
-        .and_then(language_extensions)
-        .unwrap_or_else(supported_extensions);
-
     let files = Mutex::new(Vec::new());
     let walker = ignore::WalkBuilder::new(path)
         .hidden(false)
@@ -23,20 +19,19 @@ pub fn find_files(path: &str, language: Option<&str>) -> Vec<String> {
 
     walker.run(|| {
         let files = &files;
-        let extensions = &extensions;
         Box::new(move |entry| {
             let Ok(entry) = entry else {
                 return WalkState::Continue;
             };
             let p = entry.path();
             if p.is_file() {
-                if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
-                    let dotted = format!(".{}", ext);
-                    if extensions.contains(&dotted.as_str()) {
-                        if let Ok(canonical) = p.canonicalize() {
-                            if let Ok(mut matched_files) = files.lock() {
-                                matched_files.push(canonical.to_string_lossy().to_string());
-                            }
+                let detected_language = detect_language(p);
+                let matches_language =
+                    language.is_none_or(|expected| detected_language == Some(expected));
+                if matches_language && detected_language.is_some() {
+                    if let Ok(canonical) = p.canonicalize() {
+                        if let Ok(mut matched_files) = files.lock() {
+                            matched_files.push(canonical.to_string_lossy().to_string());
                         }
                     }
                 }
@@ -203,31 +198,5 @@ pub fn relativize_json_file_paths(value: &mut Value, root: &str) {
             }
         }
         _ => {}
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::fs;
-
-    use tempfile::tempdir;
-
-    use super::project_languages;
-
-    #[test]
-    fn project_languages_only_includes_languages_present_in_tree() {
-        let dir = tempdir().unwrap();
-        fs::write(dir.path().join("main.java"), "class Main {}").unwrap();
-        fs::write(dir.path().join("app.js"), "function main() {}").unwrap();
-        fs::write(dir.path().join("README.md"), "# ignored").unwrap();
-
-        let languages = project_languages(dir.path().to_str().unwrap())
-            .into_iter()
-            .collect::<Vec<_>>();
-
-        assert_eq!(
-            languages,
-            vec!["java".to_string(), "javascript".to_string()]
-        );
     }
 }

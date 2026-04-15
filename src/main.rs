@@ -1,4 +1,4 @@
-mod analyzers;
+mod analyzer;
 mod commands;
 mod db;
 mod extractor;

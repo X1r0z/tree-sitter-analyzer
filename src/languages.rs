@@ -300,6 +300,15 @@ static SUPPORTED_EXTENSIONS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
     extensions
 });
 
+static SUPPORTED_LANGUAGE_NAMES: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+    let mut names = LANGUAGE_REGISTRY
+        .iter()
+        .map(|entry| entry.info.name)
+        .collect::<Vec<_>>();
+    names.sort();
+    names
+});
+
 pub fn detect_language(file_path: &Path) -> Option<&'static str> {
     find_registry_entry_by_extension(file_path).map(|entry| entry.info.name)
 }
@@ -318,6 +327,10 @@ pub fn detect_language_engine(path: &Path) -> Option<&'static dyn LanguageEngine
 
 pub fn supported_extensions() -> &'static [&'static str] {
     &SUPPORTED_EXTENSIONS
+}
+
+pub fn supported_language_names() -> &'static [&'static str] {
+    &SUPPORTED_LANGUAGE_NAMES
 }
 
 pub fn language_extensions(name: &str) -> Option<&'static [&'static str]> {

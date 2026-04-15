@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -8,6 +8,8 @@ use rusqlite::Error;
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Transaction};
 
 use super::types::{IndexedFileEntry, IndexedFileRecord};
+use crate::languages::supported_language_names;
+use crate::utils::project_languages;
 
 pub(crate) struct IndexStore {
     conn: Connection,
@@ -29,13 +31,85 @@ impl IndexStore {
         root_path: &str,
         language: Option<&str>,
     ) -> anyhow::Result<bool> {
-        if self.metadata_value("indexed_root_path")?.as_deref() != Some(root_path) {
+        if !self.matches_root_path(root_path)? {
             return Ok(false);
         }
-        let indexed_language = self.metadata_value("language_filter")?.unwrap_or_default();
+        let indexed_languages = self.indexed_languages()?;
+        let required_languages = Self::required_languages(root_path, language);
+        Ok(required_languages.is_subset(&indexed_languages))
+    }
+
+    pub(crate) fn matches_root_path(&self, root_path: &str) -> anyhow::Result<bool> {
+        Ok(self.metadata_value("indexed_root_path")?.as_deref() == Some(root_path))
+    }
+
+    pub(crate) fn missing_languages(
+        &self,
+        root_path: &str,
+        language: Option<&str>,
+    ) -> anyhow::Result<Vec<String>> {
+        if !self.matches_root_path(root_path)? {
+            return Ok(Self::required_languages(root_path, language)
+                .into_iter()
+                .collect());
+        }
+
+        let indexed_languages = self.indexed_languages()?;
+        let mut missing = Self::required_languages(root_path, language)
+            .difference(&indexed_languages)
+            .cloned()
+            .collect::<Vec<_>>();
+        missing.sort();
+        Ok(missing)
+    }
+
+    pub(crate) fn indexed_languages(&self) -> anyhow::Result<BTreeSet<String>> {
+        if let Some(value) = self.metadata_value("indexed_languages")? {
+            return Ok(Self::parse_language_set(&value));
+        }
+
+        let language_filter = self.metadata_value("language_filter")?.unwrap_or_default();
+        if language_filter.is_empty() {
+            Ok(supported_language_names()
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect())
+        } else {
+            Ok(std::iter::once(language_filter).collect())
+        }
+    }
+
+    pub(crate) fn serialize_language_set(languages: &BTreeSet<String>) -> String {
+        languages.iter().cloned().collect::<Vec<_>>().join(",")
+    }
+
+    pub(crate) fn legacy_language_filter_value(languages: &BTreeSet<String>) -> String {
+        let supported = supported_language_names()
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect::<BTreeSet<_>>();
+        if languages == &supported {
+            String::new()
+        } else if languages.len() == 1 {
+            languages.iter().next().cloned().unwrap_or_default()
+        } else {
+            "__mixed__".to_string()
+        }
+    }
+
+    fn parse_language_set(value: &str) -> BTreeSet<String> {
+        value
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn required_languages(root_path: &str, language: Option<&str>) -> BTreeSet<String> {
         match language {
-            Some(lang) => Ok(indexed_language.is_empty() || indexed_language == lang),
-            None => Ok(indexed_language.is_empty()),
+            Some(language) => std::iter::once(language.to_string()).collect(),
+            None => project_languages(root_path),
         }
     }
 
@@ -373,7 +447,7 @@ impl IndexStore {
         Ok(())
     }
 
-    pub(crate) fn create_temp_current_files(
+    pub(crate) fn refresh_temp_current_files(
         tx: &Transaction<'_>,
         current_files: &[IndexedFileRecord],
     ) -> anyhow::Result<()> {
@@ -393,8 +467,11 @@ impl IndexStore {
         Ok(())
     }
 
-    pub(crate) fn count_deleted_files_against_temp(tx: &Transaction<'_>) -> anyhow::Result<u64> {
-        let count = tx.query_row(
+    pub(crate) fn count_stale_indexed_files(
+        tx: &Transaction<'_>,
+        scope_languages: &[String],
+    ) -> anyhow::Result<u64> {
+        let mut query = String::from(
             "
             SELECT COUNT(*)
             FROM files
@@ -404,14 +481,23 @@ impl IndexStore {
                 WHERE temp_current_files.path = files.path
             )
             ",
-            [],
-            |row| row.get::<_, i64>(0),
-        )?;
+        );
+        if !scope_languages.is_empty() {
+            let placeholders = vec!["?"; scope_languages.len()].join(", ");
+            query.push_str(&format!(" AND language IN ({placeholders})"));
+        }
+
+        let count = tx.query_row(&query, params_from_iter(scope_languages.iter()), |row| {
+            row.get::<_, i64>(0)
+        })?;
         Ok(count as u64)
     }
 
-    pub(crate) fn deleted_file_ids_against_temp(tx: &Transaction<'_>) -> anyhow::Result<Vec<i64>> {
-        let mut stmt = tx.prepare(
+    pub(crate) fn stale_indexed_file_ids(
+        tx: &Transaction<'_>,
+        scope_languages: &[String],
+    ) -> anyhow::Result<Vec<i64>> {
+        let mut query = String::from(
             "
             SELECT id
             FROM files
@@ -421,8 +507,13 @@ impl IndexStore {
                 WHERE temp_current_files.path = files.path
             )
             ",
-        )?;
-        let rows = stmt.query_map([], |row| row.get(0))?;
+        );
+        if !scope_languages.is_empty() {
+            let placeholders = vec!["?"; scope_languages.len()].join(", ");
+            query.push_str(&format!(" AND language IN ({placeholders})"));
+        }
+        let mut stmt = tx.prepare(&query)?;
+        let rows = stmt.query_map(params_from_iter(scope_languages.iter()), |row| row.get(0))?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -620,5 +711,51 @@ impl IndexStore {
         )
         .map(|exists| exists != 0)
         .map_err(Into::into)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    use super::IndexStore;
+
+    #[test]
+    fn required_languages_without_filter_follow_project_contents() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("main.java"), "class Main {}").unwrap();
+        fs::write(dir.path().join("app.js"), "function main() {}").unwrap();
+
+        let languages = IndexStore::required_languages(dir.path().to_str().unwrap(), None);
+
+        assert_eq!(
+            languages,
+            BTreeSet::from(["java".to_string(), "javascript".to_string()])
+        );
+    }
+
+    #[test]
+    fn missing_languages_ignores_supported_languages_absent_from_project() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("main.java"), "class Main {}").unwrap();
+        fs::write(dir.path().join("app.js"), "function main() {}").unwrap();
+
+        let db_path = dir.path().join("tsa.db");
+        let store = IndexStore::open(&db_path).unwrap();
+        let tx = store.conn.unchecked_transaction().unwrap();
+        IndexStore::upsert_metadata(&tx, "indexed_root_path", dir.path().to_str().unwrap())
+            .unwrap();
+        IndexStore::upsert_metadata(&tx, "indexed_languages", "java").unwrap();
+        tx.commit().unwrap();
+
+        let store = IndexStore::open(&db_path).unwrap();
+        let missing = store
+            .missing_languages(dir.path().to_str().unwrap(), None)
+            .unwrap();
+
+        assert_eq!(missing, vec!["javascript".to_string()]);
     }
 }

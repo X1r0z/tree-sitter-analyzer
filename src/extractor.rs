@@ -75,7 +75,7 @@ impl CodeExtractor {
             .to_vec()
     }
 
-    pub fn find_function_definitions(
+    pub fn collect_function_definitions(
         &mut self,
         name: &str,
         class_name: Option<&str>,
@@ -101,6 +101,13 @@ impl CodeExtractor {
         self.cache.imports.as_deref().unwrap_or(&[]).to_vec()
     }
 
+    pub fn collect_annotations(&self) -> Vec<AnnotationInfo> {
+        if !matches!(self.parser.language(), "python" | "java") {
+            return Vec::new();
+        }
+        self.parser.collect_annotations()
+    }
+
     pub fn build_snapshot(&mut self) -> FileSnapshot {
         let functions = self.collect_functions();
         self.ensure_class_snapshot();
@@ -115,7 +122,14 @@ impl CodeExtractor {
         let imports = self.collect_imports();
         let annotations = self.collect_annotations();
         let refs = self.parser.collect_refs();
-        let (python_properties, python_property_callers) = self.collect_python_index_artifacts();
+        let (python_properties, python_property_callers) = if self.parser.language() == "python" {
+            (
+                self.parser.collect_python_properties(),
+                self.parser.collect_python_property_callers(None),
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
 
         FileSnapshot {
             functions,
@@ -130,13 +144,6 @@ impl CodeExtractor {
         }
     }
 
-    pub fn collect_annotations(&self) -> Vec<AnnotationInfo> {
-        if !matches!(self.parser.language(), "python" | "java") {
-            return Vec::new();
-        }
-        self.parser.collect_annotations()
-    }
-
     fn ensure_class_snapshot(&mut self) {
         if self.cache.classes.is_some() && self.cache.snapshot_fields.is_some() {
             return;
@@ -145,18 +152,6 @@ impl CodeExtractor {
         self.cache.classes = Some(snapshot.classes);
         self.cache.snapshot_fields = Some(snapshot.fields);
         self.cache.fields_by_class = snapshot.field_infos_by_class;
-    }
-
-    fn collect_python_index_artifacts(
-        &self,
-    ) -> (Vec<PythonPropertyInfo>, Vec<PythonPropertyCallerInfo>) {
-        if self.parser.language() != "python" {
-            return (Vec::new(), Vec::new());
-        }
-        (
-            self.parser.collect_python_properties(),
-            self.parser.collect_python_property_callers(None),
-        )
     }
 
     pub fn hydrate_refs(&mut self, candidates: &[RefInfo]) -> Vec<RefInfo> {

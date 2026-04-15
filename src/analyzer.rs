@@ -4,12 +4,12 @@ use crate::db::IndexStore;
 use crate::models::*;
 use crate::query::{CallEdgeQuery, CallGraphQuery, ClassHierarchyQuery, LookupQuery, QueryContext};
 
-pub(crate) struct StoreAnalyzer {
+pub(crate) struct CodeAnalyzer {
     conn: Connection,
     language: Option<String>,
 }
 
-impl StoreAnalyzer {
+impl CodeAnalyzer {
     pub(crate) fn from_current_dir(
         root_path: &str,
         language: Option<&str>,

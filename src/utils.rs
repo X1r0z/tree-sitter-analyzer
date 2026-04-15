@@ -1,12 +1,14 @@
+use std::collections::BTreeSet;
 use std::io::IsTerminal;
 use std::path::Path;
 use std::sync::Mutex;
 
-use crate::languages::{language_extensions, supported_extensions};
-use crate::models::{CalleeInfo, CallerInfo};
 use ignore::WalkState;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressState, ProgressStyle};
 use serde_json::Value;
+
+use crate::languages::{detect_language, language_extensions, supported_extensions};
+use crate::models::{CalleeInfo, CallerInfo};
 
 pub fn find_files(path: &str, language: Option<&str>) -> Vec<String> {
     let extensions = language
@@ -47,6 +49,13 @@ pub fn find_files(path: &str, language: Option<&str>) -> Vec<String> {
     files.sort();
     files.dedup();
     files
+}
+
+pub fn project_languages(path: &str) -> BTreeSet<String> {
+    find_files(path, None)
+        .into_iter()
+        .filter_map(|file| detect_language(Path::new(&file)).map(str::to_string))
+        .collect()
 }
 
 pub fn progress_style(unit: &str, bar_style: &str) -> ProgressStyle {
@@ -194,5 +203,31 @@ pub fn relativize_json_file_paths(value: &mut Value, root: &str) {
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    use super::project_languages;
+
+    #[test]
+    fn project_languages_only_includes_languages_present_in_tree() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("main.java"), "class Main {}").unwrap();
+        fs::write(dir.path().join("app.js"), "function main() {}").unwrap();
+        fs::write(dir.path().join("README.md"), "# ignored").unwrap();
+
+        let languages = project_languages(dir.path().to_str().unwrap())
+            .into_iter()
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            languages,
+            vec!["java".to_string(), "javascript".to_string()]
+        );
     }
 }

@@ -5,34 +5,37 @@ use std::path::Path;
 use rayon::prelude::*;
 use serde_json::{json, Value};
 
-use crate::analyzers::StoreAnalyzer;
+use crate::analyzer::CodeAnalyzer;
 use crate::db::{
     db_path_in_current_dir, file_record_metadata, file_record_with_hash_from_source, FileIndexData,
     IndexStore, IndexSyncPlan, IndexSynchronizer, IndexedFileRecord,
 };
 use crate::extractor::CodeExtractor;
-use crate::languages::detect_language;
+use crate::languages::{detect_language, supported_language_names};
 use crate::models::{
     FunctionInfo, FunctionKey, GraphDirection, IndexInfo, Location, RefInfo, RefKey,
 };
 use crate::output::{self, FunctionView};
-use crate::utils::{find_files, progress_bar};
+use crate::utils::{find_files, progress_bar, project_languages};
 
 struct CommandContext {
     real_path: String,
-    store: StoreAnalyzer,
+    analyzer: CodeAnalyzer,
 }
 
 impl CommandContext {
     fn load(path: &str, language: Option<&str>) -> anyhow::Result<Self> {
         let real_path = resolve_path(path);
-        ensure_index_for_query(&real_path, language)?;
-        let store = StoreAnalyzer::from_current_dir(&real_path, language)?;
-        Ok(Self { real_path, store })
+        ensure_index(&real_path, language)?;
+        let analyzer = CodeAnalyzer::from_current_dir(&real_path, language)?;
+        Ok(Self {
+            real_path,
+            analyzer,
+        })
     }
 
     fn searched_files(&self) -> usize {
-        self.store.file_count()
+        self.analyzer.file_count()
     }
 }
 
@@ -48,7 +51,7 @@ pub(crate) fn functions(path: &str, language: Option<&str>, query: &str) -> Valu
         Ok(context) => context,
         Err(error) => return error_response(error),
     };
-    let functions = match context.store.find_functions(query) {
+    let functions = match context.analyzer.find_functions(query) {
         Ok(functions) => functions,
         Err(error) => return error_response(error),
     };
@@ -64,7 +67,7 @@ pub(crate) fn classes(path: &str, language: Option<&str>, query: &str) -> Value 
         Ok(context) => context,
         Err(error) => return error_response(error),
     };
-    let classes = match context.store.find_classes(query) {
+    let classes = match context.analyzer.find_classes(query) {
         Ok(classes) => classes,
         Err(error) => return error_response(error),
     };
@@ -80,7 +83,7 @@ pub(crate) fn fields(path: &str, language: Option<&str>, class_name: &str) -> Va
         Ok(context) => context,
         Err(error) => return error_response(error),
     };
-    let fields = match context.store.find_fields(class_name) {
+    let fields = match context.analyzer.find_fields(class_name) {
         Ok(fields) => fields,
         Err(error) => return error_response(error),
     };
@@ -96,7 +99,7 @@ pub(crate) fn imports(path: &str, language: Option<&str>, query: &str) -> Value 
         Ok(context) => context,
         Err(error) => return error_response(error),
     };
-    let imports = match context.store.find_imports(query) {
+    let imports = match context.analyzer.find_imports(query) {
         Ok(imports) => imports,
         Err(error) => return error_response(error),
     };
@@ -112,7 +115,7 @@ pub(crate) fn annotations(path: &str, language: Option<&str>, query: &str) -> Va
         Ok(context) => context,
         Err(error) => return error_response(error),
     };
-    let annotations = match context.store.find_annotations(query) {
+    let annotations = match context.analyzer.find_annotations(query) {
         Ok(annotations) => annotations,
         Err(error) => return error_response(error),
     };
@@ -133,7 +136,7 @@ pub(crate) fn callers(
         Ok(context) => context,
         Err(error) => return error_response(error),
     };
-    let callers = match context.store.find_callers(function_name, class_name) {
+    let callers = match context.analyzer.find_callers(function_name, class_name) {
         Ok(callers) => callers,
         Err(error) => return error_response(error),
     };
@@ -154,7 +157,7 @@ pub(crate) fn callees(
         Ok(context) => context,
         Err(error) => return error_response(error),
     };
-    let callees = match context.store.find_callees(function_name, class_name) {
+    let callees = match context.analyzer.find_callees(function_name, class_name) {
         Ok(callees) => callees,
         Err(error) => return error_response(error),
     };
@@ -178,7 +181,7 @@ pub(crate) fn graph(
         Err(error) => return error_response(error),
     };
     let graphs = match context
-        .store
+        .analyzer
         .find_graphs(function_name, class_name, direction, max_depth)
     {
         Ok(graphs) => graphs,
@@ -196,7 +199,7 @@ pub(crate) fn refs(path: &str, language: Option<&str>, name: &str) -> Value {
         Ok(context) => context,
         Err(error) => return error_response(error),
     };
-    let refs = match context.store.find_refs(name) {
+    let refs = match context.analyzer.find_refs(name) {
         Ok(refs) => refs,
         Err(error) => return error_response(error),
     };
@@ -218,7 +221,7 @@ pub(crate) fn definition(
         Ok(context) => context,
         Err(error) => return error_response(error),
     };
-    let functions = match context.store.find_functions(function_name) {
+    let functions = match context.analyzer.find_functions(function_name) {
         Ok(functions) => functions,
         Err(error) => return error_response(error),
     };
@@ -250,7 +253,7 @@ pub(crate) fn super_classes(path: &str, language: Option<&str>, class_name: &str
         Ok(context) => context,
         Err(error) => return error_response(error),
     };
-    let super_classes = match context.store.find_super_classes(class_name) {
+    let super_classes = match context.analyzer.find_super_classes(class_name) {
         Ok(super_classes) => super_classes,
         Err(error) => return error_response(error),
     };
@@ -266,7 +269,7 @@ pub(crate) fn sub_classes(path: &str, language: Option<&str>, class_name: &str) 
         Ok(context) => context,
         Err(error) => return error_response(error),
     };
-    let sub_classes = match context.store.find_sub_classes(class_name) {
+    let sub_classes = match context.analyzer.find_sub_classes(class_name) {
         Ok(sub_classes) => sub_classes,
         Err(error) => return error_response(error),
     };
@@ -277,19 +280,31 @@ pub(crate) fn sub_classes(path: &str, language: Option<&str>, class_name: &str) 
     )
 }
 
-fn ensure_index_for_query(path: &str, language: Option<&str>) -> anyhow::Result<()> {
+fn ensure_index(path: &str, language: Option<&str>) -> anyhow::Result<()> {
     let db_path = db_path_in_current_dir()?;
-    let needs_index = if !db_path.exists() {
-        true
-    } else {
-        match IndexStore::open(&db_path) {
-            Ok(store) => !store.is_compatible_with(path, language)?,
-            Err(_) => true,
+    if !db_path.exists() {
+        build_index(path, language)?;
+        return Ok(());
+    }
+
+    let missing_languages = match IndexStore::open(&db_path) {
+        Ok(store) => store.missing_languages(path, language)?,
+        Err(_) => {
+            build_index(path, language)?;
+            return Ok(());
         }
     };
 
-    if needs_index {
-        build_index(path, language)?;
+    if missing_languages.is_empty() {
+        return Ok(());
+    }
+
+    if language.is_none() && missing_languages.len() > 1 {
+        for missing_language in missing_languages {
+            build_index(path, Some(missing_language.as_str()))?;
+        }
+    } else if let Some(missing_language) = missing_languages.first() {
+        build_index(path, Some(missing_language.as_str()))?;
     }
     Ok(())
 }
@@ -333,19 +348,21 @@ fn build_index(path: &str, language: Option<&str>) -> anyhow::Result<IndexInfo> 
 
     let files = find_files(&real_path, language);
     let total_files = files.len();
-    let progress = progress_bar(total_files, "files", "cyan/blue", "Parsing source files");
-
     let db_path = db_path_in_current_dir()?;
-    let existing = match IndexStore::open(&db_path) {
-        Ok(store)
-            if store
-                .is_compatible_with(&real_path, language)
-                .unwrap_or(false) =>
-        {
-            store.indexed_files_by_paths(&files).unwrap_or_default()
-        }
-        Ok(_) | Err(_) => Default::default(),
+    let language_scope = language_scope_label(&real_path, language);
+    let (incremental, existing) = match IndexStore::open(&db_path) {
+        Ok(store) if store.matches_root_path(&real_path).unwrap_or(false) => (
+            true,
+            store.indexed_files_by_paths(&files).unwrap_or_default(),
+        ),
+        Ok(_) | Err(_) => (false, Default::default()),
     };
+    let parse_message = format!(
+        "{} index [{}] | Parsing files",
+        index_mode_label(incremental),
+        language_scope
+    );
+    let progress = progress_bar(total_files, "files", "cyan/blue", &parse_message);
 
     let indexed: Vec<Result<(IndexedFileRecord, Option<FileIndexData>), String>> = files
         .par_iter()
@@ -377,7 +394,12 @@ fn build_index(path: &str, language: Option<&str>) -> anyhow::Result<IndexInfo> 
         changed_files: snapshots,
     };
 
-    let db_progress = progress_bar(0, "steps", "green/blue", "Persisting index data");
+    let persist_message = format!(
+        "{} index [{}] | Writing index",
+        index_mode_label(incremental),
+        language_scope
+    );
+    let db_progress = progress_bar(0, "steps", "green/blue", &persist_message);
     IndexSynchronizer::sync(&db_path, &real_path, language, &plan, &db_progress)?;
     db_progress.finish_and_clear();
 
@@ -391,6 +413,28 @@ fn build_index(path: &str, language: Option<&str>) -> anyhow::Result<IndexInfo> 
     })
 }
 
+fn index_mode_label(incremental: bool) -> &'static str {
+    if incremental {
+        "Incremental"
+    } else {
+        "Full"
+    }
+}
+
+fn language_scope_label(path: &str, language: Option<&str>) -> String {
+    match language {
+        Some(language) => language.to_string(),
+        None => {
+            let languages = project_languages(path).into_iter().collect::<Vec<_>>();
+            if languages.is_empty() {
+                supported_language_names().join(", ")
+            } else {
+                languages.join(", ")
+            }
+        }
+    }
+}
+
 fn hydrate_function_bodies(candidates: Vec<FunctionInfo>) -> Vec<FunctionInfo> {
     hydrate_candidates(
         candidates,
@@ -401,7 +445,7 @@ fn hydrate_function_bodies(candidates: Vec<FunctionInfo>) -> Vec<FunctionInfo> {
                 .iter()
                 .flat_map(|key| {
                     extractor
-                        .find_function_definitions(&key.name, key.class_name.as_deref())
+                        .collect_function_definitions(&key.name, key.class_name.as_deref())
                         .into_iter()
                         .filter(|function| FunctionKey::from(function) == *key)
                 })

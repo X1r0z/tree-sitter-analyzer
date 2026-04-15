@@ -14,7 +14,7 @@ Rust CLI tool using **clap** (derive) for arg parsing. Parses source code via **
 Entry point: `src/main.rs`.
 - `src/models.rs` – Core data types (`FunctionInfo`, `ClassInfo`, `Location`, `IndexInfo`, etc.), all shared across extraction, analysis, traversal, and JSON output.
 - `src/commands.rs` – Subcommand dispatch and command execution flow; ensures `tsa.db` exists and is compatible before running queries.
-- `src/analyzers.rs` – SQLite-backed query backend used by all query commands.
+- `src/analyzer.rs` – SQLite-backed query backend used by all query commands.
 - `src/extractor.rs` – Extracts AST information from parsed trees.
 - `src/graph.rs` – Multi-level call graph tracing and graph result assembly.
 - `src/languages.rs` – Language detection by extension and supported-language metadata.

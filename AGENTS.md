@@ -16,9 +16,7 @@ Entry point: `src/main.rs`.
 - `src/commands.rs` – Subcommand dispatch and command execution flow; ensures `tsa.db` exists and is compatible before running queries.
 - `src/analyzer.rs` – SQLite-backed query backend used by all query commands.
 - `src/extractor.rs` – Extracts AST information from parsed trees.
-- `src/graph.rs` – Multi-level call graph tracing and graph result assembly.
 - `src/languages.rs` – Language detection by extension and supported-language metadata.
-- `src/search.rs` – Candidate file filtering and symbol/text search helpers.
 - `src/output.rs` – JSON output formatting for stdout.
 - `src/traversal.rs` – Shared traversal utilities for graph and hierarchy analysis.
 - `src/utils.rs` – Shared helpers: file discovery, progress bars, path relativization, and result sorting.

@@ -6,7 +6,6 @@ All commands output structured JSON by default. Every successful response shares
 {
   "meta": {
     "root": "<analyzed path>",
-    "backend": "<analyzer backend>",
     "files": <number>,
     "count": <number of results>
   },
@@ -16,12 +15,7 @@ All commands output structured JSON by default. Every successful response shares
 }
 ```
 
-`backend` represents the analyzer backend:
-
-- `source`: parse source files directly
-- `store`: query a compatible `tsa.db` index from the current working directory
-
-`meta.files` is the number of files considered by the active backend for the request.
+`meta.files` is the number of files considered for the request.
 Any `file` or `location.file` value in result items is reported relative to `meta.root`.
 
 Errors are returned as:
@@ -49,7 +43,6 @@ Builds or rebuilds `tsa.db` in the current working directory.
 {
   "meta": {
     "root": "/path/to/project",
-    "backend": "source",
     "files": 42,
     "count": 1
   },
@@ -94,7 +87,6 @@ Each `params` item contains:
 {
   "meta": {
     "root": "/path/to/project",
-    "backend": "source",
     "files": 42,
     "count": 2
   },
@@ -142,7 +134,6 @@ Each `params` item contains:
 {
   "meta": {
     "root": "/path/to/project",
-    "backend": "source",
     "files": 42,
     "count": 1
   },
@@ -174,7 +165,6 @@ Each `params` item contains:
 {
   "meta": {
     "root": "/path/to/project",
-    "backend": "source",
     "files": 42,
     "count": 2
   },
@@ -212,7 +202,6 @@ Each `params` item contains:
 {
   "meta": {
     "root": "/path/to/project",
-    "backend": "source",
     "files": 42,
     "count": 2
   },
@@ -258,7 +247,6 @@ Each `target` object contains:
 {
   "meta": {
     "root": "/path/to/project",
-    "backend": "source",
     "files": 42,
     "count": 2
   },
@@ -311,7 +299,6 @@ Result items use the same shape as `classes`.
 {
   "meta": {
     "root": "/path/to/project",
-    "backend": "source",
     "files": 42,
     "count": 2
   },
@@ -347,7 +334,6 @@ Result items use the same shape as `classes`.
 {
   "meta": {
     "root": "/path/to/project",
-    "backend": "source",
     "files": 42,
     "count": 2
   },
@@ -378,7 +364,6 @@ Result items use the same shape as `classes`.
 {
   "meta": {
     "root": "/path/to/project",
-    "backend": "source",
     "files": 42,
     "count": 2
   },
@@ -414,7 +399,6 @@ Result items use the same shape as `classes`.
 {
   "meta": {
     "root": "/path/to/project",
-    "backend": "source",
     "files": 42,
     "count": 2
   },
@@ -459,7 +443,6 @@ Each `nodes` item:
 {
   "meta": {
     "root": "/path/to/project",
-    "backend": "source",
     "files": 42,
     "count": 2
   },
@@ -515,7 +498,6 @@ Result items use the same shape as `functions`, plus:
 {
   "meta": {
     "root": "/path/to/project",
-    "backend": "source",
     "files": 42,
     "count": 2
   },
@@ -550,7 +532,6 @@ Result items use the same shape as `functions`, plus:
 {
   "meta": {
     "root": "/path/to/project",
-    "backend": "source",
     "files": 42,
     "count": 2
   },

@@ -4,6 +4,7 @@ use tree_sitter::{Node, Query, QueryCursor, QueryMatch};
 use super::ParseContext;
 use crate::languages::{compiled_query, QueryKind};
 
+#[derive(Clone, Copy)]
 pub(crate) struct CallCaptureMatch<'a> {
     pub(crate) call: Node<'a>,
     pub(crate) callee: Option<Node<'a>>,
@@ -109,6 +110,27 @@ pub(crate) fn decode_call_capture_match<'a>(
         method,
         object,
     })
+}
+
+pub(crate) fn collect_call_capture_matches<'a>(
+    context: &'a ParseContext,
+) -> Vec<CallCaptureMatch<'a>> {
+    let Some(query) = compiled_query(context.language(), QueryKind::Call) else {
+        return Vec::new();
+    };
+    let Some(indices) = CallCaptureIndices::for_query(query) else {
+        return Vec::new();
+    };
+
+    let mut cursor = QueryCursor::new();
+    let mut capture_matches = cursor.matches(query, context.tree().root_node(), context.source());
+    let mut out = Vec::new();
+    while let Some(capture_match) = capture_matches.next() {
+        if let Some(matched) = decode_call_capture_match(capture_match, indices) {
+            out.push(matched);
+        }
+    }
+    out
 }
 
 pub(crate) fn collect_import_capture_matches<'a>(

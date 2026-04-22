@@ -5,12 +5,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use streaming_iterator::StreamingIterator;
 use tree_sitter::{Node, Parser, Tree};
 
 use super::capture;
 use super::languages::python;
-use crate::languages::{compiled_query, detect_language_engine, LanguageEngine, QueryKind};
+use crate::languages::{detect_language_engine, LanguageEngine, QueryKind};
 use crate::models::{
     AnnotationInfo, CallInfo, ClassInfo, FieldInfo, FunctionInfo, FunctionParamInfo, ImportInfo,
     Location, PythonPropertyCallerInfo, PythonPropertyInfo, RefInfo, RefKey,
@@ -521,13 +520,13 @@ impl ParseContext {
     }
 
     pub(crate) fn collect_calls(&self) -> Vec<CallInfo> {
-        let Some(query) = compiled_query(self.language(), QueryKind::Call) else {
-            return Vec::new();
-        };
-        let Some(capture_indices) = capture::CallCaptureIndices::for_query(query) else {
-            return Vec::new();
-        };
-
+        let mut matches = capture::collect_call_capture_matches(self);
+        matches.sort_by_key(|matched| {
+            (
+                matched.call.start_byte(),
+                std::cmp::Reverse(matched.call.end_byte()),
+            )
+        });
         let is_js_family = matches!(self.language(), "javascript" | "typescript" | "tsx");
         let mut interval_lookup = if is_js_family {
             None
@@ -543,23 +542,13 @@ impl ParseContext {
             index.map(EnclosingIntervalLookup::new)
         };
 
-        let mut cursor = tree_sitter::QueryCursor::new();
-        let mut capture_matches = cursor.matches(query, self.tree().root_node(), self.source());
         let mut calls = Vec::new();
         let mut last_call_start = None;
-        loop {
-            capture_matches.advance();
-            let matched = capture_matches.get().and_then(|capture_match| {
-                capture::decode_call_capture_match(capture_match, capture_indices)
-            });
-
-            let Some(matched) = matched else {
-                break;
-            };
+        for matched in matches {
             let call_node = matched.call;
             debug_assert!(
                 last_call_start.is_none_or(|previous| previous <= call_node.start_byte()),
-                "call query matches should be emitted in start-byte order"
+                "call query matches should be sorted by start byte"
             );
             last_call_start = Some(call_node.start_byte());
             let enclosing = if is_js_family {

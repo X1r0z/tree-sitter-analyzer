@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::Hash;
 use std::path::Path;
 
@@ -7,8 +7,8 @@ use serde_json::{json, Value};
 
 use crate::analyzer::CodeAnalyzer;
 use crate::db::{
-    db_path_in_current_dir, file_record_metadata, file_record_with_hash_from_source, FileIndexData,
-    IndexStore, IndexSyncPlan, IndexSynchronizer, IndexedFileRecord,
+    db_path_in_current_dir, file_record_from_metadata, FileIndexData, IndexStore, IndexSyncPlan,
+    IndexSynchronizer, IndexedFileRecord,
 };
 use crate::extractor::CodeExtractor;
 use crate::languages::{detect_language, supported_language_names};
@@ -16,7 +16,7 @@ use crate::models::{
     FunctionInfo, FunctionKey, GraphDirection, IndexInfo, Location, RefInfo, RefKey,
 };
 use crate::output::{self, FunctionView};
-use crate::utils::{find_files, progress_bar, project_languages};
+use crate::utils::{collect_files, progress_bar};
 
 struct CommandContext {
     real_path: String,
@@ -318,7 +318,8 @@ fn build_file_index(
     let language = detect_language(Path::new(file))
         .ok_or_else(|| anyhow::anyhow!("Could not detect language for: {}", file))?
         .to_string();
-    let record_without_hash = file_record_metadata(file, &language)?;
+    let metadata = fs::metadata(file)?;
+    let record_without_hash = file_record_from_metadata(file, &language, &metadata)?;
     if let Some(record) = existing.filter(|record| {
         record.language == record_without_hash.language
             && record.mtime_nanos == record_without_hash.mtime_nanos
@@ -327,7 +328,8 @@ fn build_file_index(
         return Ok((record.clone(), None));
     }
     let source = fs::read(file)?;
-    let file_record = file_record_with_hash_from_source(file, &language, &source)?;
+    let mut file_record = record_without_hash;
+    file_record.content_hash = blake3::hash(&source).to_hex().to_string();
 
     let mut extractor = CodeExtractor::from_source(file, source)?;
     let snapshot = extractor.build_snapshot();
@@ -346,10 +348,11 @@ fn build_index(path: &str, language: Option<&str>) -> anyhow::Result<IndexInfo> 
     anyhow::ensure!(root.exists(), "Path not found: {}", path);
     anyhow::ensure!(root.is_dir(), "Path must be a directory: {}", path);
 
-    let files = find_files(&real_path, language);
+    let discovery = collect_files(&real_path, language);
+    let files = discovery.files;
     let total_files = files.len();
     let db_path = db_path_in_current_dir()?;
-    let language_scope = language_scope_label(&real_path, language);
+    let language_scope = language_scope_label(language, &discovery.languages);
     let (incremental, existing) = match IndexStore::open(&db_path) {
         Ok(store) if store.matches_root_path(&real_path).unwrap_or(false) => (
             true,
@@ -421,15 +424,14 @@ fn index_mode_label(incremental: bool) -> &'static str {
     }
 }
 
-fn language_scope_label(path: &str, language: Option<&str>) -> String {
+fn language_scope_label(language: Option<&str>, languages: &BTreeSet<String>) -> String {
     match language {
         Some(language) => language.to_string(),
         None => {
-            let languages = project_languages(path).into_iter().collect::<Vec<_>>();
             if languages.is_empty() {
                 supported_language_names().join(", ")
             } else {
-                languages.join(", ")
+                languages.iter().cloned().collect::<Vec<_>>().join(", ")
             }
         }
     }

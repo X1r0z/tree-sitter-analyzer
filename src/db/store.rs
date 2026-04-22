@@ -9,7 +9,7 @@ use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Transact
 
 use super::types::{IndexedFileEntry, IndexedFileRecord};
 use crate::languages::supported_language_names;
-use crate::utils::project_languages;
+use crate::utils::collect_files;
 
 pub(crate) struct IndexStore {
     conn: Connection,
@@ -109,7 +109,7 @@ impl IndexStore {
     fn required_languages(root_path: &str, language: Option<&str>) -> BTreeSet<String> {
         match language {
             Some(language) => std::iter::once(language.to_string()).collect(),
-            None => project_languages(root_path),
+            None => collect_files(root_path, None).languages,
         }
     }
 
@@ -120,6 +120,13 @@ impl IndexStore {
     }
 
     pub(crate) fn ensure_schema(conn: &Connection) -> anyhow::Result<()> {
+        Self::ensure_core_schema(conn)?;
+        Self::apply_migrations(conn)?;
+        Self::ensure_index_schema(conn)?;
+        Ok(())
+    }
+
+    pub(crate) fn ensure_core_schema(conn: &Connection) -> anyhow::Result<()> {
         conn.execute_batch(
             "
             PRAGMA journal_mode = WAL;
@@ -258,7 +265,14 @@ impl IndexStore {
                 end_line INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
             );
+        ",
+        )?;
+        Ok(())
+    }
 
+    pub(crate) fn ensure_index_schema(conn: &Connection) -> anyhow::Result<()> {
+        conn.execute_batch(
+            "
             CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
             CREATE INDEX IF NOT EXISTS idx_files_language ON files(language);
             CREATE INDEX IF NOT EXISTS idx_files_language_path ON files(language, path);
@@ -297,9 +311,62 @@ impl IndexStore {
             CREATE INDEX IF NOT EXISTS idx_python_property_callers_caller_class_file_line ON python_property_callers(caller, caller_class_name, file_id, start_line);
             CREATE INDEX IF NOT EXISTS idx_python_property_callers_file_name_line ON python_property_callers(file_id, property_name, start_line);
             CREATE INDEX IF NOT EXISTS idx_python_property_callers_file_caller_class_line ON python_property_callers(file_id, caller, caller_class_name, start_line);
-        ",
+            ",
         )?;
-        Self::apply_migrations(conn)?;
+        Self::ensure_trigram_fts(conn, "functions_fts", "name", "functions", "id", "name")?;
+        Self::ensure_trigram_fts(conn, "classes_fts", "name", "classes", "id", "name")?;
+        Self::ensure_trigram_fts(conn, "imports_fts", "module", "imports", "id", "module")?;
+        Self::ensure_trigram_fts(conn, "annotations_fts", "name", "annotations", "id", "name")?;
+        Ok(())
+    }
+
+    pub(crate) fn drop_index_schema(conn: &Connection) -> anyhow::Result<()> {
+        conn.execute_batch(
+            "
+            DROP TABLE IF EXISTS functions_fts;
+            DROP TABLE IF EXISTS classes_fts;
+            DROP TABLE IF EXISTS imports_fts;
+            DROP TABLE IF EXISTS annotations_fts;
+            DROP INDEX IF EXISTS idx_files_path;
+            DROP INDEX IF EXISTS idx_files_language;
+            DROP INDEX IF EXISTS idx_files_language_path;
+            DROP INDEX IF EXISTS idx_functions_name_class;
+            DROP INDEX IF EXISTS idx_functions_name_class_file;
+            DROP INDEX IF EXISTS idx_functions_file_id_start_line;
+            DROP INDEX IF EXISTS idx_function_params_function_id;
+            DROP INDEX IF EXISTS idx_function_params_function_id_name;
+            DROP INDEX IF EXISTS idx_classes_name;
+            DROP INDEX IF EXISTS idx_classes_file_id_start_line;
+            DROP INDEX IF EXISTS idx_class_methods_class_id;
+            DROP INDEX IF EXISTS idx_class_super_classes_class_id;
+            DROP INDEX IF EXISTS idx_class_super_classes_super_name;
+            DROP INDEX IF EXISTS idx_class_super_classes_super_name_class_id;
+            DROP INDEX IF EXISTS idx_fields_class_name;
+            DROP INDEX IF EXISTS idx_fields_file_class_name;
+            DROP INDEX IF EXISTS idx_fields_file_class_name_name;
+            DROP INDEX IF EXISTS idx_fields_file_id_start_line;
+            DROP INDEX IF EXISTS idx_calls_callee;
+            DROP INDEX IF EXISTS idx_calls_callee_file;
+            DROP INDEX IF EXISTS idx_calls_caller_class;
+            DROP INDEX IF EXISTS idx_calls_caller_class_file;
+            DROP INDEX IF EXISTS idx_calls_file_caller_class_line;
+            DROP INDEX IF EXISTS idx_calls_file_callee_line;
+            DROP INDEX IF EXISTS idx_imports_module;
+            DROP INDEX IF EXISTS idx_imports_file_id_start_line;
+            DROP INDEX IF EXISTS idx_annotations_name;
+            DROP INDEX IF EXISTS idx_annotations_name_file;
+            DROP INDEX IF EXISTS idx_annotations_file_id_start_line;
+            DROP INDEX IF EXISTS idx_refs_file_id_start_end_type;
+            DROP INDEX IF EXISTS idx_refs_name_file;
+            DROP INDEX IF EXISTS idx_python_properties_name_class;
+            DROP INDEX IF EXISTS idx_python_properties_file_name_class;
+            DROP INDEX IF EXISTS idx_python_property_callers_name;
+            DROP INDEX IF EXISTS idx_python_property_callers_name_caller_class;
+            DROP INDEX IF EXISTS idx_python_property_callers_caller_class_file_line;
+            DROP INDEX IF EXISTS idx_python_property_callers_file_name_line;
+            DROP INDEX IF EXISTS idx_python_property_callers_file_caller_class_line;
+            ",
+        )?;
         Ok(())
     }
 
@@ -398,37 +465,23 @@ impl IndexStore {
                 )?;
             }
         }
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_python_property_callers_name_caller_class ON python_property_callers(property_name, caller_class_name)",
-            [],
-        )?;
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_python_property_callers_caller_class_file_line ON python_property_callers(caller, caller_class_name, file_id, start_line)",
-            [],
-        )?;
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_python_property_callers_file_name_line ON python_property_callers(file_id, property_name, start_line)",
-            [],
-        )?;
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_python_property_callers_file_caller_class_line ON python_property_callers(file_id, caller, caller_class_name, start_line)",
-            [],
-        )?;
-        Self::ensure_trigram_fts(conn, "functions_fts", "name", "functions", "id", "name")?;
-        Self::ensure_trigram_fts(conn, "classes_fts", "name", "classes", "id", "name")?;
-        Self::ensure_trigram_fts(conn, "imports_fts", "module", "imports", "id", "module")?;
-        Self::ensure_trigram_fts(conn, "annotations_fts", "name", "annotations", "id", "name")?;
         Ok(())
     }
 
     pub(crate) fn clear(tx: &Transaction<'_>) -> anyhow::Result<()> {
+        for table in [
+            "functions_fts",
+            "classes_fts",
+            "imports_fts",
+            "annotations_fts",
+        ] {
+            if Self::table_exists(tx, table)? {
+                tx.execute(&format!("DELETE FROM {table}"), [])?;
+            }
+        }
         tx.execute_batch(
             "
             DELETE FROM metadata;
-            DELETE FROM functions_fts;
-            DELETE FROM classes_fts;
-            DELETE FROM imports_fts;
-            DELETE FROM annotations_fts;
             DELETE FROM class_methods;
             DELETE FROM class_super_classes;
             DELETE FROM python_property_callers;
@@ -703,7 +756,7 @@ impl IndexStore {
         rows.collect::<Result<HashSet<_>, _>>().map_err(Into::into)
     }
 
-    fn table_exists(conn: &Connection, table_name: &str) -> anyhow::Result<bool> {
+    pub(crate) fn table_exists(conn: &Connection, table_name: &str) -> anyhow::Result<bool> {
         conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?1)",
             [table_name],

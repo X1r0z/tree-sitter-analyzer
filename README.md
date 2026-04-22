@@ -10,7 +10,6 @@ A code analysis toolkit using [tree-sitter](https://tree-sitter.github.io/tree-s
 - **Import Analysis** - Extract import statements and dependencies
 - **Annotation Analysis** - Extract Java annotations and Python decorators with their targets
 - **Symbol Reference Tracking** - Find identifier, type, property, field, and import-path references for a specific code symbol
-- **Project Indexing** - Build a persistent cache for faster repeated project queries
 
 ## Supported Languages
 

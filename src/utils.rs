@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::io::IsTerminal;
 use std::path::Path;
 use std::sync::Mutex;
@@ -10,15 +10,94 @@ use serde_json::Value;
 use crate::languages::detect_language;
 use crate::models::{CalleeInfo, CallerInfo};
 
-pub fn find_files(path: &str, language: Option<&str>) -> Vec<String> {
-    let files = Mutex::new(Vec::new());
+#[derive(Debug, Default)]
+pub struct FileDiscovery {
+    pub files: Vec<String>,
+    pub languages: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, Default, Eq, Hash, PartialEq)]
+struct FileIdentity {
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(not(unix))]
+    path: String,
+}
+
+#[derive(Debug, Clone)]
+struct DiscoveredFile {
+    path: String,
+    identity: FileIdentity,
+}
+
+#[derive(Default)]
+struct LocalFileCollection {
+    files: Vec<DiscoveredFile>,
+    languages: BTreeSet<String>,
+}
+
+struct ThreadLocalFileCollector<'a> {
+    shared: &'a Mutex<LocalFileCollection>,
+    local: LocalFileCollection,
+}
+
+impl<'a> ThreadLocalFileCollector<'a> {
+    fn new(shared: &'a Mutex<LocalFileCollection>) -> Self {
+        Self {
+            shared,
+            local: LocalFileCollection::default(),
+        }
+    }
+
+    fn push(&mut self, path: &Path, language: &str) {
+        self.local.files.push(DiscoveredFile {
+            path: path.to_string_lossy().to_string(),
+            identity: file_identity(path),
+        });
+        self.local.languages.insert(language.to_string());
+    }
+}
+
+impl Drop for ThreadLocalFileCollector<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut shared) = self.shared.lock() {
+            shared.files.extend(self.local.files.drain(..));
+            shared.languages.append(&mut self.local.languages);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn file_identity(path: &Path) -> FileIdentity {
+    use std::fs;
+    use std::os::unix::fs::MetadataExt;
+
+    fs::metadata(path)
+        .map(|metadata| FileIdentity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+        .unwrap_or_else(|_| FileIdentity::default())
+}
+
+#[cfg(not(unix))]
+fn file_identity(path: &Path) -> FileIdentity {
+    FileIdentity {
+        path: path.to_string_lossy().to_string(),
+    }
+}
+
+pub fn collect_files(path: &str, language: Option<&str>) -> FileDiscovery {
+    let discovered = Mutex::new(LocalFileCollection::default());
     let walker = ignore::WalkBuilder::new(path)
         .hidden(false)
         .require_git(false)
         .build_parallel();
 
     walker.run(|| {
-        let files = &files;
+        let mut local = ThreadLocalFileCollector::new(&discovered);
         Box::new(move |entry| {
             let Ok(entry) = entry else {
                 return WalkState::Continue;
@@ -26,13 +105,11 @@ pub fn find_files(path: &str, language: Option<&str>) -> Vec<String> {
             let p = entry.path();
             if p.is_file() {
                 let detected_language = detect_language(p);
-                let matches_language =
-                    language.is_none_or(|expected| detected_language == Some(expected));
-                if matches_language && detected_language.is_some() {
-                    if let Ok(canonical) = p.canonicalize() {
-                        if let Ok(mut matched_files) = files.lock() {
-                            matched_files.push(canonical.to_string_lossy().to_string());
-                        }
+                if let Some(detected_language) = detected_language {
+                    let matches_language =
+                        language.is_none_or(|expected| detected_language == expected);
+                    if matches_language {
+                        local.push(p, detected_language);
                     }
                 }
             }
@@ -40,17 +117,19 @@ pub fn find_files(path: &str, language: Option<&str>) -> Vec<String> {
         })
     });
 
-    let mut files = files.into_inner().unwrap_or_default();
-    files.sort();
-    files.dedup();
-    files
-}
-
-pub fn project_languages(path: &str) -> BTreeSet<String> {
-    find_files(path, None)
+    let discovered = discovered.into_inner().unwrap_or_default();
+    let mut files = discovered.files;
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    let mut seen = HashSet::new();
+    let files = files
         .into_iter()
-        .filter_map(|file| detect_language(Path::new(&file)).map(str::to_string))
-        .collect()
+        .filter_map(|file| seen.insert(file.identity).then_some(file.path))
+        .collect();
+
+    FileDiscovery {
+        files,
+        languages: discovered.languages,
+    }
 }
 
 pub fn progress_style(unit: &str, bar_style: &str) -> ProgressStyle {

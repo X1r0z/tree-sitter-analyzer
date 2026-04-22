@@ -863,12 +863,16 @@ fn resolve_receiver_targets_for_identifier(
     };
 
     if symbolic_targets.len() == 1 {
-        return resolve_symbolic_class_targets(parser, call_node, &symbolic_targets[0]);
+        return resolve_symbolic_targets_from_receiver_facts(
+            parser,
+            call_node,
+            &symbolic_targets[0],
+        );
     }
 
     let mut resolved = symbolic_targets
         .into_iter()
-        .flat_map(|target| resolve_symbolic_class_targets(parser, call_node, &target))
+        .flat_map(|target| resolve_symbolic_targets_from_receiver_facts(parser, call_node, &target))
         .collect::<Vec<_>>();
     resolved.sort_unstable();
     resolved.dedup();
@@ -1426,7 +1430,7 @@ impl<'a> ExpressionTargetResolver<'a> {
                         )
                         .into_iter()
                 })
-                .flat_map(|target| self.resolve_symbolic_class_targets(&target))
+                .flat_map(|target| self.resolve_symbolic_targets_in_scope(&target))
                 .collect(),
             "new_expression" => expression_node
                 .child_by_field_name("constructor")
@@ -1451,14 +1455,16 @@ impl<'a> ExpressionTargetResolver<'a> {
                         .clone()
                         .into_iter()
                         .flat_map(|class_name| {
-                            self.field_type_candidates(&class_name, &property_name)
+                            self.class_targets_for_field_type(&class_name, &property_name)
                         })
                         .collect();
                 }
 
                 self.visit(object_node)
                     .into_iter()
-                    .flat_map(|class_name| self.field_type_candidates(&class_name, &property_name))
+                    .flat_map(|class_name| {
+                        self.class_targets_for_field_type(&class_name, &property_name)
+                    })
                     .collect()
             }
             "parenthesized_expression" => (0..expression_node.named_child_count())
@@ -1476,7 +1482,7 @@ impl<'a> ExpressionTargetResolver<'a> {
         targets
     }
 
-    fn resolve_symbolic_class_targets(&self, target: &str) -> Vec<String> {
+    fn resolve_symbolic_targets_in_scope(&self, target: &str) -> Vec<String> {
         if target.is_empty() {
             return Vec::new();
         }
@@ -1491,13 +1497,13 @@ impl<'a> ExpressionTargetResolver<'a> {
                 .class_name
                 .clone()
                 .into_iter()
-                .flat_map(|class_name| self.resolve_field_chain(&class_name, chain))
+                .flat_map(|class_name| self.resolve_field_chain_in_scope(&class_name, chain))
                 .collect();
         }
         Vec::new()
     }
 
-    fn resolve_field_chain(&self, root_class: &str, chain: &str) -> Vec<String> {
+    fn resolve_field_chain_in_scope(&self, root_class: &str, chain: &str) -> Vec<String> {
         let mut current = vec![root_class.to_string()];
         for segment in chain.split('.') {
             if segment.is_empty() {
@@ -1505,7 +1511,7 @@ impl<'a> ExpressionTargetResolver<'a> {
             }
             let mut next = Vec::new();
             for class_name in &current {
-                next.extend(self.field_type_candidates(class_name, segment));
+                next.extend(self.class_targets_for_field_type(class_name, segment));
             }
             next.sort_unstable();
             next.dedup();
@@ -1517,7 +1523,7 @@ impl<'a> ExpressionTargetResolver<'a> {
         current
     }
 
-    fn field_type_candidates(&self, class_name: &str, field_name: &str) -> Vec<String> {
+    fn class_targets_for_field_type(&self, class_name: &str, field_name: &str) -> Vec<String> {
         let mut targets: Vec<String> = self
             .facts
             .field_types_by_class
@@ -1542,7 +1548,7 @@ impl<'a> ExpressionTargetResolver<'a> {
     }
 }
 
-fn resolve_symbolic_class_targets(
+fn resolve_symbolic_targets_from_receiver_facts(
     parser: &ParseContext,
     call_node: Node<'_>,
     target: &str,
@@ -1567,13 +1573,19 @@ fn resolve_symbolic_class_targets(
             .find_enclosing_context(call_node)
             .class_name
             .into_iter()
-            .flat_map(|class_name| resolve_field_chain(parser, &class_name, chain))
+            .flat_map(|class_name| {
+                resolve_field_chain_from_receiver_facts(parser, &class_name, chain)
+            })
             .collect();
     }
     Vec::new()
 }
 
-fn resolve_field_chain(parser: &ParseContext, root_class: &str, chain: &str) -> Vec<String> {
+fn resolve_field_chain_from_receiver_facts(
+    parser: &ParseContext,
+    root_class: &str,
+    chain: &str,
+) -> Vec<String> {
     let mut current = vec![root_class.to_string()];
     for segment in chain.split('.') {
         if segment.is_empty() {
@@ -1581,7 +1593,7 @@ fn resolve_field_chain(parser: &ParseContext, root_class: &str, chain: &str) -> 
         }
         let mut next = Vec::new();
         for class_name in &current {
-            next.extend(field_type_candidates(parser, class_name, segment));
+            next.extend(receiver_targets_for_field(parser, class_name, segment));
         }
         next.sort_unstable();
         next.dedup();
@@ -1593,7 +1605,11 @@ fn resolve_field_chain(parser: &ParseContext, root_class: &str, chain: &str) -> 
     current
 }
 
-fn field_type_candidates(parser: &ParseContext, class_name: &str, field_name: &str) -> Vec<String> {
+fn receiver_targets_for_field(
+    parser: &ParseContext,
+    class_name: &str,
+    field_name: &str,
+) -> Vec<String> {
     receiver_facts(parser)
         .field_targets_by_class
         .get(class_name)
@@ -1670,7 +1686,7 @@ pub(crate) fn split_attribute_parts(
     node: Node<'_>,
 ) -> (String, Option<String>) {
     let mut callee = String::new();
-    let mut obj_name: Option<String> = None;
+    let mut object_name: Option<String> = None;
 
     match node.kind() {
         "member_expression" => {
@@ -1678,13 +1694,13 @@ pub(crate) fn split_attribute_parts(
                 callee = parser.node_text(prop_node);
             }
             if let Some(obj_node) = node.child_by_field_name("object") {
-                obj_name = Some(parser.node_text(obj_node));
+                object_name = Some(parser.node_text(obj_node));
             }
         }
         _ => {
             let mut ids = Vec::new();
-            for i in 0..node.named_child_count() {
-                let child = node.named_child(i as u32).unwrap();
+            for child_index in 0..node.named_child_count() {
+                let child = node.named_child(child_index as u32).unwrap();
                 if matches!(
                     child.kind(),
                     "identifier"
@@ -1694,19 +1710,19 @@ pub(crate) fn split_attribute_parts(
                 ) {
                     ids.push(parser.node_text(child));
                 } else if child.kind() == "member_expression" {
-                    obj_name = Some(parser.node_text(child));
+                    object_name = Some(parser.node_text(child));
                 }
             }
             if let Some(last) = ids.last() {
                 callee = last.clone();
-                if ids.len() > 1 && obj_name.is_none() {
-                    obj_name = Some(ids[0].clone());
+                if ids.len() > 1 && object_name.is_none() {
+                    object_name = Some(ids[0].clone());
                 }
             }
         }
     }
 
-    (callee, obj_name)
+    (callee, object_name)
 }
 
 fn collect_super_types_from_expr(

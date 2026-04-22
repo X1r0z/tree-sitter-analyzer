@@ -7,7 +7,7 @@ use rusqlite::functions::FunctionFlags;
 use rusqlite::Error;
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Transaction};
 
-use super::types::{IndexedFileEntry, IndexedFileRecord};
+use super::types::{IndexedFileMetadata, IndexedFileRow};
 use crate::languages::supported_language_names;
 use crate::utils::collect_files;
 
@@ -502,7 +502,7 @@ impl IndexStore {
 
     pub(crate) fn refresh_temp_current_files(
         tx: &Transaction<'_>,
-        current_files: &[IndexedFileRecord],
+        current_files: &[IndexedFileMetadata],
     ) -> anyhow::Result<()> {
         tx.execute_batch(
             "
@@ -570,10 +570,10 @@ impl IndexStore {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
-    pub(crate) fn indexed_files_by_paths(
+    pub(crate) fn indexed_file_metadata_by_path(
         &self,
         paths: &[String],
-    ) -> anyhow::Result<HashMap<String, IndexedFileRecord>> {
+    ) -> anyhow::Result<HashMap<String, IndexedFileMetadata>> {
         const QUERY_CHUNK_SIZE: usize = 500;
 
         let mut records = HashMap::new();
@@ -592,7 +592,7 @@ impl IndexStore {
             );
             let mut stmt = self.conn.prepare(&query)?;
             let rows = stmt.query_map(params_from_iter(chunk.iter()), |row| {
-                Ok(IndexedFileRecord {
+                Ok(IndexedFileMetadata {
                     path: row.get(0)?,
                     language: row.get(1)?,
                     mtime_nanos: row.get(2)?,
@@ -608,10 +608,10 @@ impl IndexStore {
         Ok(records)
     }
 
-    pub(crate) fn indexed_file_entries_by_paths(
+    pub(crate) fn indexed_file_rows_by_path(
         tx: &Transaction<'_>,
         paths: &[String],
-    ) -> anyhow::Result<HashMap<String, IndexedFileEntry>> {
+    ) -> anyhow::Result<HashMap<String, IndexedFileRow>> {
         const QUERY_CHUNK_SIZE: usize = 500;
 
         let mut entries = HashMap::new();
@@ -630,7 +630,7 @@ impl IndexStore {
             );
             let mut stmt = tx.prepare(&query)?;
             let rows = stmt.query_map(params_from_iter(chunk.iter()), |row| {
-                Ok(IndexedFileEntry {
+                Ok(IndexedFileRow {
                     id: row.get(0)?,
                     path: row.get(1)?,
                     language: row.get(2)?,

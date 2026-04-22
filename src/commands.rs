@@ -7,8 +7,8 @@ use serde_json::{json, Value};
 
 use crate::analyzer::CodeAnalyzer;
 use crate::db::{
-    db_path_in_current_dir, file_record_from_metadata, FileIndexData, IndexStore, IndexSyncPlan,
-    IndexSynchronizer, IndexedFileRecord,
+    db_path_in_current_dir, file_record_from_metadata, IndexStore, IndexSyncPlan,
+    IndexSynchronizer, IndexedFileMetadata, IndexedFileSnapshot,
 };
 use crate::extractor::CodeExtractor;
 use crate::languages::{detect_language, supported_language_names};
@@ -19,17 +19,17 @@ use crate::output::{self, FunctionView};
 use crate::utils::{collect_files, progress_bar};
 
 struct CommandContext {
-    real_path: String,
+    resolved_path: String,
     analyzer: CodeAnalyzer,
 }
 
 impl CommandContext {
     fn load(path: &str, language: Option<&str>) -> anyhow::Result<Self> {
-        let real_path = resolve_path(path);
-        ensure_index(&real_path, language)?;
-        let analyzer = CodeAnalyzer::from_current_dir(&real_path, language)?;
+        let resolved_path = resolve_path(path);
+        ensure_index(&resolved_path, language)?;
+        let analyzer = CodeAnalyzer::from_current_dir(&resolved_path, language)?;
         Ok(Self {
-            real_path,
+            resolved_path,
             analyzer,
         })
     }
@@ -56,7 +56,7 @@ pub(crate) fn functions(path: &str, language: Option<&str>, query: &str) -> Valu
         Err(error) => return error_response(error),
     };
     success_response(
-        &context.real_path,
+        &context.resolved_path,
         context.searched_files(),
         output::functions(&functions, FunctionView::Summary),
     )
@@ -72,7 +72,7 @@ pub(crate) fn classes(path: &str, language: Option<&str>, query: &str) -> Value 
         Err(error) => return error_response(error),
     };
     success_response(
-        &context.real_path,
+        &context.resolved_path,
         context.searched_files(),
         output::classes(&classes),
     )
@@ -88,7 +88,7 @@ pub(crate) fn fields(path: &str, language: Option<&str>, class_name: &str) -> Va
         Err(error) => return error_response(error),
     };
     success_response(
-        &context.real_path,
+        &context.resolved_path,
         context.searched_files(),
         output::fields(&fields),
     )
@@ -104,7 +104,7 @@ pub(crate) fn imports(path: &str, language: Option<&str>, query: &str) -> Value 
         Err(error) => return error_response(error),
     };
     success_response(
-        &context.real_path,
+        &context.resolved_path,
         context.searched_files(),
         output::imports(&imports),
     )
@@ -120,7 +120,7 @@ pub(crate) fn annotations(path: &str, language: Option<&str>, query: &str) -> Va
         Err(error) => return error_response(error),
     };
     success_response(
-        &context.real_path,
+        &context.resolved_path,
         context.searched_files(),
         output::annotations(&annotations),
     )
@@ -141,7 +141,7 @@ pub(crate) fn callers(
         Err(error) => return error_response(error),
     };
     success_response(
-        &context.real_path,
+        &context.resolved_path,
         context.searched_files(),
         output::callers(&callers),
     )
@@ -162,7 +162,7 @@ pub(crate) fn callees(
         Err(error) => return error_response(error),
     };
     success_response(
-        &context.real_path,
+        &context.resolved_path,
         context.searched_files(),
         output::callees(&callees),
     )
@@ -188,7 +188,7 @@ pub(crate) fn graph(
         Err(error) => return error_response(error),
     };
     success_response(
-        &context.real_path,
+        &context.resolved_path,
         context.searched_files(),
         output::graphs(&graphs),
     )
@@ -205,7 +205,7 @@ pub(crate) fn refs(path: &str, language: Option<&str>, name: &str) -> Value {
     };
     let refs = hydrate_ref_contexts(refs);
     success_response(
-        &context.real_path,
+        &context.resolved_path,
         context.searched_files(),
         output::refs(&refs),
     )
@@ -242,7 +242,7 @@ pub(crate) fn definition(
         .collect::<HashSet<_>>()
         .len();
     success_response(
-        &context.real_path,
+        &context.resolved_path,
         searched_files,
         output::functions(&functions, FunctionView::Definition),
     )
@@ -258,7 +258,7 @@ pub(crate) fn super_classes(path: &str, language: Option<&str>, class_name: &str
         Err(error) => return error_response(error),
     };
     success_response(
-        &context.real_path,
+        &context.resolved_path,
         context.searched_files(),
         output::classes(&super_classes),
     )
@@ -274,7 +274,7 @@ pub(crate) fn sub_classes(path: &str, language: Option<&str>, class_name: &str) 
         Err(error) => return error_response(error),
     };
     success_response(
-        &context.real_path,
+        &context.resolved_path,
         context.searched_files(),
         output::classes(&sub_classes),
     )
@@ -311,8 +311,8 @@ fn ensure_index(path: &str, language: Option<&str>) -> anyhow::Result<()> {
 
 fn build_file_index(
     file: &str,
-    existing: Option<&IndexedFileRecord>,
-) -> anyhow::Result<(IndexedFileRecord, Option<FileIndexData>)> {
+    existing: Option<&IndexedFileMetadata>,
+) -> anyhow::Result<(IndexedFileMetadata, Option<IndexedFileSnapshot>)> {
     use std::fs;
 
     let language = detect_language(Path::new(file))
@@ -335,28 +335,28 @@ fn build_file_index(
     let snapshot = extractor.build_snapshot();
     Ok((
         file_record.clone(),
-        Some(FileIndexData {
-            file: file_record,
+        Some(IndexedFileSnapshot {
+            metadata: file_record,
             snapshot,
         }),
     ))
 }
 
 fn build_index(path: &str, language: Option<&str>) -> anyhow::Result<IndexInfo> {
-    let real_path = resolve_path(path);
-    let root = Path::new(&real_path);
+    let resolved_path = resolve_path(path);
+    let root = Path::new(&resolved_path);
     anyhow::ensure!(root.exists(), "Path not found: {}", path);
     anyhow::ensure!(root.is_dir(), "Path must be a directory: {}", path);
 
-    let discovery = collect_files(&real_path, language);
+    let discovery = collect_files(&resolved_path, language);
     let files = discovery.files;
     let total_files = files.len();
     let db_path = db_path_in_current_dir()?;
     let language_scope = language_scope_label(language, &discovery.languages);
     let (incremental, existing) = match IndexStore::open(&db_path) {
-        Ok(store) if store.matches_root_path(&real_path).unwrap_or(false) => (
+        Ok(store) if store.matches_root_path(&resolved_path).unwrap_or(false) => (
             true,
-            store.indexed_files_by_paths(&files).unwrap_or_default(),
+            store.indexed_file_metadata_by_path(&files).unwrap_or_default(),
         ),
         Ok(_) | Err(_) => (false, Default::default()),
     };
@@ -367,7 +367,7 @@ fn build_index(path: &str, language: Option<&str>) -> anyhow::Result<IndexInfo> 
     );
     let progress = progress_bar(total_files, "files", "cyan/blue", &parse_message);
 
-    let indexed: Vec<Result<(IndexedFileRecord, Option<FileIndexData>), String>> = files
+    let indexed: Vec<Result<(IndexedFileMetadata, Option<IndexedFileSnapshot>), String>> = files
         .par_iter()
         .map(|file| {
             let result = build_file_index(file, existing.get(file));
@@ -394,7 +394,7 @@ fn build_index(path: &str, language: Option<&str>) -> anyhow::Result<IndexInfo> 
 
     let plan = IndexSyncPlan {
         current_files,
-        changed_files: snapshots,
+        changed_snapshots: snapshots,
     };
 
     let persist_message = format!(
@@ -403,14 +403,14 @@ fn build_index(path: &str, language: Option<&str>) -> anyhow::Result<IndexInfo> 
         language_scope
     );
     let db_progress = progress_bar(0, "steps", "green/blue", &persist_message);
-    IndexSynchronizer::sync(&db_path, &real_path, language, &plan, &db_progress)?;
+    IndexSynchronizer::sync(&db_path, &resolved_path, language, &plan, &db_progress)?;
     db_progress.finish_and_clear();
 
     Ok(IndexInfo {
         database: db_path.to_string_lossy().to_string(),
         candidates: total_files,
         indexed: plan.current_files.len(),
-        reparsed: plan.changed_files.len(),
+        reparsed: plan.changed_snapshots.len(),
         failed: errors.len(),
         errors,
     })

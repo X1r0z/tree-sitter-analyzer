@@ -1,6 +1,6 @@
 use rusqlite::{params, CachedStatement, Transaction};
 
-use super::types::FileIndexData;
+use super::types::IndexedFileSnapshot;
 
 pub(crate) struct SnapshotWriter<'tx> {
     tx: &'tx Transaction<'tx>,
@@ -117,13 +117,13 @@ impl<'tx> SnapshotWriter<'tx> {
         })
     }
 
-    pub(crate) fn insert_snapshot(&mut self, snapshot: &FileIndexData) -> anyhow::Result<()> {
+    pub(crate) fn insert_snapshot(&mut self, snapshot: &IndexedFileSnapshot) -> anyhow::Result<()> {
         self.insert_file.execute(params![
-            snapshot.file.path,
-            snapshot.file.language,
-            snapshot.file.mtime_nanos,
-            snapshot.file.size_bytes,
-            snapshot.file.content_hash,
+            snapshot.metadata.path,
+            snapshot.metadata.language,
+            snapshot.metadata.mtime_nanos,
+            snapshot.metadata.size_bytes,
+            snapshot.metadata.content_hash,
         ])?;
         let file_id = self.tx.last_insert_rowid();
 

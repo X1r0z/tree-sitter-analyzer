@@ -424,16 +424,16 @@ pub(crate) fn split_attribute_parts(
     node: Node<'_>,
 ) -> (String, Option<String>) {
     let mut callee = String::new();
-    let mut obj_name: Option<String> = None;
+    let mut object_name: Option<String> = None;
 
     if let Some(attr_node) = node.child_by_field_name("attribute") {
         callee = parser.node_text(attr_node);
     }
     if let Some(obj_node) = node.child_by_field_name("object") {
-        obj_name = Some(parser.node_text(obj_node));
+        object_name = Some(parser.node_text(obj_node));
     }
 
-    (callee, obj_name)
+    (callee, object_name)
 }
 
 pub(crate) fn unwrap_definition_node<'a>(node: Node<'a>) -> Node<'a> {

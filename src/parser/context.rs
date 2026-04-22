@@ -568,7 +568,7 @@ impl ParseContext {
             let resolved = self.engine().resolve_call(self, &matched, &enclosing);
             let callee = resolved.callee;
             let is_method = resolved.is_method;
-            let obj_name = resolved.object_name;
+            let object_name = resolved.object_name;
             let callee_function_node = resolved.callee_function_node;
 
             if callee.is_empty() {
@@ -576,7 +576,7 @@ impl ParseContext {
             }
             if !self
                 .engine()
-                .include_call(self, call_node, &callee, obj_name.as_deref())
+                .include_call(self, call_node, &callee, object_name.as_deref())
             {
                 continue;
             }
@@ -601,7 +601,7 @@ impl ParseContext {
                             location: call_location.clone(),
                             caller: enclosing.function_name.clone(),
                             caller_class_name: enclosing.class_name.clone(),
-                            object_name: obj_name.clone(),
+                            object_name: object_name.clone(),
                         });
                     }
                     used_resolved_calls = true;
@@ -614,7 +614,7 @@ impl ParseContext {
                     location: call_location,
                     caller: enclosing.function_name.clone(),
                     caller_class_name: enclosing.class_name.clone(),
-                    object_name: obj_name,
+                    object_name,
                 });
             }
         }

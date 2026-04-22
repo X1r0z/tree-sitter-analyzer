@@ -5,7 +5,7 @@ use rusqlite::Transaction;
 
 use super::snapshot::SnapshotWriter;
 use super::store::IndexStore;
-use super::types::{FileIndexData, IndexSyncPlan, IndexedFileRecord};
+use super::types::{IndexSyncPlan, IndexedFileMetadata, IndexedFileSnapshot};
 
 pub(crate) struct IndexSynchronizer;
 
@@ -35,7 +35,7 @@ impl IndexSynchronizer {
         let total_steps = 1
             + 3
             + 1
-            + plan.changed_files.len() as u64
+            + plan.changed_snapshots.len() as u64
             + deleted_files as u64
             + u64::from(!same_root);
         progress.set_length(total_steps);
@@ -88,10 +88,10 @@ impl IndexSynchronizer {
         progress.inc(1);
 
         if same_root {
-            Self::sync_snapshots(&tx, &plan.changed_files, &scope_languages, progress)?;
+            Self::sync_snapshots(&tx, &plan.changed_snapshots, &scope_languages, progress)?;
         } else {
             let mut writer = SnapshotWriter::without_fts(&tx)?;
-            for snapshot in &plan.changed_files {
+            for snapshot in &plan.changed_snapshots {
                 writer.insert_snapshot(snapshot)?;
                 progress.inc(1);
             }
@@ -106,7 +106,7 @@ impl IndexSynchronizer {
 
     fn sync_snapshots(
         tx: &Transaction<'_>,
-        changed_files: &[FileIndexData],
+        changed_snapshots: &[IndexedFileSnapshot],
         scope_languages: &[String],
         progress: &ProgressBar,
     ) -> anyhow::Result<()> {
@@ -118,18 +118,18 @@ impl IndexSynchronizer {
             }
         }
 
-        let changed_paths: Vec<String> = changed_files
+        let changed_paths: Vec<String> = changed_snapshots
             .iter()
-            .map(|snapshot| snapshot.file.path.clone())
+            .map(|snapshot| snapshot.metadata.path.clone())
             .collect();
-        let existing = IndexStore::indexed_file_entries_by_paths(tx, &changed_paths)?;
+        let existing = IndexStore::indexed_file_rows_by_path(tx, &changed_paths)?;
         let mut replaced_file_ids = Vec::new();
-        for snapshot in changed_files {
-            if let Some(record) = existing.get(snapshot.file.path.as_str()) {
-                let unchanged = record.language == snapshot.file.language
-                    && record.mtime_nanos == snapshot.file.mtime_nanos
-                    && record.size_bytes == snapshot.file.size_bytes
-                    && record.content_hash == snapshot.file.content_hash;
+        for snapshot in changed_snapshots {
+            if let Some(record) = existing.get(snapshot.metadata.path.as_str()) {
+                let unchanged = record.language == snapshot.metadata.language
+                    && record.mtime_nanos == snapshot.metadata.mtime_nanos
+                    && record.size_bytes == snapshot.metadata.size_bytes
+                    && record.content_hash == snapshot.metadata.content_hash;
                 if !unchanged {
                     replaced_file_ids.push(record.id);
                 }
@@ -140,13 +140,13 @@ impl IndexSynchronizer {
         }
 
         let mut writer = SnapshotWriter::new(tx)?;
-        for snapshot in changed_files {
-            match existing.get(snapshot.file.path.as_str()) {
+        for snapshot in changed_snapshots {
+            match existing.get(snapshot.metadata.path.as_str()) {
                 Some(record)
-                    if record.language == snapshot.file.language
-                        && record.mtime_nanos == snapshot.file.mtime_nanos
-                        && record.size_bytes == snapshot.file.size_bytes
-                        && record.content_hash == snapshot.file.content_hash => {}
+                    if record.language == snapshot.metadata.language
+                        && record.mtime_nanos == snapshot.metadata.mtime_nanos
+                        && record.size_bytes == snapshot.metadata.size_bytes
+                        && record.content_hash == snapshot.metadata.content_hash => {}
                 Some(_) | None => {
                     writer.insert_snapshot(snapshot)?;
                 }
@@ -213,13 +213,13 @@ pub(crate) fn file_record_from_metadata(
     path: &str,
     language: &str,
     metadata: &std::fs::Metadata,
-) -> anyhow::Result<IndexedFileRecord> {
+) -> anyhow::Result<IndexedFileMetadata> {
     let modified = metadata.modified()?;
     let mtime_nanos = modified
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos() as i64;
-    Ok(IndexedFileRecord {
+    Ok(IndexedFileMetadata {
         path: path.to_string(),
         language: language.to_string(),
         mtime_nanos,

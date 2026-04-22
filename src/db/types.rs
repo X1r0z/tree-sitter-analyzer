@@ -1,7 +1,7 @@
 use crate::models::FileSnapshot;
 
 #[derive(Debug, Clone)]
-pub(crate) struct IndexedFileRecord {
+pub(crate) struct IndexedFileMetadata {
     pub(crate) path: String,
     pub(crate) language: String,
     pub(crate) mtime_nanos: i64,
@@ -10,19 +10,19 @@ pub(crate) struct IndexedFileRecord {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct FileIndexData {
-    pub(crate) file: IndexedFileRecord,
+pub(crate) struct IndexedFileSnapshot {
+    pub(crate) metadata: IndexedFileMetadata,
     pub(crate) snapshot: FileSnapshot,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct IndexSyncPlan {
-    pub(crate) current_files: Vec<IndexedFileRecord>,
-    pub(crate) changed_files: Vec<FileIndexData>,
+    pub(crate) current_files: Vec<IndexedFileMetadata>,
+    pub(crate) changed_snapshots: Vec<IndexedFileSnapshot>,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct IndexedFileEntry {
+pub(crate) struct IndexedFileRow {
     pub(crate) id: i64,
     pub(crate) path: String,
     pub(crate) language: String,

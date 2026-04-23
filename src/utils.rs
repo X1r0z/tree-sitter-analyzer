@@ -63,7 +63,7 @@ impl<'a> ThreadLocalFileCollector<'a> {
 impl Drop for ThreadLocalFileCollector<'_> {
     fn drop(&mut self) {
         if let Ok(mut shared) = self.shared.lock() {
-            shared.files.extend(self.local.files.drain(..));
+            shared.files.append(&mut self.local.files);
             shared.languages.append(&mut self.local.languages);
         }
     }

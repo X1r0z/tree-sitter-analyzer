@@ -592,22 +592,24 @@ impl ParseContext {
                     .map(|node| node.kind() == "identifier")
                     .unwrap_or(false)
             {
-                let Some(function_node) = enclosing.function_node else {
-                    continue;
-                };
-                let resolved =
-                    self.resolve_call_targets_with_function_node(function_node, call_node, &callee);
-                if !resolved.is_empty() {
-                    for resolved_callee in resolved {
-                        calls.push(CallInfo {
-                            callee: resolved_callee,
-                            location: call_location.clone(),
-                            caller: enclosing.function_name.clone(),
-                            caller_class_name: enclosing.class_name.clone(),
-                            object_name: object_name.clone(),
-                        });
+                if let Some(function_node) = enclosing.function_node {
+                    let resolved = self.resolve_call_targets_with_function_node(
+                        function_node,
+                        call_node,
+                        &callee,
+                    );
+                    if !resolved.is_empty() {
+                        for resolved_callee in resolved {
+                            calls.push(CallInfo {
+                                callee: resolved_callee,
+                                location: call_location.clone(),
+                                caller: enclosing.function_name.clone(),
+                                caller_class_name: enclosing.class_name.clone(),
+                                object_name: object_name.clone(),
+                            });
+                        }
+                        used_resolved_calls = true;
                     }
-                    used_resolved_calls = true;
                 }
             }
 

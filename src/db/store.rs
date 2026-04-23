@@ -71,8 +71,8 @@ impl IndexStore {
         let language_filter = self.metadata_value("language_filter")?.unwrap_or_default();
         if language_filter.is_empty() {
             Ok(supported_language_names()
-                .iter()
-                .map(|name| (*name).to_string())
+                .into_iter()
+                .map(str::to_string)
                 .collect())
         } else {
             Ok(std::iter::once(language_filter).collect())
@@ -85,8 +85,8 @@ impl IndexStore {
 
     pub(crate) fn legacy_language_filter_value(languages: &BTreeSet<String>) -> String {
         let supported = supported_language_names()
-            .iter()
-            .map(|name| (*name).to_string())
+            .into_iter()
+            .map(str::to_string)
             .collect::<BTreeSet<_>>();
         if languages == &supported {
             String::new()

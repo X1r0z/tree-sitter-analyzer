@@ -107,9 +107,9 @@ pub fn collect_files(path: &str, language: Option<&str>) -> FileDiscovery {
                 let detected_language = detect_language(p);
                 if let Some(detected_language) = detected_language {
                     let matches_language =
-                        language.is_none_or(|expected| detected_language == expected);
+                        language.is_none_or(|expected| detected_language.name == expected);
                     if matches_language {
-                        local.push(p, detected_language);
+                        local.push(p, detected_language.name);
                     }
                 }
             }

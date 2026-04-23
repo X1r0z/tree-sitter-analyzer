@@ -641,8 +641,20 @@ impl<'a> CallEdgeQuery<'a> {
             loaded
         };
 
-        let resolved =
-            resolve_enclosing_function_from_candidates(candidates.as_ref(), file_id, file, line);
+        let file_start = candidates
+            .partition_point(|candidate| candidate.function.location.file.as_str() < file);
+        let file_end = candidates
+            .partition_point(|candidate| candidate.function.location.file.as_str() <= file);
+        let file_candidates = &candidates[file_start..file_end];
+
+        let resolved = select_most_specific_by_line(file_candidates, line, |candidate| {
+            (
+                candidate.function.location.start_line,
+                candidate.function.location.end_line,
+            )
+        })
+        .filter(|candidate| candidate.file_id == file_id)
+        .cloned();
         caches.resolutions.insert(resolution_key, resolved.clone());
         Ok(resolved)
     }
@@ -664,26 +676,4 @@ impl<'a> CallEdgeQuery<'a> {
             },
         })
     }
-}
-
-fn resolve_enclosing_function_from_candidates(
-    candidates: &[IndexedFunction],
-    file_id: i64,
-    file: &str,
-    line: usize,
-) -> Option<IndexedFunction> {
-    let file_start =
-        candidates.partition_point(|candidate| candidate.function.location.file.as_str() < file);
-    let file_end =
-        candidates.partition_point(|candidate| candidate.function.location.file.as_str() <= file);
-    let file_candidates = &candidates[file_start..file_end];
-
-    select_most_specific_by_line(file_candidates, line, |candidate| {
-        (
-            candidate.function.location.start_line,
-            candidate.function.location.end_line,
-        )
-    })
-    .filter(|candidate| candidate.file_id == file_id)
-    .cloned()
 }

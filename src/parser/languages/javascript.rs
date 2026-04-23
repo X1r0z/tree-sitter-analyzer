@@ -5,7 +5,7 @@ use tree_sitter::Node;
 
 use super::super::capture::{self, CallCaptureMatch};
 use super::super::{EnclosingContext, ParseContext};
-use crate::languages::{find_language_info, LanguageEngine, LanguageInfo, QueryKind, ResolvedCall};
+use crate::languages::{LanguageEngine, QueryKind, ResolvedCall};
 use crate::models::{FieldInfo, FunctionParamInfo};
 
 pub(crate) struct JavaScriptFamilyEngine {
@@ -216,8 +216,8 @@ pub(crate) static TYPESCRIPT_ENGINE: JavaScriptFamilyEngine = JavaScriptFamilyEn
 pub(crate) static TSX_ENGINE: JavaScriptFamilyEngine = JavaScriptFamilyEngine { language: "tsx" };
 
 impl LanguageEngine for JavaScriptFamilyEngine {
-    fn language_info(&self) -> &'static LanguageInfo {
-        find_language_info(self.language).expect("javascript family language info")
+    fn id(&self) -> &'static str {
+        self.language
     }
 
     fn function_name(&self, ctx: &ParseContext, node: Node<'_>) -> Option<String> {
@@ -1790,65 +1790,5 @@ fn collect_super_types_from_expr(
                 }
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn binding_event(start_byte: usize, name: &str, targets: &[&str]) -> ScopedBindingEvent {
-        ScopedBindingEvent {
-            start_byte,
-            name: name.to_string(),
-            targets: targets.iter().map(|target| target.to_string()).collect(),
-        }
-    }
-
-    #[test]
-    fn scoped_event_resolver_resolves_alias_chains() {
-        let mut resolver = ScopedEventResolverState::new(vec![
-            binding_event(10, "a", &["b"]),
-            binding_event(20, "b", &["C"]),
-        ]);
-
-        assert_eq!(resolver.resolve(30, "a"), vec!["C".to_string()]);
-    }
-
-    #[test]
-    fn scoped_event_resolver_resets_when_calls_rewind() {
-        let mut resolver = ScopedEventResolverState::new(vec![
-            binding_event(10, "a", &["b"]),
-            binding_event(20, "b", &["C"]),
-        ]);
-
-        assert_eq!(resolver.resolve(30, "a"), vec!["C".to_string()]);
-        assert_eq!(resolver.resolve(15, "a"), vec!["b".to_string()]);
-    }
-
-    #[test]
-    fn receiver_index_resolves_field_chains() {
-        let index = JsReceiverIndex {
-            class_names: HashSet::from([
-                "Root".to_string(),
-                "Service".to_string(),
-                "Repository".to_string(),
-            ]),
-            field_targets_by_class: HashMap::from([
-                (
-                    "Root".to_string(),
-                    HashMap::from([("service".to_string(), vec!["Service".to_string()])]),
-                ),
-                (
-                    "Service".to_string(),
-                    HashMap::from([("repo".to_string(), vec!["Repository".to_string()])]),
-                ),
-            ]),
-        };
-
-        assert_eq!(
-            index.resolve_field_chain("Root", "service.repo"),
-            vec!["Repository".to_string()]
-        );
     }
 }

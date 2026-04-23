@@ -8,7 +8,7 @@ use super::super::{
     EnclosingContext, ParseContext, PythonPropertyCallers, PythonPropertyDefinitions,
     PythonPropertyIndexes,
 };
-use crate::languages::{find_language_info, LanguageEngine, LanguageInfo, ResolvedCall};
+use crate::languages::{LanguageEngine, ResolvedCall};
 use crate::models::{
     AnnotationInfo, FieldInfo, FunctionParamInfo, Location, PythonPropertyCallerInfo,
     PythonPropertyInfo,
@@ -53,8 +53,8 @@ pub(crate) struct PythonPropertyAnalyzer<'a> {
 }
 
 impl LanguageEngine for PythonEngine {
-    fn language_info(&self) -> &'static LanguageInfo {
-        find_language_info("python").expect("python language info")
+    fn id(&self) -> &'static str {
+        "python"
     }
 
     fn normalize_function_node<'a>(&self, _ctx: &ParseContext, node: Node<'a>) -> Node<'a> {

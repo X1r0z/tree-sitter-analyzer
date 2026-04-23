@@ -2,7 +2,7 @@ use streaming_iterator::StreamingIterator;
 use tree_sitter::{Node, Query, QueryCursor, QueryMatch};
 
 use super::ParseContext;
-use crate::languages::{compiled_query, QueryKind};
+use crate::languages::QueryKind;
 
 #[derive(Clone, Copy)]
 pub(crate) struct CallCaptureMatch<'a> {
@@ -42,45 +42,98 @@ pub(crate) fn collect_capture_pairs<'a>(
     first_capture: &str,
     second_capture: &str,
 ) -> Vec<(Node<'a>, Node<'a>)> {
-    compiled_query(context.language(), kind)
-        .map(|query| {
-            let capture_names = query.capture_names();
-            let Some(first_index) = capture_names
-                .iter()
-                .position(|name| *name == first_capture)
-                .map(|idx| idx as u32)
-            else {
-                return Vec::new();
-            };
-            let Some(second_index) = capture_names
-                .iter()
-                .position(|name| *name == second_capture)
-                .map(|idx| idx as u32)
-            else {
-                return Vec::new();
-            };
+    let query = context.query(kind);
+    let capture_names = query.capture_names();
+    let Some(first_index) = capture_names
+        .iter()
+        .position(|name| *name == first_capture)
+        .map(|idx| idx as u32)
+    else {
+        return Vec::new();
+    };
+    let Some(second_index) = capture_names
+        .iter()
+        .position(|name| *name == second_capture)
+        .map(|idx| idx as u32)
+    else {
+        return Vec::new();
+    };
 
-            let mut cursor = QueryCursor::new();
-            let mut capture_matches =
-                cursor.matches(query, context.tree().root_node(), context.source());
-            let mut pairs = Vec::new();
-            while let Some(capture_match) = capture_matches.next() {
-                let mut first = None;
-                let mut second = None;
-                for capture in capture_match.captures {
-                    if capture.index == first_index {
-                        first = Some(capture.node);
-                    } else if capture.index == second_index {
-                        second = Some(capture.node);
-                    }
-                }
-                if let (Some(first), Some(second)) = (first, second) {
-                    pairs.push((first, second));
-                }
+    let mut cursor = QueryCursor::new();
+    let mut capture_matches = cursor.matches(query, context.tree().root_node(), context.source());
+    let mut pairs = Vec::new();
+    while let Some(capture_match) = capture_matches.next() {
+        let mut first = None;
+        let mut second = None;
+        for capture in capture_match.captures {
+            if capture.index == first_index {
+                first = Some(capture.node);
+            } else if capture.index == second_index {
+                second = Some(capture.node);
             }
-            pairs
-        })
-        .unwrap_or_default()
+        }
+        if let (Some(first), Some(second)) = (first, second) {
+            pairs.push((first, second));
+        }
+    }
+    pairs
+}
+
+pub(crate) fn collect_call_capture_matches<'a>(
+    context: &'a ParseContext,
+) -> Vec<CallCaptureMatch<'a>> {
+    let query = context.query(QueryKind::Call);
+    let Some(indices) = CallCaptureIndices::for_query(query) else {
+        return Vec::new();
+    };
+
+    let mut cursor = QueryCursor::new();
+    let mut capture_matches = cursor.matches(query, context.tree().root_node(), context.source());
+    let mut out = Vec::new();
+    while let Some(capture_match) = capture_matches.next() {
+        if let Some(matched) = decode_call_capture_match(capture_match, indices) {
+            out.push(matched);
+        }
+    }
+    out
+}
+
+pub(crate) fn collect_import_capture_matches<'a>(
+    context: &'a ParseContext,
+    kind: QueryKind,
+) -> Vec<ImportCaptureMatch<'a>> {
+    let query = context.query(kind);
+    let capture_names = query.capture_names();
+    let import_index = capture_names
+        .iter()
+        .position(|name| *name == "import")
+        .map(|idx| idx as u32);
+    let module_index = capture_names
+        .iter()
+        .position(|name| *name == "module")
+        .map(|idx| idx as u32);
+    let Some(module_index) = module_index else {
+        return Vec::new();
+    };
+
+    let mut cursor = QueryCursor::new();
+    let mut capture_matches = cursor.matches(query, context.tree().root_node(), context.source());
+    let mut out = Vec::new();
+    while let Some(capture_match) = capture_matches.next() {
+        let mut import = None;
+        let mut module = None;
+        for capture in capture_match.captures {
+            if import_index == Some(capture.index) {
+                import = Some(capture.node);
+            } else if capture.index == module_index {
+                module = Some(capture.node);
+            }
+        }
+        if let Some(module) = module {
+            out.push(ImportCaptureMatch { import, module });
+        }
+    }
+    out
 }
 
 pub(crate) fn decode_call_capture_match<'a>(
@@ -110,67 +163,4 @@ pub(crate) fn decode_call_capture_match<'a>(
         method,
         object,
     })
-}
-
-pub(crate) fn collect_call_capture_matches<'a>(
-    context: &'a ParseContext,
-) -> Vec<CallCaptureMatch<'a>> {
-    let Some(query) = compiled_query(context.language(), QueryKind::Call) else {
-        return Vec::new();
-    };
-    let Some(indices) = CallCaptureIndices::for_query(query) else {
-        return Vec::new();
-    };
-
-    let mut cursor = QueryCursor::new();
-    let mut capture_matches = cursor.matches(query, context.tree().root_node(), context.source());
-    let mut out = Vec::new();
-    while let Some(capture_match) = capture_matches.next() {
-        if let Some(matched) = decode_call_capture_match(capture_match, indices) {
-            out.push(matched);
-        }
-    }
-    out
-}
-
-pub(crate) fn collect_import_capture_matches<'a>(
-    context: &'a ParseContext,
-    kind: QueryKind,
-) -> Vec<ImportCaptureMatch<'a>> {
-    compiled_query(context.language(), kind)
-        .map(|query| {
-            let capture_names = query.capture_names();
-            let import_index = capture_names
-                .iter()
-                .position(|name| *name == "import")
-                .map(|idx| idx as u32);
-            let module_index = capture_names
-                .iter()
-                .position(|name| *name == "module")
-                .map(|idx| idx as u32);
-            let Some(module_index) = module_index else {
-                return Vec::new();
-            };
-
-            let mut cursor = QueryCursor::new();
-            let mut capture_matches =
-                cursor.matches(query, context.tree().root_node(), context.source());
-            let mut out = Vec::new();
-            while let Some(capture_match) = capture_matches.next() {
-                let mut import = None;
-                let mut module = None;
-                for capture in capture_match.captures {
-                    if import_index == Some(capture.index) {
-                        import = Some(capture.node);
-                    } else if capture.index == module_index {
-                        module = Some(capture.node);
-                    }
-                }
-                if let Some(module) = module {
-                    out.push(ImportCaptureMatch { import, module });
-                }
-            }
-            out
-        })
-        .unwrap_or_default()
 }

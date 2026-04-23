@@ -9,7 +9,7 @@ use tree_sitter::{Node, Parser, Tree};
 
 use super::capture;
 use super::languages::python;
-use crate::languages::{detect_language_engine, LanguageEngine, QueryKind};
+use crate::languages::{detect_language, LanguageInfo, QueryKind};
 use crate::models::{
     AnnotationInfo, CallInfo, ClassInfo, FieldInfo, FunctionInfo, FunctionParamInfo, ImportInfo,
     Location, PythonPropertyCallerInfo, PythonPropertyInfo, RefInfo, RefKey,
@@ -42,8 +42,7 @@ impl<'a> From<Node<'a>> for NodeId {
 
 pub(crate) struct ParseInput {
     pub(crate) file_path: PathBuf,
-    pub(crate) engine: &'static dyn LanguageEngine,
-    pub(crate) language: String,
+    pub(crate) language: &'static LanguageInfo,
     pub(crate) source: Vec<u8>,
     pub(crate) tree: Tree,
 }
@@ -235,8 +234,9 @@ impl ParseContext {
 
     pub(crate) fn from_source(file_path: &str, source: Vec<u8>) -> anyhow::Result<Self> {
         let path = Path::new(file_path);
-        let engine = detect_language_engine(path)
+        let language = detect_language(path)
             .ok_or_else(|| anyhow::anyhow!("Could not detect language for: {}", file_path))?;
+        let engine = language.engine();
         let mut parser = Parser::new();
         parser.set_language(&engine.ts_language())?;
         let tree = parser
@@ -246,8 +246,7 @@ impl ParseContext {
         Ok(Self {
             input: ParseInput {
                 file_path: path.to_path_buf(),
-                engine,
-                language: engine.id().to_string(),
+                language,
                 source,
                 tree,
             },
@@ -260,7 +259,7 @@ impl ParseContext {
     }
 
     pub(crate) fn language(&self) -> &str {
-        &self.input.language
+        self.engine().id()
     }
 
     pub(crate) fn source(&self) -> &[u8] {
@@ -272,7 +271,11 @@ impl ParseContext {
     }
 
     pub(crate) fn engine(&self) -> &'static dyn crate::languages::LanguageEngine {
-        self.input.engine
+        self.input.language.engine()
+    }
+
+    pub(crate) fn query(&self, kind: QueryKind) -> &'static tree_sitter::Query {
+        self.input.language.query(kind)
     }
 
     pub(crate) fn resolve_call_targets_with_function_node(
@@ -967,6 +970,18 @@ fn is_function_like(node_kind: &str) -> bool {
     )
 }
 
+fn is_nested_class_boundary(kind: &str) -> bool {
+    matches!(
+        kind,
+        "class_definition"
+            | "class_declaration"
+            | "interface_declaration"
+            | "enum_declaration"
+            | "record_declaration"
+            | "annotation_type_declaration"
+    )
+}
+
 fn class_name_from_node(context: &ParseContext, node: Node<'_>) -> Option<String> {
     if let Some(name_node) = node.child_by_field_name("name") {
         let class_name = context.node_text(name_node);
@@ -1016,6 +1031,43 @@ fn class_kind(context: &ParseContext, node: Node<'_>) -> String {
             .to_string(),
         _ => "class".to_string(),
     }
+}
+
+fn class_method_names(parser: &ParseContext, class_node: Node<'_>) -> Vec<String> {
+    let mut methods = Vec::new();
+    let mut stack = vec![class_node];
+    while let Some(node) = stack.pop() {
+        if node.id() != class_node.id() && is_nested_class_boundary(node.kind()) {
+            continue;
+        }
+        if matches!(
+            node.kind(),
+            "function_definition"
+                | "method_definition"
+                | "method_declaration"
+                | "constructor_declaration"
+                | "method_elem"
+                | "method_spec"
+        ) {
+            for i in 0..node.child_count() {
+                let child = node.child(i as u32).unwrap();
+                if matches!(
+                    child.kind(),
+                    "identifier" | "property_identifier" | "field_identifier" | "name"
+                ) {
+                    methods.push(parser.node_text(child));
+                    break;
+                }
+            }
+            continue;
+        }
+        for i in (0..node.child_count()).rev() {
+            if let Some(child) = node.child(i as u32) {
+                stack.push(child);
+            }
+        }
+    }
+    methods
 }
 
 pub(crate) fn collect_field_infos_from_declarations(
@@ -1132,53 +1184,4 @@ pub(crate) fn collect_field_infos_from_declarations(
     }
 
     fields
-}
-
-fn class_method_names(parser: &ParseContext, class_node: Node<'_>) -> Vec<String> {
-    let mut methods = Vec::new();
-    let mut stack = vec![class_node];
-    while let Some(node) = stack.pop() {
-        if node.id() != class_node.id() && is_nested_class_boundary(node.kind()) {
-            continue;
-        }
-        if matches!(
-            node.kind(),
-            "function_definition"
-                | "method_definition"
-                | "method_declaration"
-                | "constructor_declaration"
-                | "method_elem"
-                | "method_spec"
-        ) {
-            for i in 0..node.child_count() {
-                let child = node.child(i as u32).unwrap();
-                if matches!(
-                    child.kind(),
-                    "identifier" | "property_identifier" | "field_identifier" | "name"
-                ) {
-                    methods.push(parser.node_text(child));
-                    break;
-                }
-            }
-            continue;
-        }
-        for i in (0..node.child_count()).rev() {
-            if let Some(child) = node.child(i as u32) {
-                stack.push(child);
-            }
-        }
-    }
-    methods
-}
-
-fn is_nested_class_boundary(kind: &str) -> bool {
-    matches!(
-        kind,
-        "class_definition"
-            | "class_declaration"
-            | "interface_declaration"
-            | "enum_declaration"
-            | "record_declaration"
-            | "annotation_type_declaration"
-    )
 }

@@ -58,8 +58,8 @@ impl IndexSynchronizer {
                         .unwrap_or_default();
                     if language_filter.is_empty() {
                         crate::languages::supported_language_names()
-                            .iter()
-                            .map(|name| (*name).to_string())
+                            .into_iter()
+                            .map(str::to_string)
                             .collect()
                     } else {
                         std::iter::once(language_filter.to_string()).collect()
@@ -190,8 +190,8 @@ fn scope_languages(language: Option<&str>) -> Vec<String> {
     match language {
         Some(language) => vec![language.to_string()],
         None => crate::languages::supported_language_names()
-            .iter()
-            .map(|name| (*name).to_string())
+            .into_iter()
+            .map(str::to_string)
             .collect(),
     }
 }

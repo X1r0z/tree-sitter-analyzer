@@ -1,7 +1,7 @@
 use tree_sitter::Node;
 
 use super::super::{context, EnclosingContext, ParseContext};
-use crate::languages::{find_language_info, LanguageEngine, LanguageInfo, ResolvedCall};
+use crate::languages::{LanguageEngine, ResolvedCall};
 use crate::models::{AnnotationInfo, FieldInfo, FunctionParamInfo};
 
 pub(crate) struct JavaEngine;
@@ -9,8 +9,8 @@ pub(crate) struct JavaEngine;
 pub(crate) static JAVA_ENGINE: JavaEngine = JavaEngine;
 
 impl LanguageEngine for JavaEngine {
-    fn language_info(&self) -> &'static LanguageInfo {
-        find_language_info("java").expect("java language info")
+    fn id(&self) -> &'static str {
+        "java"
     }
 
     fn function_name(&self, ctx: &ParseContext, node: Node<'_>) -> Option<String> {
@@ -209,9 +209,27 @@ impl LanguageEngine for JavaEngine {
 
         while let Some(node) = stack.pop() {
             if matches!(node.kind(), "marker_annotation" | "annotation") {
-                if let Some(info) = annotation_info(ctx, node) {
-                    annotations.push(info);
+                let Some(name_node) = node.child_by_field_name("name") else {
+                    continue;
+                };
+
+                let name = ctx.node_text(name_node);
+                if name.is_empty() {
+                    continue;
                 }
+
+                let signature = ctx.node_text(node);
+                let (target_name, target_type, target_signature) =
+                    find_annotation_target(ctx, node);
+
+                annotations.push(AnnotationInfo {
+                    name,
+                    signature,
+                    location: ctx.node_location(node),
+                    target_name,
+                    target_type,
+                    target_signature,
+                });
                 continue;
             }
             for i in (0..node.child_count()).rev() {
@@ -273,26 +291,6 @@ fn signature_start_byte(declaration_node: Node<'_>) -> usize {
     }
 
     declaration_node.start_byte()
-}
-
-fn annotation_info(parser: &ParseContext, node: Node<'_>) -> Option<AnnotationInfo> {
-    let name_node = node.child_by_field_name("name")?;
-    let name = parser.node_text(name_node);
-    if name.is_empty() {
-        return None;
-    }
-
-    let signature = parser.node_text(node);
-    let (target_name, target_type, target_signature) = find_annotation_target(parser, node);
-
-    Some(AnnotationInfo {
-        name,
-        signature,
-        location: parser.node_location(node),
-        target_name,
-        target_type,
-        target_signature,
-    })
 }
 
 fn find_annotation_target(

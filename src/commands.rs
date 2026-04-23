@@ -317,6 +317,7 @@ fn build_file_index(
 
     let language = detect_language(Path::new(file))
         .ok_or_else(|| anyhow::anyhow!("Could not detect language for: {}", file))?
+        .name
         .to_string();
     let metadata = fs::metadata(file)?;
     let record_without_hash = file_record_from_metadata(file, &language, &metadata)?;

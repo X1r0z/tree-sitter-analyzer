@@ -2,7 +2,7 @@ use tree_sitter::Node;
 
 use super::super::capture::CallCaptureMatch;
 use super::super::{context, EnclosingContext, ParseContext};
-use crate::languages::{find_language_info, LanguageEngine, LanguageInfo, ResolvedCall};
+use crate::languages::{LanguageEngine, ResolvedCall};
 use crate::models::{FieldInfo, FunctionParamInfo};
 
 pub(crate) struct GoEngine;
@@ -10,8 +10,8 @@ pub(crate) struct GoEngine;
 pub(crate) static GO_ENGINE: GoEngine = GoEngine;
 
 impl LanguageEngine for GoEngine {
-    fn language_info(&self) -> &'static LanguageInfo {
-        find_language_info("go").expect("go language info")
+    fn id(&self) -> &'static str {
+        "go"
     }
 
     fn function_name(&self, ctx: &ParseContext, node: Node<'_>) -> Option<String> {
@@ -281,42 +281,6 @@ pub(crate) fn base_type_name(parser: &ParseContext, type_node: Node<'_>) -> Opti
     }
 }
 
-fn embedded_type_from_field_declaration(
-    parser: &ParseContext,
-    field_declaration: Node<'_>,
-) -> Option<String> {
-    for i in 0..field_declaration.child_count() {
-        let child = field_declaration.child(i as u32).unwrap();
-        if child.kind() == "field_identifier" {
-            return None;
-        }
-    }
-    for i in 0..field_declaration.child_count() {
-        let child = field_declaration.child(i as u32).unwrap();
-        if child.kind() == "*" {
-            continue;
-        }
-        if matches!(
-            child.kind(),
-            "type_identifier"
-                | "qualified_type"
-                | "generic_type"
-                | "pointer_type"
-                | "parenthesized_type"
-        ) {
-            return embedded_type_name(parser, child);
-        }
-    }
-    for i in 0..field_declaration.named_child_count() {
-        if let Some(child) = field_declaration.named_child(i as u32) {
-            if let Some(name) = embedded_type_name(parser, child) {
-                return Some(name);
-            }
-        }
-    }
-    None
-}
-
 fn embedded_type_name(parser: &ParseContext, node: Node<'_>) -> Option<String> {
     match node.kind() {
         "type_identifier" => Some(parser.node_text(node)),
@@ -365,4 +329,40 @@ fn embedded_type_name(parser: &ParseContext, node: Node<'_>) -> Option<String> {
         }
         _ => None,
     }
+}
+
+fn embedded_type_from_field_declaration(
+    parser: &ParseContext,
+    field_declaration: Node<'_>,
+) -> Option<String> {
+    for i in 0..field_declaration.child_count() {
+        let child = field_declaration.child(i as u32).unwrap();
+        if child.kind() == "field_identifier" {
+            return None;
+        }
+    }
+    for i in 0..field_declaration.child_count() {
+        let child = field_declaration.child(i as u32).unwrap();
+        if child.kind() == "*" {
+            continue;
+        }
+        if matches!(
+            child.kind(),
+            "type_identifier"
+                | "qualified_type"
+                | "generic_type"
+                | "pointer_type"
+                | "parenthesized_type"
+        ) {
+            return embedded_type_name(parser, child);
+        }
+    }
+    for i in 0..field_declaration.named_child_count() {
+        if let Some(child) = field_declaration.named_child(i as u32) {
+            if let Some(name) = embedded_type_name(parser, child) {
+                return Some(name);
+            }
+        }
+    }
+    None
 }

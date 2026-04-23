@@ -356,7 +356,9 @@ fn build_index(path: &str, language: Option<&str>) -> anyhow::Result<IndexInfo> 
     let (incremental, existing) = match IndexStore::open(&db_path) {
         Ok(store) if store.matches_root_path(&resolved_path).unwrap_or(false) => (
             true,
-            store.indexed_file_metadata_by_path(&files).unwrap_or_default(),
+            store
+                .indexed_file_metadata_by_path(&files)
+                .unwrap_or_default(),
         ),
         Ok(_) | Err(_) => (false, Default::default()),
     };

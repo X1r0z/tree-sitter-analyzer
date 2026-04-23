@@ -51,12 +51,12 @@ pub(crate) struct ParseInput {
 #[derive(Default)]
 pub(crate) struct JsParseCaches {
     pub(crate) alias_resolvers_by_function:
-        HashMap<NodeId, super::languages::javascript::JsAliasResolverState>,
+        HashMap<NodeId, super::languages::javascript::JsAliasResolver>,
     pub(crate) receiver_resolvers_by_function:
-        HashMap<NodeId, super::languages::javascript::JsReceiverResolverState>,
+        HashMap<NodeId, super::languages::javascript::JsReceiverResolver>,
     pub(crate) semantic_facts: Option<Rc<super::languages::javascript::JsSemanticFacts>>,
-    pub(crate) type_facts: Option<Rc<super::languages::javascript::JsTypeFacts>>,
-    pub(crate) receiver_facts: Option<Rc<super::languages::javascript::JsReceiverFacts>>,
+    pub(crate) type_index: Option<Rc<super::languages::javascript::JsTypeIndex>>,
+    pub(crate) receiver_index: Option<Rc<super::languages::javascript::JsReceiverIndex>>,
     pub(crate) class_names: Option<Rc<HashSet<String>>>,
 }
 
@@ -466,14 +466,14 @@ impl ParseContext {
     }
 
     pub(crate) fn collect_python_properties(&self) -> Vec<PythonPropertyInfo> {
-        python::collect_property_infos(self)
+        python::PythonPropertyAnalyzer::new(self).collect_infos()
     }
 
     pub(crate) fn collect_python_property_callers(
         &self,
         property_name: Option<&str>,
     ) -> Vec<PythonPropertyCallerInfo> {
-        python::collect_property_callers(self, property_name)
+        python::PythonPropertyAnalyzer::new(self).collect_callers(property_name)
     }
 
     pub(crate) fn collect_function_params(&self, function_node: Node) -> Vec<FunctionParamInfo> {

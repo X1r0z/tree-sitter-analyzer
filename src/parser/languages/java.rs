@@ -20,8 +20,8 @@ impl LanguageEngine for JavaEngine {
                 return Some(name);
             }
         }
-        for i in 0..node.child_count() {
-            let child = node.child(i as u32).unwrap();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
             if matches!(child.kind(), "identifier" | "type_identifier") {
                 let name = ctx.node_text(child);
                 if !name.is_empty() {
@@ -42,11 +42,8 @@ impl LanguageEngine for JavaEngine {
         };
 
         let mut params = Vec::new();
-        for i in 0..parameters.named_child_count() {
-            let Some(param) = parameters.named_child(i as u32) else {
-                continue;
-            };
-
+        let mut cursor = parameters.walk();
+        for param in parameters.named_children(&mut cursor) {
             let type_node = param.child_by_field_name("type");
             let name = param
                 .child_by_field_name("name")
@@ -99,8 +96,8 @@ impl LanguageEngine for JavaEngine {
                             return ctx.node_text(type_node);
                         }
 
-                        for i in 0..type_node.named_child_count() {
-                            let child = type_node.named_child(i as u32).unwrap();
+                        let mut cursor = type_node.walk();
+                        for child in type_node.named_children(&mut cursor) {
                             if child.kind() == "type_identifier" {
                                 return ctx.node_text(child);
                             }
@@ -155,17 +152,17 @@ impl LanguageEngine for JavaEngine {
     fn super_types(&self, ctx: &ParseContext, class_node: Node<'_>) -> Vec<String> {
         let mut super_classes = Vec::new();
 
-        for i in 0..class_node.child_count() {
-            let child = class_node.child(i as u32).unwrap();
+        let mut cursor = class_node.walk();
+        for child in class_node.children(&mut cursor) {
             match child.kind() {
                 "superclass" => {
-                    for j in 0..child.child_count() {
-                        let sub = child.child(j as u32).unwrap();
+                    let mut child_cursor = child.walk();
+                    for sub in child.children(&mut child_cursor) {
                         if sub.kind() == "type_identifier" {
                             super_classes.push(ctx.node_text(sub));
                         } else if sub.kind() == "generic_type" {
-                            for k in 0..sub.child_count() {
-                                let grandchild = sub.child(k as u32).unwrap();
+                            let mut sub_cursor = sub.walk();
+                            for grandchild in sub.children(&mut sub_cursor) {
                                 if grandchild.kind() == "type_identifier" {
                                     super_classes.push(ctx.node_text(grandchild));
                                     break;
@@ -175,18 +172,18 @@ impl LanguageEngine for JavaEngine {
                     }
                 }
                 "super_interfaces" => {
-                    for j in 0..child.child_count() {
-                        let sub = child.child(j as u32).unwrap();
+                    let mut child_cursor = child.walk();
+                    for sub in child.children(&mut child_cursor) {
                         if sub.kind() != "type_list" {
                             continue;
                         }
-                        for k in 0..sub.child_count() {
-                            let type_node = sub.child(k as u32).unwrap();
+                        let mut sub_cursor = sub.walk();
+                        for type_node in sub.children(&mut sub_cursor) {
                             if type_node.kind() == "type_identifier" {
                                 super_classes.push(ctx.node_text(type_node));
                             } else if type_node.kind() == "generic_type" {
-                                for l in 0..type_node.child_count() {
-                                    let grandchild = type_node.child(l as u32).unwrap();
+                                let mut type_cursor = type_node.walk();
+                                for grandchild in type_node.children(&mut type_cursor) {
                                     if grandchild.kind() == "type_identifier" {
                                         super_classes.push(ctx.node_text(grandchild));
                                         break;
@@ -232,10 +229,10 @@ impl LanguageEngine for JavaEngine {
                 });
                 continue;
             }
-            for i in (0..node.child_count()).rev() {
-                if let Some(child) = node.child(i as u32) {
-                    stack.push(child);
-                }
+            let mut cursor = node.walk();
+            let children: Vec<_> = node.children(&mut cursor).collect();
+            for child in children.into_iter().rev() {
+                stack.push(child);
             }
         }
         annotations
@@ -245,8 +242,7 @@ impl LanguageEngine for JavaEngine {
 pub(crate) fn extract_signature(parser: &ParseContext, declaration_node: Node<'_>) -> String {
     let end_byte = declaration_node
         .child_by_field_name("body")
-        .map(|body| body.start_byte())
-        .unwrap_or_else(|| declaration_node.end_byte());
+        .map_or_else(|| declaration_node.end_byte(), |body| body.start_byte());
     let start_byte = signature_start_byte(declaration_node);
     parser
         .source_text(start_byte, end_byte)
@@ -256,26 +252,11 @@ pub(crate) fn extract_signature(parser: &ParseContext, declaration_node: Node<'_
         .to_string()
 }
 
-pub(crate) fn extract_class_header_line(
-    parser: &ParseContext,
-    declaration_node: Node<'_>,
-) -> String {
-    let signature = extract_signature(parser, declaration_node);
-    signature
-        .lines()
-        .next()
-        .unwrap_or("")
-        .trim_end()
-        .to_string()
-}
-
 fn signature_start_byte(declaration_node: Node<'_>) -> usize {
-    for i in 0..declaration_node.child_count() {
-        let Some(child) = declaration_node.child(i as u32) else {
-            continue;
-        };
+    let mut cursor = declaration_node.walk();
+    for child in declaration_node.children(&mut cursor) {
         match child.kind() {
-            "marker_annotation" | "annotation" => continue,
+            "marker_annotation" | "annotation" => {}
             "modifiers" => {
                 let mut cursor = child.walk();
                 for modifier_child in child.children(&mut cursor) {
@@ -284,7 +265,6 @@ fn signature_start_byte(declaration_node: Node<'_>) -> usize {
                     }
                     return modifier_child.start_byte();
                 }
-                continue;
             }
             _ => return child.start_byte(),
         }
@@ -338,7 +318,11 @@ fn find_annotation_target(
                 format!(
                     "{}\n{}",
                     annotation_signature,
-                    extract_class_header_line(parser, parent)
+                    extract_signature(parser, parent)
+                        .lines()
+                        .next()
+                        .unwrap_or("")
+                        .trim_end()
                 ),
             ),
             "field_declaration" => {
@@ -371,10 +355,6 @@ fn find_annotation_target(
                 let var_name = variable_declarator_name(parser, parent);
                 (var_name, "variable".to_string(), parser.node_text(parent))
             }
-            "modifiers" | "annotation_argument_list" => {
-                current = parent;
-                continue;
-            }
             _ => {
                 current = parent;
                 continue;
@@ -386,8 +366,8 @@ fn find_annotation_target(
 }
 
 fn variable_declarator_name(parser: &ParseContext, decl_node: Node<'_>) -> String {
-    for i in 0..decl_node.child_count() {
-        let child = decl_node.child(i as u32).unwrap();
+    let mut cursor = decl_node.walk();
+    for child in decl_node.children(&mut cursor) {
         if child.kind() == "variable_declarator" {
             if let Some(name_node) = child.child_by_field_name("name") {
                 return parser.node_text(name_node);

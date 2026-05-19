@@ -8,52 +8,6 @@ pub(crate) struct ForwardTargetContext<'a> {
     pub(crate) object_name: Option<&'a str>,
 }
 
-pub(crate) fn resolve_forward_targets_with_fallback<
-    C,
-    K,
-    KeyOf,
-    ClassNameOf,
-    FileOf,
-    FieldMatches,
-    ParamMatches,
->(
-    context: ForwardTargetContext<'_>,
-    candidates: &[C],
-    key_of: KeyOf,
-    class_name_of: ClassNameOf,
-    file_of: FileOf,
-    field_matches: FieldMatches,
-    param_matches: ParamMatches,
-) -> Vec<C>
-where
-    C: Clone,
-    K: Eq + Hash,
-    KeyOf: Fn(&C) -> K,
-    ClassNameOf: Fn(&C) -> Option<&str>,
-    FileOf: Fn(&C) -> &str,
-    FieldMatches: FnMut(&str, &str) -> bool,
-    ParamMatches: FnMut(&str, &str) -> bool,
-{
-    let mut results = resolve_forward_targets(
-        context,
-        candidates,
-        &key_of,
-        &class_name_of,
-        &file_of,
-        field_matches,
-        param_matches,
-    );
-
-    if results.is_empty() && context.object_name.is_none() {
-        let mut seen = HashSet::new();
-        for candidate in candidates {
-            push_unique(&mut results, &mut seen, candidate, &key_of);
-        }
-    }
-
-    results
-}
-
 pub(crate) fn resolve_forward_targets<
     C,
     K,
@@ -84,7 +38,7 @@ where
     let mut seen = HashSet::new();
 
     match context.object_name {
-        Some("self") | Some("this") | Some("cls") => {
+        Some("self" | "this" | "cls") => {
             if let Some(class_name) = context.caller_class_name {
                 for candidate in candidates {
                     if class_name_of(candidate) == Some(class_name) {
@@ -200,7 +154,7 @@ where
     if object_name.is_none() {
         return caller_class_name == Some(target_class_name);
     }
-    if matches!(object_name, Some("self") | Some("this") | Some("cls")) {
+    if matches!(object_name, Some("self" | "this" | "cls")) {
         return caller_class_name == Some(target_class_name);
     }
 
@@ -238,7 +192,7 @@ where
     if object_name.is_none() {
         return caller_class_name == Some(target_class_name);
     }
-    if matches!(object_name, Some("self") | Some("this") | Some("cls")) {
+    if matches!(object_name, Some("self" | "this" | "cls")) {
         return caller_class_name == Some(target_class_name);
     }
 
@@ -255,20 +209,6 @@ where
     };
 
     field_matches(attr_name, target_class_name) || param_matches(attr_name, target_class_name)
-}
-
-pub(crate) fn matches_module_property_target(
-    object_name: Option<&str>,
-    object_type: Option<&str>,
-    target_class_name: &str,
-) -> bool {
-    let Some(object_name) = object_name else {
-        return false;
-    };
-    if object_name == target_class_name {
-        return false;
-    }
-    type_matches_class(object_type, target_class_name)
 }
 
 pub(crate) fn has_unique_class_method_target<C, ClassNameOf>(

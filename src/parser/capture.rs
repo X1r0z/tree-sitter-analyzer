@@ -47,14 +47,14 @@ pub(crate) fn collect_capture_pairs<'a>(
     let Some(first_index) = capture_names
         .iter()
         .position(|name| *name == first_capture)
-        .map(|idx| idx as u32)
+        .and_then(|idx| u32::try_from(idx).ok())
     else {
         return Vec::new();
     };
     let Some(second_index) = capture_names
         .iter()
         .position(|name| *name == second_capture)
-        .map(|idx| idx as u32)
+        .and_then(|idx| u32::try_from(idx).ok())
     else {
         return Vec::new();
     };
@@ -79,9 +79,7 @@ pub(crate) fn collect_capture_pairs<'a>(
     pairs
 }
 
-pub(crate) fn collect_call_capture_matches<'a>(
-    context: &'a ParseContext,
-) -> Vec<CallCaptureMatch<'a>> {
+pub(crate) fn collect_call_capture_matches(context: &ParseContext) -> Vec<CallCaptureMatch<'_>> {
     let query = context.query(QueryKind::Call);
     let Some(indices) = CallCaptureIndices::for_query(query) else {
         return Vec::new();
@@ -98,20 +96,20 @@ pub(crate) fn collect_call_capture_matches<'a>(
     out
 }
 
-pub(crate) fn collect_import_capture_matches<'a>(
-    context: &'a ParseContext,
+pub(crate) fn collect_import_capture_matches(
+    context: &ParseContext,
     kind: QueryKind,
-) -> Vec<ImportCaptureMatch<'a>> {
+) -> Vec<ImportCaptureMatch<'_>> {
     let query = context.query(kind);
     let capture_names = query.capture_names();
     let import_index = capture_names
         .iter()
         .position(|name| *name == "import")
-        .map(|idx| idx as u32);
+        .and_then(|idx| u32::try_from(idx).ok());
     let module_index = capture_names
         .iter()
         .position(|name| *name == "module")
-        .map(|idx| idx as u32);
+        .and_then(|idx| u32::try_from(idx).ok());
     let Some(module_index) = module_index else {
         return Vec::new();
     };

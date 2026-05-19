@@ -1,4 +1,5 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::fmt::Write;
 use std::sync::Arc;
 
 use rusqlite::types::Value;
@@ -8,7 +9,7 @@ use super::call_resolver::{AncestorsByFileClass, CallTargetResolver};
 use super::QueryContext;
 use crate::models::{CalleeInfo, CallerInfo, FunctionInfo, FunctionKey, Location};
 use crate::parser::call_targets::{
-    has_non_self_object_target, matches_module_property_target, split_function_target,
+    has_non_self_object_target, matches_call_target, split_function_target, type_matches_class,
 };
 use crate::utils::{
     select_most_specific_by_line, sort_callees_by_file_line, sort_callers_by_file_line,
@@ -67,6 +68,7 @@ impl<'a> CallEdgeQuery<'a> {
         Self { ctx }
     }
 
+    #[allow(clippy::too_many_lines)]
     pub(crate) fn find_callers(
         &self,
         function_name: &str,
@@ -97,8 +99,8 @@ impl<'a> CallEdgeQuery<'a> {
                 caller: row.get(2)?,
                 caller_class_name: row.get(3)?,
                 object_name: row.get(4)?,
-                start_line: row.get::<_, i64>(5)? as usize,
-                end_line: row.get::<_, i64>(6)? as usize,
+                start_line: row.get::<_, usize>(5)?,
+                end_line: row.get::<_, usize>(6)?,
             })
         })?;
 
@@ -148,10 +150,12 @@ impl<'a> CallEdgeQuery<'a> {
                     {
                         continue;
                     }
-                } else if !(resolver.matches_call_target_without_enclosing_function(
+                } else if !(matches_call_target(
                     row.caller_class_name.as_deref(),
                     row.object_name.as_deref(),
                     class_name,
+                    |_attr_name, _target_class_name| false,
+                    |_attr_name, _target_class_name| false,
                 ) || unique_method_target
                     && has_non_self_object_target(row.object_name.as_deref()))
                 {
@@ -202,8 +206,8 @@ impl<'a> CallEdgeQuery<'a> {
                         row.get::<_, Option<String>>(3)?,
                         row.get::<_, Option<String>>(4)?,
                         row.get::<_, Option<String>>(5)?,
-                        row.get::<_, i64>(6)? as usize,
-                        row.get::<_, i64>(7)? as usize,
+                        row.get::<_, usize>(6)?,
+                        row.get::<_, usize>(7)?,
                     ))
                 })?;
             for row in property_rows {
@@ -219,11 +223,9 @@ impl<'a> CallEdgeQuery<'a> {
                 ) = row?;
                 if let Some(class_name) = class_name {
                     if caller_name == "<module>" {
-                        if !matches_module_property_target(
-                            object_name.as_deref(),
-                            object_type.as_deref(),
-                            class_name,
-                        ) {
+                        if object_name.as_deref() == Some(class_name)
+                            || !type_matches_class(object_type.as_deref(), class_name)
+                        {
                             continue;
                         }
                     } else {
@@ -265,6 +267,7 @@ impl<'a> CallEdgeQuery<'a> {
         Ok(results)
     }
 
+    #[allow(clippy::too_many_lines)]
     pub(crate) fn find_callees(
         &self,
         function_name: &str,
@@ -282,16 +285,17 @@ impl<'a> CallEdgeQuery<'a> {
         let mut next_param_index = 2;
         let language = self.ctx.language;
         if let Some(class_name) = class_name {
-            sql.push_str(&format!(" AND c.caller_class_name = ?{next_param_index}"));
+            let _ = write!(sql, " AND c.caller_class_name = ?{next_param_index}");
             params.push(Value::from(class_name.to_string()));
             next_param_index += 1;
         }
         if let Some(language) = language {
-            sql.push_str(&format!(" AND f.language = ?{next_param_index}"));
+            let _ = write!(sql, " AND f.language = ?{next_param_index}");
             params.push(Value::from(language.to_string()));
             next_param_index += 1;
         }
-        sql.push_str(&format!(
+        let _ = write!(
+            sql,
             "
             AND EXISTS (
                 SELECT 1
@@ -300,16 +304,16 @@ impl<'a> CallEdgeQuery<'a> {
                 WHERE fn.file_id = c.file_id
                   AND fn.name = ?{next_param_index}
             "
-        ));
+        );
         params.push(Value::from(function_name.to_string()));
         next_param_index += 1;
         if let Some(class_name) = class_name {
-            sql.push_str(&format!(" AND fn.class_name = ?{next_param_index}"));
+            let _ = write!(sql, " AND fn.class_name = ?{next_param_index}");
             params.push(Value::from(class_name.to_string()));
             next_param_index += 1;
         }
         if let Some(language) = language {
-            sql.push_str(&format!(" AND ff.language = ?{next_param_index}"));
+            let _ = write!(sql, " AND ff.language = ?{next_param_index}");
             params.push(Value::from(language.to_string()));
         }
         sql.push_str(" ) ORDER BY f.path, c.start_line");
@@ -333,8 +337,8 @@ impl<'a> CallEdgeQuery<'a> {
                     caller_class_name: row.get(4)?,
                     location: Location {
                         file: row.get(1)?,
-                        start_line: row.get::<_, i64>(5)? as usize,
-                        end_line: row.get::<_, i64>(6)? as usize,
+                        start_line: row.get::<_, usize>(5)?,
+                        end_line: row.get::<_, usize>(6)?,
                     },
                 })
             })?
@@ -354,15 +358,15 @@ impl<'a> CallEdgeQuery<'a> {
                 )? {
                     let candidates =
                         self.load_functions_by_name(&row.callee, enclosing_caches.candidates)?;
-                    let resolved = resolver.resolve_forward_targets_with_fallback(
+                    let resolved_targets = resolver.resolve_forward_targets(
                         &caller,
                         row.object_name.as_deref(),
                         candidates.as_ref(),
                         &mut field_type_cache,
                         &mut param_type_cache,
                     )?;
-                    if !resolved.is_empty() {
-                        for candidate in resolved {
+                    if !resolved_targets.is_empty() {
+                        for candidate in resolved_targets {
                             let callee = match candidate.function.class_name.as_deref() {
                                 Some(class_name) => {
                                     format!("{}.{}", class_name, candidate.function.name)
@@ -415,20 +419,25 @@ impl<'a> CallEdgeQuery<'a> {
         let mut property_params = vec![Value::from(function_name.to_string())];
         let mut next_property_param_index = 2;
         if let Some(class_name) = class_name {
-            property_sql.push_str(&format!(
+            let _ = write!(
+                property_sql,
                 " AND ppc.caller_class_name = ?{next_property_param_index}"
-            ));
+            );
             property_params.push(Value::from(class_name.to_string()));
             next_property_param_index += 1;
         } else {
             property_sql.push_str(" AND ppc.caller_class_name IS NULL");
         }
         if let Some(language) = self.ctx.language.as_ref() {
-            property_sql.push_str(&format!(" AND f.language = ?{next_property_param_index}"));
+            let _ = write!(
+                property_sql,
+                " AND f.language = ?{next_property_param_index}"
+            );
             property_params.push(Value::from(language.to_string()));
             next_property_param_index += 1;
         }
-        property_sql.push_str(&format!(
+        let _ = write!(
+            property_sql,
             "
             AND EXISTS (
                 SELECT 1
@@ -437,18 +446,22 @@ impl<'a> CallEdgeQuery<'a> {
                 WHERE fn.file_id = ppc.file_id
                   AND fn.name = ?{next_property_param_index}
             "
-        ));
+        );
         property_params.push(Value::from(function_name.to_string()));
         next_property_param_index += 1;
         if let Some(class_name) = class_name {
-            property_sql.push_str(&format!(
+            let _ = write!(
+                property_sql,
                 " AND fn.class_name = ?{next_property_param_index}"
-            ));
+            );
             property_params.push(Value::from(class_name.to_string()));
             next_property_param_index += 1;
         }
         if let Some(language) = self.ctx.language.as_ref() {
-            property_sql.push_str(&format!(" AND ff.language = ?{next_property_param_index}"));
+            let _ = write!(
+                property_sql,
+                " AND ff.language = ?{next_property_param_index}"
+            );
             property_params.push(Value::from(language.to_string()));
         }
         property_sql.push_str(" )");
@@ -465,14 +478,14 @@ impl<'a> CallEdgeQuery<'a> {
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, Option<String>>(2)?,
-                    row.get::<_, i64>(3)? as usize,
-                    row.get::<_, i64>(4)? as usize,
+                    row.get::<_, usize>(3)?,
+                    row.get::<_, usize>(4)?,
                 ))
             })?;
         for row in property_rows {
             let (file, property_name, object_name, start_line, end_line) = row?;
             let callee = match object_name {
-                Some(object_name) => format!("{}.{}", object_name, property_name),
+                Some(object_name) => format!("{object_name}.{property_name}"),
                 None => property_name,
             };
             let key = (file.clone(), callee.clone(), start_line, end_line);
@@ -587,7 +600,7 @@ impl<'a> CallEdgeQuery<'a> {
             .map(|name| name as &dyn ToSql)
             .collect();
         if let Some(language) = self.ctx.language.as_ref() {
-            sql.push_str(&format!(" AND f.language = ?{}", params.len() + 1));
+            let _ = write!(sql, " AND f.language = ?{}", params.len() + 1);
             params.push(language);
         }
         sql.push_str(" ORDER BY fn.name, f.path, fn.start_line");
@@ -667,8 +680,8 @@ impl<'a> CallEdgeQuery<'a> {
                 name: row.get(3)?,
                 location: Location {
                     file: row.get(2)?,
-                    start_line: row.get::<_, i64>(5)? as usize,
-                    end_line: row.get::<_, i64>(6)? as usize,
+                    start_line: row.get::<_, usize>(5)?,
+                    end_line: row.get::<_, usize>(6)?,
                 },
                 body: String::new(),
                 class_name: row.get(4)?,

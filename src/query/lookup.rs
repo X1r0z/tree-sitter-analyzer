@@ -1,4 +1,5 @@
 use std::collections::{BTreeSet, HashMap};
+use std::fmt::Write;
 
 use rusqlite::{params_from_iter, ToSql};
 
@@ -16,8 +17,8 @@ struct FunctionRow {
     file: String,
     name: String,
     class_name: Option<String>,
-    start_line: i64,
-    end_line: i64,
+    start_line: usize,
+    end_line: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -27,8 +28,8 @@ struct ClassRow {
     file: String,
     name: String,
     kind: String,
-    start_line: i64,
-    end_line: i64,
+    start_line: usize,
+    end_line: usize,
 }
 
 pub(crate) struct LookupQuery<'a> {
@@ -45,14 +46,16 @@ impl<'a> LookupQuery<'a> {
             self.ctx.conn.query_row(
                 "SELECT COUNT(*) FROM files WHERE language = ?1",
                 [language],
-                |row| row.get::<_, i64>(0),
+                |row| row.get::<_, usize>(0),
             )
         } else {
             self.ctx
                 .conn
-                .query_row("SELECT COUNT(*) FROM files", [], |row| row.get::<_, i64>(0))
+                .query_row("SELECT COUNT(*) FROM files", [], |row| {
+                    row.get::<_, usize>(0)
+                })
         };
-        count.map(|count| count.max(0) as usize).unwrap_or(0)
+        count.unwrap_or(0)
     }
 
     pub(crate) fn find_functions(&self, query: &str) -> anyhow::Result<Vec<FunctionInfo>> {
@@ -77,7 +80,7 @@ impl<'a> LookupQuery<'a> {
             params.push(&query);
         }
         if let Some(language) = self.ctx.language.as_ref() {
-            sql.push_str(&format!(" AND f.language = ?{}", params.len() + 1));
+            let _ = write!(sql, " AND f.language = ?{}", params.len() + 1);
             params.push(language);
         }
         sql.push_str(" ORDER BY f.path, fn.start_line");
@@ -89,8 +92,8 @@ impl<'a> LookupQuery<'a> {
                 file: row.get(1)?,
                 name: row.get(2)?,
                 class_name: row.get(3)?,
-                start_line: row.get(4)?,
-                end_line: row.get(5)?,
+                start_line: row.get::<_, usize>(4)?,
+                end_line: row.get::<_, usize>(5)?,
             })
         })?;
         let function_rows = rows.collect::<Result<Vec<_>, _>>()?;
@@ -103,8 +106,8 @@ impl<'a> LookupQuery<'a> {
                 name: row.name,
                 location: Location {
                     file: row.file,
-                    start_line: row.start_line as usize,
-                    end_line: row.end_line as usize,
+                    start_line: row.start_line,
+                    end_line: row.end_line,
                 },
                 body: String::new(),
                 class_name: row.class_name,
@@ -138,7 +141,7 @@ impl<'a> LookupQuery<'a> {
             params.push(&query);
         }
         if let Some(language) = self.ctx.language.as_ref() {
-            sql.push_str(&format!(" AND f.language = ?{}", params.len() + 1));
+            let _ = write!(sql, " AND f.language = ?{}", params.len() + 1);
             params.push(language);
         }
         sql.push_str(" ORDER BY f.path, c.start_line");
@@ -151,8 +154,8 @@ impl<'a> LookupQuery<'a> {
                 file: row.get(2)?,
                 name: row.get(3)?,
                 kind: row.get(4)?,
-                start_line: row.get(5)?,
-                end_line: row.get(6)?,
+                start_line: row.get::<_, usize>(5)?,
+                end_line: row.get::<_, usize>(6)?,
             })
         })?;
         self.hydrate_class_rows(rows.collect::<Result<Vec<_>, _>>()?)
@@ -180,8 +183,8 @@ impl<'a> LookupQuery<'a> {
                 name: row.get(1)?,
                 location: Location {
                     file: row.get(0)?,
-                    start_line: row.get::<_, i64>(4)? as usize,
-                    end_line: row.get::<_, i64>(5)? as usize,
+                    start_line: row.get::<_, usize>(4)?,
+                    end_line: row.get::<_, usize>(5)?,
                 },
                 field_type: row.get(2)?,
                 class_name: row.get(3)?,
@@ -212,7 +215,7 @@ impl<'a> LookupQuery<'a> {
             params.push(&query);
         }
         if let Some(language) = self.ctx.language.as_ref() {
-            sql.push_str(&format!(" AND f.language = ?{}", params.len() + 1));
+            let _ = write!(sql, " AND f.language = ?{}", params.len() + 1);
             params.push(language);
         }
         sql.push_str(" ORDER BY f.path, i.start_line");
@@ -223,8 +226,8 @@ impl<'a> LookupQuery<'a> {
                 module: row.get(1)?,
                 location: Location {
                     file: row.get(0)?,
-                    start_line: row.get::<_, i64>(2)? as usize,
-                    end_line: row.get::<_, i64>(3)? as usize,
+                    start_line: row.get::<_, usize>(2)?,
+                    end_line: row.get::<_, usize>(3)?,
                 },
             })
         })?;
@@ -253,7 +256,7 @@ impl<'a> LookupQuery<'a> {
             params.push(&query);
         }
         if let Some(language) = self.ctx.language.as_ref() {
-            sql.push_str(&format!(" AND f.language = ?{}", params.len() + 1));
+            let _ = write!(sql, " AND f.language = ?{}", params.len() + 1);
             params.push(language);
         }
         sql.push_str(" ORDER BY f.path, a.start_line");
@@ -265,8 +268,8 @@ impl<'a> LookupQuery<'a> {
                 signature: row.get(2)?,
                 location: Location {
                     file: row.get(0)?,
-                    start_line: row.get::<_, i64>(3)? as usize,
-                    end_line: row.get::<_, i64>(4)? as usize,
+                    start_line: row.get::<_, usize>(3)?,
+                    end_line: row.get::<_, usize>(4)?,
                 },
                 target_name: row.get(5)?,
                 target_type: row.get(6)?,
@@ -299,11 +302,11 @@ impl<'a> LookupQuery<'a> {
                 node_type: row.get(2)?,
                 location: Location {
                     file: row.get(0)?,
-                    start_line: row.get::<_, i64>(3)? as usize,
-                    end_line: row.get::<_, i64>(4)? as usize,
+                    start_line: row.get::<_, usize>(3)?,
+                    end_line: row.get::<_, usize>(4)?,
                 },
-                start_column: row.get::<_, i64>(5)? as usize,
-                end_column: row.get::<_, i64>(6)? as usize,
+                start_column: row.get::<_, usize>(5)?,
+                end_column: row.get::<_, usize>(6)?,
                 context: String::new(),
             })
         })?;
@@ -476,8 +479,8 @@ impl<'a> LookupQuery<'a> {
                     file: row.get(2)?,
                     name: row.get(3)?,
                     kind: row.get(4)?,
-                    start_line: row.get(5)?,
-                    end_line: row.get(6)?,
+                    start_line: row.get::<_, usize>(5)?,
+                    end_line: row.get::<_, usize>(6)?,
                 })
             })?;
             class_rows.extend(rows.collect::<Result<Vec<_>, _>>()?);
@@ -503,8 +506,8 @@ impl<'a> LookupQuery<'a> {
                 kind: row.kind,
                 location: Location {
                     file: row.file,
-                    start_line: row.start_line as usize,
-                    end_line: row.end_line as usize,
+                    start_line: row.start_line,
+                    end_line: row.end_line,
                 },
                 methods: methods_by_class
                     .get(&row.class_id)

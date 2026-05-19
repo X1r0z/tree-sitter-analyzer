@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 use rayon::prelude::*;
@@ -19,12 +19,11 @@ pub(crate) fn ensure_index(path: &str, language: Option<&str>) -> anyhow::Result
         return Ok(());
     }
 
-    let missing_languages = match IndexStore::open(&db_path) {
-        Ok(store) => store.missing_languages(path, language)?,
-        Err(_) => {
-            build_index(path, language)?;
-            return Ok(());
-        }
+    let missing_languages = if let Ok(store) = IndexStore::open(&db_path) {
+        store.missing_languages(path, language)?
+    } else {
+        build_index(path, language)?;
+        return Ok(());
     };
 
     if missing_languages.is_empty() {
@@ -44,8 +43,8 @@ pub(crate) fn ensure_index(path: &str, language: Option<&str>) -> anyhow::Result
 pub(crate) fn build_index(path: &str, language: Option<&str>) -> anyhow::Result<IndexInfo> {
     let resolved_path = resolve_path(path);
     let root = Path::new(&resolved_path);
-    anyhow::ensure!(root.exists(), "Path not found: {}", path);
-    anyhow::ensure!(root.is_dir(), "Path must be a directory: {}", path);
+    anyhow::ensure!(root.exists(), "Path not found: {path}");
+    anyhow::ensure!(root.is_dir(), "Path must be a directory: {path}");
 
     let discovery = collect_files(&resolved_path, language);
     let files = discovery.files;
@@ -59,7 +58,7 @@ pub(crate) fn build_index(path: &str, language: Option<&str>) -> anyhow::Result<
                 .indexed_file_metadata_by_path(&files)
                 .unwrap_or_default(),
         ),
-        Ok(_) | Err(_) => (false, Default::default()),
+        Ok(_) | Err(_) => (false, HashMap::default()),
     };
     let parse_message = format!(
         "{} index [{}] | Parsing files",
@@ -73,7 +72,7 @@ pub(crate) fn build_index(path: &str, language: Option<&str>) -> anyhow::Result<
         .map(|file| {
             let result = build_file_index(file, existing.get(file));
             progress.inc(1);
-            result.map_err(|error| format!("{}: {}", file, error))
+            result.map_err(|error| format!("{file}: {error}"))
         })
         .collect();
     progress.finish_and_clear();
@@ -124,7 +123,7 @@ fn build_file_index(
     use std::fs;
 
     let language = detect_language(Path::new(file))
-        .ok_or_else(|| anyhow::anyhow!("Could not detect language for: {}", file))?
+        .ok_or_else(|| anyhow::anyhow!("Could not detect language for: {file}"))?
         .name
         .to_string();
     let metadata = fs::metadata(file)?;

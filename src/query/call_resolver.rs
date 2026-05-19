@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use rusqlite::{params, OptionalExtension};
@@ -7,8 +7,9 @@ use super::call_edges::IndexedFunction;
 use super::QueryContext;
 use crate::parser::call_targets::{
     has_unique_class_method_target, matches_call_target,
-    matches_property_target as call_matches_property_target, resolve_forward_targets_with_fallback,
-    type_matches_class, ForwardTargetContext,
+    matches_property_target as call_matches_property_target,
+    resolve_forward_targets as resolve_forward_targets_from_candidates, type_matches_class,
+    ForwardTargetContext,
 };
 use crate::traversal::collect_reachable_bfs;
 
@@ -79,7 +80,7 @@ impl<'a> CallTargetResolver<'a> {
         let Some(caller) = caller else {
             return Ok(false);
         };
-        if matches!(object_name, Some("self") | Some("cls")) {
+        if matches!(object_name, Some("self" | "cls")) {
             let Some(caller_class_name) = caller.function.class_name.as_deref() else {
                 return Ok(false);
             };
@@ -178,22 +179,7 @@ impl<'a> CallTargetResolver<'a> {
         ))
     }
 
-    pub(super) fn matches_call_target_without_enclosing_function(
-        &self,
-        caller_class_name: Option<&str>,
-        object_name: Option<&str>,
-        class_name: &str,
-    ) -> bool {
-        matches_call_target(
-            caller_class_name,
-            object_name,
-            class_name,
-            |_attr_name, _target_class_name| false,
-            |_attr_name, _target_class_name| false,
-        )
-    }
-
-    pub(super) fn resolve_forward_targets_with_fallback(
+    pub(super) fn resolve_forward_targets(
         &self,
         caller: &IndexedFunction,
         object_name: Option<&str>,
@@ -240,7 +226,7 @@ impl<'a> CallTargetResolver<'a> {
             .unwrap_or_default();
         let param_types =
             self.load_param_types_by_function(caller.function_id, param_type_cache)?;
-        Ok(resolve_forward_targets_with_fallback(
+        let mut resolved = resolve_forward_targets_from_candidates(
             ForwardTargetContext {
                 caller_class_name: caller.function.class_name.as_deref(),
                 caller_file: &caller.function.location.file,
@@ -268,7 +254,16 @@ impl<'a> CallTargetResolver<'a> {
                         type_matches_class(param_type.as_deref(), candidate_class_name)
                     })
             },
-        ))
+        );
+        if resolved.is_empty() && object_name.is_none() {
+            let mut seen = HashSet::new();
+            for candidate in candidates {
+                if seen.insert(candidate.key()) {
+                    resolved.push(candidate.clone());
+                }
+            }
+        }
+        Ok(resolved)
     }
 
     pub(super) fn has_unique_method_target(

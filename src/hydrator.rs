@@ -80,9 +80,8 @@ where
     let resolved: HashMap<K, Candidate> = expected_keys_by_file
         .par_iter()
         .flat_map(|(file, expected)| {
-            let mut extractor = match CodeExtractor::new(file) {
-                Ok(extractor) => extractor,
-                Err(_) => return Vec::new(),
+            let Ok(mut extractor) = CodeExtractor::new(file) else {
+                return Vec::new();
             };
             resolve(&mut extractor, expected)
                 .into_iter()

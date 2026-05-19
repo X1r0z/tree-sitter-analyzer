@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use crate::models::*;
+use crate::models::{
+    AnnotationInfo, CallInfo, ClassInfo, FieldInfo, FileSnapshot, FunctionInfo, ImportInfo, RefInfo,
+};
 use crate::parser::ParseContext;
 
 struct ParseCache {

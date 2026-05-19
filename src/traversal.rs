@@ -65,8 +65,8 @@ where
     _marker: PhantomData<(N, E)>,
 }
 
-impl<'a, K, PK, N, E, P, Err, KeyOf, Neighbors, PathIdentity, Materialize>
-    DfsWalker<'a, K, PK, N, E, P, Err, KeyOf, Neighbors, PathIdentity, Materialize>
+impl<K, PK, N, E, P, Err, KeyOf, Neighbors, PathIdentity, Materialize>
+    DfsWalker<'_, K, PK, N, E, P, Err, KeyOf, Neighbors, PathIdentity, Materialize>
 where
     K: Clone + Eq + Hash,
     PK: Eq + Hash,
@@ -98,8 +98,7 @@ where
     ) -> Result<(), Err> {
         let current = path
             .last()
-            .map(|step| step.node.clone())
-            .unwrap_or_else(|| unreachable!());
+            .map_or_else(|| unreachable!(), |step| step.node.clone());
 
         let mut next_nodes = Vec::new();
         for (node, edge) in (self.neighbors_for)(&current)? {

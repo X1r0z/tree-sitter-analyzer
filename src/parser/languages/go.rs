@@ -24,8 +24,8 @@ impl LanguageEngine for GoEngine {
         if node.kind() == "func_literal" {
             let parent = node.parent()?;
             if parent.kind() == "assignment_statement" || parent.kind() == "var_spec" {
-                for i in 0..parent.child_count() {
-                    let child = parent.child(i as u32).unwrap();
+                let mut cursor = parent.walk();
+                for child in parent.children(&mut cursor) {
                     if child.kind() == "identifier" {
                         let name = ctx.node_text(child);
                         if !name.is_empty() {
@@ -35,8 +35,8 @@ impl LanguageEngine for GoEngine {
                 }
             }
         }
-        for i in 0..node.child_count() {
-            let child = node.child(i as u32).unwrap();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
             if matches!(child.kind(), "identifier" | "field_identifier") {
                 let name = ctx.node_text(child);
                 if !name.is_empty() {
@@ -57,10 +57,8 @@ impl LanguageEngine for GoEngine {
         };
 
         let mut params = Vec::new();
-        for i in 0..parameters.named_child_count() {
-            let Some(param) = parameters.named_child(i as u32) else {
-                continue;
-            };
+        let mut cursor = parameters.walk();
+        for param in parameters.named_children(&mut cursor) {
             if !matches!(
                 param.kind(),
                 "parameter_declaration" | "variadic_parameter_declaration"
@@ -77,10 +75,8 @@ impl LanguageEngine for GoEngine {
             });
             let mut names = Vec::new();
 
-            for j in 0..param.named_child_count() {
-                let Some(child) = param.named_child(j as u32) else {
-                    continue;
-                };
+            let mut param_cursor = param.walk();
+            for child in param.named_children(&mut param_cursor) {
                 if child.kind() == "identifier" {
                     names.push(ctx.node_text(child));
                 }
@@ -176,23 +172,23 @@ impl LanguageEngine for GoEngine {
     fn super_types(&self, ctx: &ParseContext, class_node: Node<'_>) -> Vec<String> {
         let mut embedded_type_names = Vec::new();
 
-        for i in 0..class_node.child_count() {
-            let child = class_node.child(i as u32).unwrap();
+        let mut cursor = class_node.walk();
+        for child in class_node.children(&mut cursor) {
             if child.kind() != "type_spec" {
                 continue;
             }
-            for j in 0..child.child_count() {
-                let sub = child.child(j as u32).unwrap();
+            let mut child_cursor = child.walk();
+            for sub in child.children(&mut child_cursor) {
                 if sub.kind() != "struct_type" {
                     continue;
                 }
-                for k in 0..sub.child_count() {
-                    let field = sub.child(k as u32).unwrap();
+                let mut sub_cursor = sub.walk();
+                for field in sub.children(&mut sub_cursor) {
                     if field.kind() != "field_declaration_list" {
                         continue;
                     }
-                    for l in 0..field.child_count() {
-                        let field_declaration = field.child(l as u32).unwrap();
+                    let mut field_cursor = field.walk();
+                    for field_declaration in field.children(&mut field_cursor) {
                         if field_declaration.kind() != "field_declaration" {
                             continue;
                         }
@@ -218,28 +214,26 @@ impl LanguageEngine for GoEngine {
 
 pub(crate) fn receiver_type_name(parser: &ParseContext, method_node: Node<'_>) -> Option<String> {
     let receiver_list = method_node.child_by_field_name("receiver").or_else(|| {
-        for i in 0..method_node.child_count() {
-            let child = method_node.child(i as u32).unwrap();
-            if child.kind() == "parameter_list" {
-                return Some(child);
-            }
-        }
-        None
+        let mut cursor = method_node.walk();
+        let receiver = method_node
+            .children(&mut cursor)
+            .find(|child| child.kind() == "parameter_list");
+        receiver
     })?;
 
-    for i in 0..receiver_list.child_count() {
-        let param = receiver_list.child(i as u32).unwrap();
+    let mut cursor = receiver_list.walk();
+    for param in receiver_list.children(&mut cursor) {
         if param.kind() != "parameter_declaration" {
             continue;
         }
         if let Some(type_node) = param.child_by_field_name("type") {
             return base_type_name(parser, type_node);
         }
-        for j in 0..param.child_count() {
-            let child = param.child(j as u32).unwrap();
+        let mut param_cursor = param.walk();
+        for child in param.children(&mut param_cursor) {
             if child.kind() == "pointer_type" {
-                for k in 0..child.child_count() {
-                    let pointer_child = child.child(k as u32).unwrap();
+                let mut child_cursor = child.walk();
+                for pointer_child in child.children(&mut child_cursor) {
                     if pointer_child.kind() == "type_identifier" {
                         return Some(parser.node_text(pointer_child));
                     }
@@ -257,8 +251,8 @@ pub(crate) fn base_type_name(parser: &ParseContext, type_node: Node<'_>) -> Opti
     match type_node.kind() {
         "type_identifier" => Some(parser.node_text(type_node)),
         "pointer_type" => {
-            for i in 0..type_node.child_count() {
-                let child = type_node.child(i as u32).unwrap();
+            let mut cursor = type_node.walk();
+            for child in type_node.children(&mut cursor) {
                 if child.kind() != "*" {
                     return base_type_name(parser, child);
                 }
@@ -269,8 +263,8 @@ pub(crate) fn base_type_name(parser: &ParseContext, type_node: Node<'_>) -> Opti
             if let Some(base) = type_node.child_by_field_name("type") {
                 return base_type_name(parser, base);
             }
-            for i in 0..type_node.child_count() {
-                let child = type_node.child(i as u32).unwrap();
+            let mut cursor = type_node.walk();
+            for child in type_node.children(&mut cursor) {
                 if child.kind() == "type_identifier" {
                     return Some(parser.node_text(child));
                 }
@@ -285,8 +279,8 @@ fn embedded_type_name(parser: &ParseContext, node: Node<'_>) -> Option<String> {
     match node.kind() {
         "type_identifier" => Some(parser.node_text(node)),
         "qualified_type" => {
-            for i in 0..node.child_count() {
-                let child = node.child(i as u32).unwrap();
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
                 if child.kind() == "type_identifier" {
                     return Some(parser.node_text(child));
                 }
@@ -294,8 +288,8 @@ fn embedded_type_name(parser: &ParseContext, node: Node<'_>) -> Option<String> {
             None
         }
         "generic_type" => {
-            for i in 0..node.child_count() {
-                let child = node.child(i as u32).unwrap();
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
                 if matches!(
                     child.kind(),
                     "type_identifier" | "qualified_type" | "pointer_type"
@@ -306,8 +300,8 @@ fn embedded_type_name(parser: &ParseContext, node: Node<'_>) -> Option<String> {
             None
         }
         "pointer_type" => {
-            for i in 0..node.child_count() {
-                let child = node.child(i as u32).unwrap();
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
                 if matches!(
                     child.kind(),
                     "type_identifier" | "qualified_type" | "generic_type" | "parenthesized_type"
@@ -318,11 +312,10 @@ fn embedded_type_name(parser: &ParseContext, node: Node<'_>) -> Option<String> {
             None
         }
         "parenthesized_type" => {
-            for i in 0..node.named_child_count() {
-                if let Some(child) = node.named_child(i as u32) {
-                    if let Some(name) = embedded_type_name(parser, child) {
-                        return Some(name);
-                    }
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                if let Some(name) = embedded_type_name(parser, child) {
+                    return Some(name);
                 }
             }
             None
@@ -335,14 +328,14 @@ fn embedded_type_from_field_declaration(
     parser: &ParseContext,
     field_declaration: Node<'_>,
 ) -> Option<String> {
-    for i in 0..field_declaration.child_count() {
-        let child = field_declaration.child(i as u32).unwrap();
+    let mut cursor = field_declaration.walk();
+    for child in field_declaration.children(&mut cursor) {
         if child.kind() == "field_identifier" {
             return None;
         }
     }
-    for i in 0..field_declaration.child_count() {
-        let child = field_declaration.child(i as u32).unwrap();
+    let mut cursor = field_declaration.walk();
+    for child in field_declaration.children(&mut cursor) {
         if child.kind() == "*" {
             continue;
         }
@@ -357,11 +350,10 @@ fn embedded_type_from_field_declaration(
             return embedded_type_name(parser, child);
         }
     }
-    for i in 0..field_declaration.named_child_count() {
-        if let Some(child) = field_declaration.named_child(i as u32) {
-            if let Some(name) = embedded_type_name(parser, child) {
-                return Some(name);
-            }
+    let mut cursor = field_declaration.walk();
+    for child in field_declaration.named_children(&mut cursor) {
+        if let Some(name) = embedded_type_name(parser, child) {
+            return Some(name);
         }
     }
     None

@@ -230,13 +230,14 @@ enum Commands {
 fn parse_positive_depth(value: &str) -> Result<usize, String> {
     let depth: usize = value
         .parse()
-        .map_err(|_| format!("invalid depth '{}'", value))?;
+        .map_err(|_| format!("invalid depth '{value}'"))?;
     if depth == 0 {
         return Err("depth must be >= 1".to_string());
     }
     Ok(depth)
 }
 
+#[allow(clippy::too_many_lines)]
 fn run() -> i32 {
     let cli = Cli::parse();
     let mut result = match cli.command {
@@ -366,11 +367,7 @@ fn run() -> i32 {
         "{}",
         serde_json::to_string_pretty(&result).unwrap_or_default()
     );
-    if result.get("error").is_some() {
-        1
-    } else {
-        0
-    }
+    i32::from(result.get("error").is_some())
 }
 
 fn main() {

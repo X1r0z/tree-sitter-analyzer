@@ -1,7 +1,10 @@
 use rusqlite::Connection;
 
 use crate::db::IndexStore;
-use crate::models::*;
+use crate::models::{
+    AnnotationInfo, CallGraphPath, CalleeInfo, CallerInfo, ClassInfo, FieldInfo, FunctionInfo,
+    GraphDirection, ImportInfo, RefInfo,
+};
 use crate::query::{CallEdgeQuery, CallGraphQuery, ClassHierarchyQuery, LookupQuery, QueryContext};
 
 pub(crate) struct CodeAnalyzer {

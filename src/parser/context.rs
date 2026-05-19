@@ -235,13 +235,13 @@ impl ParseContext {
     pub(crate) fn from_source(file_path: &str, source: Vec<u8>) -> anyhow::Result<Self> {
         let path = Path::new(file_path);
         let language = detect_language(path)
-            .ok_or_else(|| anyhow::anyhow!("Could not detect language for: {}", file_path))?;
+            .ok_or_else(|| anyhow::anyhow!("Could not detect language for: {file_path}"))?;
         let engine = language.engine();
         let mut parser = Parser::new();
         parser.set_language(&engine.ts_language())?;
         let tree = parser
             .parse(&source, None)
-            .ok_or_else(|| anyhow::anyhow!("Failed to parse: {}", file_path))?;
+            .ok_or_else(|| anyhow::anyhow!("Failed to parse: {file_path}"))?;
 
         Ok(Self {
             input: ParseInput {
@@ -288,7 +288,7 @@ impl ParseContext {
             .resolve_call_targets(self, function_node, call_node, identifier_name)
     }
 
-    pub(crate) fn node_id(&self, node: Node<'_>) -> NodeId {
+    pub(crate) fn node_id(node: Node<'_>) -> NodeId {
         NodeId::from(node)
     }
 
@@ -350,12 +350,12 @@ impl ParseContext {
         EnclosingContext {
             function_name: enclosing.function_name,
             class_name: enclosing.class_name,
-            function_node: self.find_enclosing_function_node(node),
+            function_node: Self::find_enclosing_function_node(node),
         }
     }
 
     pub(crate) fn cached_enclosing_names(&self, node: Node<'_>) -> CachedEnclosingNames {
-        let node_id = self.node_id(node);
+        let node_id = Self::node_id(node);
         if let Some(names) = self
             .caches
             .borrow()
@@ -376,7 +376,7 @@ impl ParseContext {
     }
 
     pub(crate) fn cached_function_name(&self, node: Node) -> Option<String> {
-        let node_id = self.node_id(node);
+        let node_id = Self::node_id(node);
         if let Some(name) = self
             .caches
             .borrow()
@@ -396,7 +396,7 @@ impl ParseContext {
     }
 
     pub(crate) fn cached_class_name(&self, node: Node) -> Option<String> {
-        let node_id = self.node_id(node);
+        let node_id = Self::node_id(node);
         if let Some(name) = self
             .caches
             .borrow()
@@ -514,12 +514,14 @@ impl ParseContext {
             .common
             .structural_index
             .as_ref()
-            .map(|index| index.class_snapshot.clone())
-            .unwrap_or_else(|| ClassSnapshotData {
-                classes: Vec::new(),
-                fields: Vec::new(),
-                field_infos_by_class: HashMap::new(),
-            })
+            .map_or_else(
+                || ClassSnapshotData {
+                    classes: Vec::new(),
+                    fields: Vec::new(),
+                    field_infos_by_class: HashMap::new(),
+                },
+                |index| index.class_snapshot.clone(),
+            )
     }
 
     pub(crate) fn collect_calls(&self) -> Vec<CallInfo> {
@@ -588,9 +590,7 @@ impl ParseContext {
             let mut used_resolved_calls = false;
             if is_js_family
                 && !is_method
-                && callee_function_node
-                    .map(|node| node.kind() == "identifier")
-                    .unwrap_or(false)
+                && callee_function_node.is_some_and(|node| node.kind() == "identifier")
             {
                 if let Some(function_node) = enclosing.function_node {
                     let resolved = self.resolve_call_targets_with_function_node(
@@ -697,16 +697,17 @@ impl ParseContext {
                         refs.push(reference);
                     }
                 }
-                for i in (0..node.named_child_count()).rev() {
-                    if let Some(child) = node.named_child(i as u32) {
-                        stack.push(child);
-                    }
+                let mut cursor = node.walk();
+                let children: Vec<_> = node.named_children(&mut cursor).collect();
+                for child in children.into_iter().rev() {
+                    stack.push(child);
                 }
             }
         }
         refs
     }
 
+    #[allow(clippy::too_many_lines)]
     fn ensure_structural_index(&self) {
         if self.caches.borrow().common.structural_index.is_some() {
             return;
@@ -904,7 +905,7 @@ impl ParseContext {
         self.caches.borrow_mut().common.structural_index = Some(structural_index);
     }
 
-    fn find_enclosing_function_node<'a>(&self, node: Node<'a>) -> Option<Node<'a>> {
+    fn find_enclosing_function_node(node: Node<'_>) -> Option<Node<'_>> {
         let mut current = Some(node);
         while let Some(current_node) = current {
             if is_function_like(current_node.kind()) {
@@ -991,8 +992,8 @@ fn class_name_from_node(context: &ParseContext, node: Node<'_>) -> Option<String
             return Some(class_name);
         }
     }
-    for i in 0..node.child_count() {
-        let child = node.child(i as u32).unwrap();
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
         if matches!(child.kind(), "identifier" | "type_identifier" | "name") {
             let class_name = context.node_text(child);
             if !class_name.is_empty() {
@@ -1005,7 +1006,6 @@ fn class_name_from_node(context: &ParseContext, node: Node<'_>) -> Option<String
 
 fn class_kind(context: &ParseContext, node: Node<'_>) -> String {
     match context.language() {
-        "python" | "javascript" => "class".to_string(),
         "typescript" | "tsx" => match node.kind() {
             "abstract_class_declaration" => "abstract_class".to_string(),
             "interface_declaration" => "interface".to_string(),
@@ -1024,12 +1024,10 @@ fn class_kind(context: &ParseContext, node: Node<'_>) -> String {
             .children(&mut node.walk())
             .find(|child| child.kind() == "type_spec")
             .and_then(|type_spec| type_spec.child_by_field_name("type"))
-            .map(|type_node| match type_node.kind() {
+            .map_or("struct", |type_node| match type_node.kind() {
                 "interface_type" => "interface",
-                "struct_type" => "struct",
                 _ => "struct",
             })
-            .unwrap_or("struct")
             .to_string(),
         _ => "class".to_string(),
     }
@@ -1051,8 +1049,8 @@ fn class_method_names(parser: &ParseContext, class_node: Node<'_>) -> Vec<String
                 | "method_elem"
                 | "method_spec"
         ) {
-            for i in 0..node.child_count() {
-                let child = node.child(i as u32).unwrap();
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
                 if matches!(
                     child.kind(),
                     "identifier" | "property_identifier" | "field_identifier" | "name"
@@ -1063,10 +1061,10 @@ fn class_method_names(parser: &ParseContext, class_node: Node<'_>) -> Vec<String
             }
             continue;
         }
-        for i in (0..node.child_count()).rev() {
-            if let Some(child) = node.child(i as u32) {
-                stack.push(child);
-            }
+        let mut cursor = node.walk();
+        let children: Vec<_> = node.children(&mut cursor).collect();
+        for child in children.into_iter().rev() {
+            stack.push(child);
         }
     }
     methods
@@ -1120,16 +1118,16 @@ pub(crate) fn collect_field_infos_from_declarations(
                 .child_by_field_name("type")
                 .map(|child| parser.node_text(child));
 
-            for i in 0..node.child_count() {
-                let child = node.child(i as u32).unwrap();
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
                 if matches!(
                     child.kind(),
                     "identifier" | "property_identifier" | "field_identifier"
                 ) {
                     names.push(parser.node_text(child));
                 } else if child.kind() == "variable_declarator" {
-                    for j in 0..child.child_count() {
-                        let sub = child.child(j as u32).unwrap();
+                    let mut child_cursor = child.walk();
+                    for sub in child.children(&mut child_cursor) {
                         if sub.kind() == "identifier" {
                             names.push(parser.node_text(sub));
                             break;
@@ -1178,10 +1176,10 @@ pub(crate) fn collect_field_infos_from_declarations(
             continue;
         }
 
-        for i in (0..node.child_count()).rev() {
-            if let Some(child) = node.child(i as u32) {
-                stack.push(child);
-            }
+        let mut cursor = node.walk();
+        let children: Vec<_> = node.children(&mut cursor).collect();
+        for child in children.into_iter().rev() {
+            stack.push(child);
         }
     }
 

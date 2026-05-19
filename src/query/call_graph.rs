@@ -10,7 +10,9 @@ use super::{CallEdgeQuery, QueryContext};
 use crate::models::{
     CallGraphPath, FunctionInfo, FunctionKey, GraphDirection, GraphPathNode, Location,
 };
-use crate::parser::call_targets::{has_non_self_object_target, matches_module_property_target};
+use crate::parser::call_targets::{
+    has_non_self_object_target, matches_call_target, type_matches_class,
+};
 use crate::traversal::{collect_paths_dfs, TraversalPathStep};
 
 #[derive(Clone, Eq, Hash, PartialEq)]
@@ -32,24 +34,24 @@ struct GraphEdgeKey {
 }
 
 struct GraphTraversalState {
-    neighbor_cache: HashMap<(GraphDirection, FunctionKey), Vec<GraphNeighbor>>,
-    node_cache: HashMap<(String, Option<String>), std::sync::Arc<[IndexedFunction]>>,
-    field_type_cache: FieldTypeCache,
-    param_type_cache: ParamTypeCache,
-    ancestors_cache: AncestorsByFileClass,
-    is_property_cache: HashMap<(String, Option<String>), bool>,
+    neighbors: HashMap<(GraphDirection, FunctionKey), Vec<GraphNeighbor>>,
+    nodes: HashMap<(String, Option<String>), std::sync::Arc<[IndexedFunction]>>,
+    field_types: FieldTypeCache,
+    param_types: ParamTypeCache,
+    ancestors: AncestorsByFileClass,
+    properties: HashMap<(String, Option<String>), bool>,
 }
 
 type IndexedResolutionCache =
     HashMap<(i64, String, String, Option<String>, usize), Option<IndexedFunction>>;
 
 struct GraphTraversalCaches<'a> {
-    node_cache: &'a mut HashMap<(String, Option<String>), std::sync::Arc<[IndexedFunction]>>,
-    resolution_cache: &'a mut IndexedResolutionCache,
-    field_type_cache: &'a mut FieldTypeCache,
-    param_type_cache: &'a mut ParamTypeCache,
-    ancestors_cache: &'a mut AncestorsByFileClass,
-    is_property_cache: &'a mut HashMap<(String, Option<String>), bool>,
+    nodes: &'a mut HashMap<(String, Option<String>), std::sync::Arc<[IndexedFunction]>>,
+    resolutions: &'a mut IndexedResolutionCache,
+    field_types: &'a mut FieldTypeCache,
+    param_types: &'a mut ParamTypeCache,
+    ancestors: &'a mut AncestorsByFileClass,
+    properties: &'a mut HashMap<(String, Option<String>), bool>,
 }
 
 type BackwardCallRow = (
@@ -90,27 +92,27 @@ impl<'a> CallGraphQuery<'a> {
         let edge_query = CallEdgeQuery::new(self.ctx);
         let start_nodes = edge_query.load_exact_functions(function_name, class_name)?;
         if start_nodes.is_empty() {
-            anyhow::bail!("Function '{}' not found", function_name);
+            anyhow::bail!("Function '{function_name}' not found");
         }
 
         let mut state = GraphTraversalState {
-            neighbor_cache: HashMap::new(),
-            node_cache: HashMap::new(),
-            field_type_cache: HashMap::new(),
-            param_type_cache: HashMap::new(),
-            ancestors_cache: HashMap::new(),
-            is_property_cache: HashMap::new(),
+            neighbors: HashMap::new(),
+            nodes: HashMap::new(),
+            field_types: HashMap::new(),
+            param_types: HashMap::new(),
+            ancestors: HashMap::new(),
+            properties: HashMap::new(),
         };
-        let mut resolution_cache = HashMap::new();
+        let mut resolutions = HashMap::new();
 
-        let neighbor_cache = &mut state.neighbor_cache;
+        let neighbors = &mut state.neighbors;
         let mut traversal_caches = GraphTraversalCaches {
-            node_cache: &mut state.node_cache,
-            resolution_cache: &mut resolution_cache,
-            field_type_cache: &mut state.field_type_cache,
-            param_type_cache: &mut state.param_type_cache,
-            ancestors_cache: &mut state.ancestors_cache,
-            is_property_cache: &mut state.is_property_cache,
+            nodes: &mut state.nodes,
+            resolutions: &mut resolutions,
+            field_types: &mut state.field_types,
+            param_types: &mut state.param_types,
+            ancestors: &mut state.ancestors,
+            properties: &mut state.properties,
         };
 
         let mut results = collect_paths_dfs(
@@ -120,12 +122,12 @@ impl<'a> CallGraphQuery<'a> {
             IndexedFunction::key,
             |current| {
                 let cache_key = (direction, current.key());
-                let neighbors = if let Some(cached) = neighbor_cache.get(&cache_key) {
+                let neighbors = if let Some(cached) = neighbors.get(&cache_key) {
                     cached.clone()
                 } else {
                     let loaded =
                         self.load_graph_neighbors(current, direction, &mut traversal_caches)?;
-                    neighbor_cache.insert(cache_key, loaded.clone());
+                    neighbors.insert(cache_key, loaded.clone());
                     loaded
                 };
 
@@ -166,11 +168,10 @@ impl<'a> CallGraphQuery<'a> {
             path.iter()
                 .zip(steps.iter())
                 .map(|(node, step)| {
-                    let (file, line) = step
-                        .edge
-                        .as_ref()
-                        .map(|call_site| (call_site.file.as_str(), call_site.line))
-                        .unwrap_or((node.location.file.as_str(), node.location.start_line));
+                    let (file, line) = step.edge.as_ref().map_or(
+                        (node.location.file.as_str(), node.location.start_line),
+                        |call_site| (call_site.file.as_str(), call_site.line),
+                    );
                     node.stacktrace_name(file, line)
                 })
                 .collect(),
@@ -197,6 +198,7 @@ impl<'a> CallGraphQuery<'a> {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn load_forward_neighbors(
         &self,
         node: &IndexedFunction,
@@ -213,7 +215,7 @@ impl<'a> CallGraphQuery<'a> {
                 .iter()
                 .map(|(property_name, _, _)| property_name.clone()),
         );
-        edge_query.load_functions_by_names(&callee_names, caches.node_cache)?;
+        edge_query.load_functions_by_names(&callee_names, caches.nodes)?;
 
         let mut seen = HashSet::new();
         let mut results = Vec::new();
@@ -225,27 +227,27 @@ impl<'a> CallGraphQuery<'a> {
                 node.function.class_name.as_deref(),
                 line,
                 &mut super::call_edges::EnclosingFunctionCaches {
-                    candidates: caches.node_cache,
-                    resolutions: caches.resolution_cache,
+                    candidates: caches.nodes,
+                    resolutions: caches.resolutions,
                 },
             )?;
             if !enclosing.is_some_and(|caller| caller.key() == node.key()) {
                 continue;
             }
-            let candidates = edge_query.load_functions_by_name(&callee_name, caches.node_cache)?;
-            let mut resolved = resolver.resolve_forward_targets_with_fallback(
+            let candidates = edge_query.load_functions_by_name(&callee_name, caches.nodes)?;
+            let mut resolved_targets = resolver.resolve_forward_targets(
                 node,
                 object_name.as_deref(),
                 candidates.as_ref(),
-                caches.field_type_cache,
-                caches.param_type_cache,
+                caches.field_types,
+                caches.param_types,
             )?;
-            if resolved.is_empty() {
+            if resolved_targets.is_empty() {
                 let name = match object_name.as_deref() {
-                    Some(object_name) => format!("{}.{}", object_name, callee_name),
+                    Some(object_name) => format!("{object_name}.{callee_name}"),
                     None => callee_name.clone(),
                 };
-                resolved.push(IndexedFunction {
+                resolved_targets.push(IndexedFunction {
                     function_id: -1,
                     file_id: node.file_id,
                     function: FunctionInfo {
@@ -261,7 +263,7 @@ impl<'a> CallGraphQuery<'a> {
                     },
                 });
             }
-            for candidate in resolved {
+            for candidate in resolved_targets {
                 let key = GraphEdgeKey {
                     node: candidate.key(),
                     call_site: CallSite {
@@ -282,22 +284,21 @@ impl<'a> CallGraphQuery<'a> {
         }
 
         for (property_name, object_name, line) in property_rows {
-            let candidates =
-                edge_query.load_functions_by_name(&property_name, caches.node_cache)?;
+            let candidates = edge_query.load_functions_by_name(&property_name, caches.nodes)?;
             let mut matched = Vec::new();
             for candidate in candidates.iter() {
                 let property_key = (
                     candidate.function.name.clone(),
                     candidate.function.class_name.clone(),
                 );
-                let is_property = if let Some(value) = caches.is_property_cache.get(&property_key) {
+                let is_property = if let Some(value) = caches.properties.get(&property_key) {
                     *value
                 } else {
                     let value = resolver.is_python_property(
                         &candidate.function.name,
                         candidate.function.class_name.as_deref(),
                     )?;
-                    caches.is_property_cache.insert(property_key.clone(), value);
+                    caches.properties.insert(property_key.clone(), value);
                     value
                 };
                 if !is_property {
@@ -307,9 +308,9 @@ impl<'a> CallGraphQuery<'a> {
                     Some(node),
                     object_name.as_deref(),
                     candidate.function.class_name.as_deref().unwrap_or_default(),
-                    caches.field_type_cache,
-                    caches.param_type_cache,
-                    caches.ancestors_cache,
+                    caches.field_types,
+                    caches.param_types,
+                    caches.ancestors,
                 )? {
                     continue;
                 }
@@ -318,7 +319,7 @@ impl<'a> CallGraphQuery<'a> {
 
             if matched.is_empty() {
                 let name = match object_name.as_deref() {
-                    Some(object_name) => format!("{}.{}", object_name, property_name),
+                    Some(object_name) => format!("{object_name}.{property_name}"),
                     None => property_name.clone(),
                 };
                 matched.push(IndexedFunction {
@@ -365,64 +366,62 @@ impl<'a> CallGraphQuery<'a> {
         &self,
         node: &IndexedFunction,
     ) -> anyhow::Result<Vec<(String, Option<String>, usize)>> {
-        let start_line = node.function.location.start_line as i64;
-        let end_line = node.function.location.end_line as i64;
-        let rows = match node.function.class_name.as_deref() {
-            Some(class_name) => {
-                let mut stmt = self.ctx.conn.prepare_cached(
-                    "
-                    SELECT property_name, object_name, start_line
-                    FROM python_property_callers
-                    WHERE file_id = ?1 AND caller = ?2 AND start_line >= ?3 AND start_line <= ?4
-                      AND caller_class_name = ?5
-                    ORDER BY start_line
-                    ",
-                )?;
-                let rows = stmt.query_map(
-                    params![
-                        node.file_id,
-                        node.function.name,
-                        start_line,
-                        end_line,
-                        class_name
-                    ],
-                    |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, Option<String>>(1)?,
-                            row.get::<_, i64>(2)? as usize,
-                        ))
-                    },
-                )?;
-                rows.collect::<Result<Vec<_>, _>>()?
-            }
-            None => {
-                let mut stmt = self.ctx.conn.prepare_cached(
-                    "
-                    SELECT property_name, object_name, start_line
-                    FROM python_property_callers
-                    WHERE file_id = ?1 AND caller = ?2 AND start_line >= ?3 AND start_line <= ?4
-                      AND caller_class_name IS NULL
-                    ORDER BY start_line
-                    ",
-                )?;
-                let rows = stmt.query_map(
-                    params![node.file_id, node.function.name, start_line, end_line],
-                    |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, Option<String>>(1)?,
-                            row.get::<_, i64>(2)? as usize,
-                        ))
-                    },
-                )?;
-                rows.collect::<Result<Vec<_>, _>>()?
-            }
+        let start_line = node.function.location.start_line;
+        let end_line = node.function.location.end_line;
+        let rows = if let Some(class_name) = node.function.class_name.as_deref() {
+            let mut stmt = self.ctx.conn.prepare_cached(
+                "
+                SELECT property_name, object_name, start_line
+                FROM python_property_callers
+                WHERE file_id = ?1 AND caller = ?2 AND start_line >= ?3 AND start_line <= ?4
+                  AND caller_class_name = ?5
+                ORDER BY start_line
+                ",
+            )?;
+            let rows = stmt.query_map(
+                params![
+                    node.file_id,
+                    node.function.name,
+                    start_line,
+                    end_line,
+                    class_name
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, usize>(2)?,
+                    ))
+                },
+            )?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        } else {
+            let mut stmt = self.ctx.conn.prepare_cached(
+                "
+                SELECT property_name, object_name, start_line
+                FROM python_property_callers
+                WHERE file_id = ?1 AND caller = ?2 AND start_line >= ?3 AND start_line <= ?4
+                  AND caller_class_name IS NULL
+                ORDER BY start_line
+                ",
+            )?;
+            let rows = stmt.query_map(
+                params![node.file_id, node.function.name, start_line, end_line],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, usize>(2)?,
+                    ))
+                },
+            )?;
+            rows.collect::<Result<Vec<_>, _>>()?
         };
 
         Ok(rows)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn load_backward_neighbors(
         &self,
         node: &IndexedFunction,
@@ -449,8 +448,8 @@ impl<'a> CallGraphQuery<'a> {
                     caller_class_name.as_deref(),
                     line,
                     &mut super::call_edges::EnclosingFunctionCaches {
-                        candidates: caches.node_cache,
-                        resolutions: caches.resolution_cache,
+                        candidates: caches.nodes,
+                        resolutions: caches.resolutions,
                     },
                 )?;
                 if let Some(caller) = caller {
@@ -459,8 +458,8 @@ impl<'a> CallGraphQuery<'a> {
                             &caller,
                             object_name.as_deref(),
                             class_name,
-                            caches.field_type_cache,
-                            caches.param_type_cache,
+                            caches.field_types,
+                            caches.param_types,
                         )? || unique_method_target
                             && has_non_self_object_target(object_name.as_deref()))
                         {
@@ -488,10 +487,12 @@ impl<'a> CallGraphQuery<'a> {
             }
 
             if let Some(class_name) = node.function.class_name.as_deref() {
-                if !(resolver.matches_call_target_without_enclosing_function(
+                if !(matches_call_target(
                     caller_class_name.as_deref(),
                     object_name.as_deref(),
                     class_name,
+                    |_attr_name, _target_class_name| false,
+                    |_attr_name, _target_class_name| false,
                 ) || unique_method_target
                     && has_non_self_object_target(object_name.as_deref()))
                 {
@@ -530,12 +531,12 @@ impl<'a> CallGraphQuery<'a> {
         }
 
         let property_key = (node.function.name.clone(), node.function.class_name.clone());
-        let is_property = if let Some(value) = caches.is_property_cache.get(&property_key) {
+        let is_property = if let Some(value) = caches.properties.get(&property_key) {
             *value
         } else {
             let value = resolver
                 .is_python_property(&node.function.name, node.function.class_name.as_deref())?;
-            caches.is_property_cache.insert(property_key.clone(), value);
+            caches.properties.insert(property_key.clone(), value);
             value
         };
 
@@ -545,11 +546,9 @@ impl<'a> CallGraphQuery<'a> {
             {
                 if caller_name == "<module>" {
                     if let Some(class_name) = node.function.class_name.as_deref() {
-                        if !matches_module_property_target(
-                            object_name.as_deref(),
-                            object_type.as_deref(),
-                            class_name,
-                        ) {
+                        if object_name.as_deref() == Some(class_name)
+                            || !type_matches_class(object_type.as_deref(), class_name)
+                        {
                             continue;
                         }
                     }
@@ -591,17 +590,17 @@ impl<'a> CallGraphQuery<'a> {
                     caller_class_name.as_deref(),
                     line,
                     &mut super::call_edges::EnclosingFunctionCaches {
-                        candidates: caches.node_cache,
-                        resolutions: caches.resolution_cache,
+                        candidates: caches.nodes,
+                        resolutions: caches.resolutions,
                     },
                 )? {
                     if !resolver.matches_property_target(
                         Some(&caller),
                         object_name.as_deref(),
                         node.function.class_name.as_deref().unwrap_or_default(),
-                        caches.field_type_cache,
-                        caches.param_type_cache,
-                        caches.ancestors_cache,
+                        caches.field_types,
+                        caches.param_types,
+                        caches.ancestors,
                     )? {
                         continue;
                     }
@@ -629,110 +628,104 @@ impl<'a> CallGraphQuery<'a> {
         &self,
         node: &IndexedFunction,
     ) -> anyhow::Result<Vec<(String, Option<String>, usize)>> {
-        let start_line = node.function.location.start_line as i64;
-        let end_line = node.function.location.end_line as i64;
-        let rows = match node.function.class_name.as_deref() {
-            Some(class_name) => {
-                let mut stmt = self.ctx.conn.prepare_cached(
-                    "
-                    SELECT callee, object_name, start_line
-                    FROM calls
-                    WHERE file_id = ?1 AND caller = ?2 AND start_line >= ?3 AND start_line <= ?4
-                      AND caller_class_name = ?5
-                    ORDER BY start_line
-                    ",
-                )?;
-                let rows = stmt.query_map(
-                    params![
-                        node.file_id,
-                        node.function.name,
-                        start_line,
-                        end_line,
-                        class_name
-                    ],
-                    |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, Option<String>>(1)?,
-                            row.get::<_, i64>(2)? as usize,
-                        ))
-                    },
-                )?;
-                rows.collect::<Result<Vec<_>, _>>()?
-            }
-            None => {
-                let mut stmt = self.ctx.conn.prepare_cached(
-                    "
-                    SELECT callee, object_name, start_line
-                    FROM calls
-                    WHERE file_id = ?1 AND caller = ?2 AND start_line >= ?3 AND start_line <= ?4
-                      AND caller_class_name IS NULL
-                    ORDER BY start_line
-                    ",
-                )?;
-                let rows = stmt.query_map(
-                    params![node.file_id, node.function.name, start_line, end_line],
-                    |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, Option<String>>(1)?,
-                            row.get::<_, i64>(2)? as usize,
-                        ))
-                    },
-                )?;
-                rows.collect::<Result<Vec<_>, _>>()?
-            }
+        let start_line = node.function.location.start_line;
+        let end_line = node.function.location.end_line;
+        let rows = if let Some(class_name) = node.function.class_name.as_deref() {
+            let mut stmt = self.ctx.conn.prepare_cached(
+                "
+                SELECT callee, object_name, start_line
+                FROM calls
+                WHERE file_id = ?1 AND caller = ?2 AND start_line >= ?3 AND start_line <= ?4
+                  AND caller_class_name = ?5
+                ORDER BY start_line
+                ",
+            )?;
+            let rows = stmt.query_map(
+                params![
+                    node.file_id,
+                    node.function.name,
+                    start_line,
+                    end_line,
+                    class_name
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, usize>(2)?,
+                    ))
+                },
+            )?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        } else {
+            let mut stmt = self.ctx.conn.prepare_cached(
+                "
+                SELECT callee, object_name, start_line
+                FROM calls
+                WHERE file_id = ?1 AND caller = ?2 AND start_line >= ?3 AND start_line <= ?4
+                  AND caller_class_name IS NULL
+                ORDER BY start_line
+                ",
+            )?;
+            let rows = stmt.query_map(
+                params![node.file_id, node.function.name, start_line, end_line],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, usize>(2)?,
+                    ))
+                },
+            )?;
+            rows.collect::<Result<Vec<_>, _>>()?
         };
 
         Ok(rows)
     }
 
     fn load_backward_call_rows(&self, function_name: &str) -> anyhow::Result<Vec<BackwardCallRow>> {
-        let rows = match self.ctx.language.as_ref() {
-            Some(language) => {
-                let mut stmt = self.ctx.conn.prepare_cached(
-                    "
-                    SELECT c.file_id, f.path, c.caller, c.caller_class_name, c.object_name, c.start_line
-                    FROM calls c
-                    JOIN files f ON f.id = c.file_id
-                    WHERE c.callee = ?1 AND f.language = ?2
-                    ORDER BY f.path, c.start_line
-                    ",
-                )?;
-                let rows = stmt.query_map(params![function_name, language], |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, Option<String>>(2)?,
-                        row.get::<_, Option<String>>(3)?,
-                        row.get::<_, Option<String>>(4)?,
-                        row.get::<_, i64>(5)? as usize,
-                    ))
-                })?;
-                rows.collect::<Result<Vec<_>, _>>()?
-            }
-            None => {
-                let mut stmt = self.ctx.conn.prepare_cached(
-                    "
-                    SELECT c.file_id, f.path, c.caller, c.caller_class_name, c.object_name, c.start_line
-                    FROM calls c
-                    JOIN files f ON f.id = c.file_id
-                    WHERE c.callee = ?1
-                    ORDER BY f.path, c.start_line
-                    ",
-                )?;
-                let rows = stmt.query_map(params![function_name], |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, Option<String>>(2)?,
-                        row.get::<_, Option<String>>(3)?,
-                        row.get::<_, Option<String>>(4)?,
-                        row.get::<_, i64>(5)? as usize,
-                    ))
-                })?;
-                rows.collect::<Result<Vec<_>, _>>()?
-            }
+        let rows = if let Some(language) = self.ctx.language.as_ref() {
+            let mut stmt = self.ctx.conn.prepare_cached(
+                "
+                SELECT c.file_id, f.path, c.caller, c.caller_class_name, c.object_name, c.start_line
+                FROM calls c
+                JOIN files f ON f.id = c.file_id
+                WHERE c.callee = ?1 AND f.language = ?2
+                ORDER BY f.path, c.start_line
+                ",
+            )?;
+            let rows = stmt.query_map(params![function_name, language], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, usize>(5)?,
+                ))
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        } else {
+            let mut stmt = self.ctx.conn.prepare_cached(
+                "
+                SELECT c.file_id, f.path, c.caller, c.caller_class_name, c.object_name, c.start_line
+                FROM calls c
+                JOIN files f ON f.id = c.file_id
+                WHERE c.callee = ?1
+                ORDER BY f.path, c.start_line
+                ",
+            )?;
+            let rows = stmt.query_map(params![function_name], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, usize>(5)?,
+                ))
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
         };
 
         Ok(rows)
@@ -742,53 +735,50 @@ impl<'a> CallGraphQuery<'a> {
         &self,
         property_name: &str,
     ) -> anyhow::Result<Vec<BackwardPropertyRow>> {
-        let rows = match self.ctx.language.as_ref() {
-            Some(language) => {
-                let mut stmt = self.ctx.conn.prepare_cached(
-                    "
-                    SELECT ppc.file_id, f.path, ppc.caller, ppc.caller_class_name, ppc.object_name, ppc.object_type, ppc.start_line
-                    FROM python_property_callers ppc
-                    JOIN files f ON f.id = ppc.file_id
-                    WHERE ppc.property_name = ?1 AND f.language = ?2
-                    ORDER BY f.path, ppc.start_line
-                    ",
-                )?;
-                let rows = stmt.query_map(params![property_name, language], |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, Option<String>>(3)?,
-                        row.get::<_, Option<String>>(4)?,
-                        row.get::<_, Option<String>>(5)?,
-                        row.get::<_, i64>(6)? as usize,
-                    ))
-                })?;
-                rows.collect::<Result<Vec<_>, _>>()?
-            }
-            None => {
-                let mut stmt = self.ctx.conn.prepare_cached(
-                    "
-                    SELECT ppc.file_id, f.path, ppc.caller, ppc.caller_class_name, ppc.object_name, ppc.object_type, ppc.start_line
-                    FROM python_property_callers ppc
-                    JOIN files f ON f.id = ppc.file_id
-                    WHERE ppc.property_name = ?1
-                    ORDER BY f.path, ppc.start_line
-                    ",
-                )?;
-                let rows = stmt.query_map(params![property_name], |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, Option<String>>(3)?,
-                        row.get::<_, Option<String>>(4)?,
-                        row.get::<_, Option<String>>(5)?,
-                        row.get::<_, i64>(6)? as usize,
-                    ))
-                })?;
-                rows.collect::<Result<Vec<_>, _>>()?
-            }
+        let rows = if let Some(language) = self.ctx.language.as_ref() {
+            let mut stmt = self.ctx.conn.prepare_cached(
+                "
+                SELECT ppc.file_id, f.path, ppc.caller, ppc.caller_class_name, ppc.object_name, ppc.object_type, ppc.start_line
+                FROM python_property_callers ppc
+                JOIN files f ON f.id = ppc.file_id
+                WHERE ppc.property_name = ?1 AND f.language = ?2
+                ORDER BY f.path, ppc.start_line
+                ",
+            )?;
+            let rows = stmt.query_map(params![property_name, language], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, usize>(6)?,
+                ))
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        } else {
+            let mut stmt = self.ctx.conn.prepare_cached(
+                "
+                SELECT ppc.file_id, f.path, ppc.caller, ppc.caller_class_name, ppc.object_name, ppc.object_type, ppc.start_line
+                FROM python_property_callers ppc
+                JOIN files f ON f.id = ppc.file_id
+                WHERE ppc.property_name = ?1
+                ORDER BY f.path, ppc.start_line
+                ",
+            )?;
+            let rows = stmt.query_map(params![property_name], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, usize>(6)?,
+                ))
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
         };
 
         Ok(rows)

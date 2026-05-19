@@ -28,15 +28,15 @@ impl IndexSynchronizer {
 
         let deleted_files = if same_root {
             IndexStore::refresh_temp_current_files(&tx, &plan.current_files)?;
-            IndexStore::count_stale_indexed_files(&tx, &scope_languages)? as usize
+            IndexStore::count_stale_indexed_files(&tx, &scope_languages)?
         } else {
             0
         };
         let total_steps = 1
             + 3
             + 1
-            + plan.changed_snapshots.len() as u64
-            + deleted_files as u64
+            + u64::try_from(plan.changed_snapshots.len())?
+            + deleted_files
             + u64::from(!same_root);
         progress.set_length(total_steps);
         if !same_root {
@@ -49,22 +49,24 @@ impl IndexSynchronizer {
         let indexed_languages = if same_root {
             let mut languages = metadata
                 .get("indexed_languages")
-                .map(|value| value.as_str())
-                .map(parse_language_set)
-                .unwrap_or_else(|| {
-                    let language_filter = metadata
-                        .get("language_filter")
-                        .map(String::as_str)
-                        .unwrap_or_default();
-                    if language_filter.is_empty() {
-                        crate::languages::supported_language_names()
-                            .into_iter()
-                            .map(str::to_string)
-                            .collect()
-                    } else {
-                        std::iter::once(language_filter.to_string()).collect()
-                    }
-                });
+                .map(std::string::String::as_str)
+                .map_or_else(
+                    || {
+                        let language_filter = metadata
+                            .get("language_filter")
+                            .map(String::as_str)
+                            .unwrap_or_default();
+                        if language_filter.is_empty() {
+                            crate::languages::supported_language_names()
+                                .into_iter()
+                                .map(str::to_string)
+                                .collect()
+                        } else {
+                            std::iter::once(language_filter.to_string()).collect()
+                        }
+                    },
+                    parse_language_set,
+                );
             languages.extend(scope_languages.iter().cloned());
             languages
         } else {
@@ -215,15 +217,17 @@ pub(crate) fn file_record_from_metadata(
     metadata: &std::fs::Metadata,
 ) -> anyhow::Result<IndexedFileMetadata> {
     let modified = metadata.modified()?;
-    let mtime_nanos = modified
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as i64;
+    let mtime_nanos = i64::try_from(
+        modified
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos(),
+    )?;
     Ok(IndexedFileMetadata {
         path: path.to_string(),
         language: language.to_string(),
         mtime_nanos,
-        size_bytes: metadata.len() as i64,
+        size_bytes: i64::try_from(metadata.len())?,
         content_hash: String::new(),
     })
 }

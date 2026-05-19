@@ -14,8 +14,7 @@ use crate::models::{
     PythonPropertyInfo,
 };
 use crate::parser::call_targets::{
-    matches_module_property_target, matches_property_target as call_matches_property_target,
-    type_matches_class,
+    matches_property_target as call_matches_property_target, type_matches_class,
 };
 use crate::traversal::collect_reachable_bfs;
 use crate::utils::select_most_specific_by_line;
@@ -78,8 +77,8 @@ impl LanguageEngine for PythonEngine {
                 return Some(name);
             }
         }
-        for i in 0..node.child_count() {
-            let child = node.child(i as u32).unwrap();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
             if child.kind() == "identifier" {
                 let name = ctx.node_text(child);
                 if !name.is_empty() {
@@ -161,13 +160,13 @@ impl LanguageEngine for PythonEngine {
 
     fn super_types(&self, ctx: &ParseContext, class_node: Node<'_>) -> Vec<String> {
         let mut super_classes = Vec::new();
-        for i in 0..class_node.child_count() {
-            let child = class_node.child(i as u32).unwrap();
+        let mut cursor = class_node.walk();
+        for child in class_node.children(&mut cursor) {
             if child.kind() != "argument_list" {
                 continue;
             }
-            for j in 0..child.child_count() {
-                let arg = child.child(j as u32).unwrap();
+            let mut child_cursor = child.walk();
+            for arg in child.children(&mut child_cursor) {
                 if matches!(arg.kind(), "identifier" | "attribute") {
                     super_classes.push(ctx.node_text(arg));
                 }
@@ -245,10 +244,8 @@ impl<'a> PythonParamHelper<'a> {
         };
 
         let mut params = Vec::new();
-        for i in 0..parameters.named_child_count() {
-            let Some(param) = parameters.named_child(i as u32) else {
-                continue;
-            };
+        let mut cursor = parameters.walk();
+        for param in parameters.named_children(&mut cursor) {
             if let Some(info) = self.build_parameter_info(param) {
                 params.push(info);
             }
@@ -264,8 +261,10 @@ impl<'a> PythonParamHelper<'a> {
                 .child_by_field_name("name")
                 .or_else(|| param.child_by_field_name("pattern"))
                 .or_else(|| param.child_by_field_name("left"))
-                .map(|node| self.parser.node_text(node))
-                .unwrap_or_else(|| self.first_identifier_text(param)),
+                .map_or_else(
+                    || self.first_identifier_text(param),
+                    |node| self.parser.node_text(node),
+                ),
             "list_splat_pattern" | "dictionary_splat_pattern" => self
                 .parser
                 .node_text(param)
@@ -275,8 +274,10 @@ impl<'a> PythonParamHelper<'a> {
                 .child_by_field_name("name")
                 .or_else(|| param.child_by_field_name("pattern"))
                 .or_else(|| param.child_by_field_name("left"))
-                .map(|node| self.parser.node_text(node))
-                .unwrap_or_else(|| self.first_identifier_text(param)),
+                .map_or_else(
+                    || self.first_identifier_text(param),
+                    |node| self.parser.node_text(node),
+                ),
         };
 
         if name.is_empty() {
@@ -298,10 +299,10 @@ impl<'a> PythonParamHelper<'a> {
                     return text;
                 }
             }
-            for i in (0..current.named_child_count()).rev() {
-                if let Some(child) = current.named_child(i as u32) {
-                    stack.push(child);
-                }
+            let mut cursor = current.walk();
+            let children: Vec<_> = current.named_children(&mut cursor).collect();
+            for child in children.into_iter().rev() {
+                stack.push(child);
             }
         }
         String::new()
@@ -354,10 +355,9 @@ impl<'a> PythonFieldCollector<'a> {
                 | "method_declaration"
                 | "constructor_declaration"
         ) {
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i as u32) {
-                    self.walk(child, true);
-                }
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                self.walk(child, true);
             }
             return;
         }
@@ -367,16 +367,15 @@ impl<'a> PythonFieldCollector<'a> {
             return;
         }
 
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i as u32) {
-                self.walk(child, inside_method);
-            }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            self.walk(child, inside_method);
         }
     }
 
     fn collect_assignment_fields(&mut self, node: Node<'a>, inside_method: bool) {
-        for i in 0..node.child_count() {
-            let child = node.child(i as u32).unwrap();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
             if child.kind() != "assignment" {
                 continue;
             }
@@ -427,17 +426,17 @@ impl<'a> PythonAnnotationCollector<'a> {
         while let Some(node) = stack.pop() {
             if node.kind() == "decorated_definition" {
                 self.collect_from_decorated(node, &mut annotations);
-                for i in (0..node.child_count()).rev() {
-                    if let Some(child) = node.child(i as u32) {
-                        stack.push(child);
-                    }
+                let mut cursor = node.walk();
+                let children: Vec<_> = node.children(&mut cursor).collect();
+                for child in children.into_iter().rev() {
+                    stack.push(child);
                 }
                 continue;
             }
-            for i in (0..node.child_count()).rev() {
-                if let Some(child) = node.child(i as u32) {
-                    stack.push(child);
-                }
+            let mut cursor = node.walk();
+            let children: Vec<_> = node.children(&mut cursor).collect();
+            for child in children.into_iter().rev() {
+                stack.push(child);
             }
         }
         annotations
@@ -480,8 +479,8 @@ impl<'a> PythonAnnotationCollector<'a> {
             None => (String::new(), String::new(), String::new()),
         };
 
-        for i in 0..decorated_node.child_count() {
-            let child = decorated_node.child(i as u32).unwrap();
+        let mut cursor = decorated_node.walk();
+        for child in decorated_node.children(&mut cursor) {
             if child.kind() != "decorator" {
                 continue;
             }
@@ -505,8 +504,7 @@ impl<'a> PythonAnnotationCollector<'a> {
     fn definition_header(&self, definition_node: Node<'_>) -> String {
         let end_byte = definition_node
             .child_by_field_name("body")
-            .map(|body| body.start_byte())
-            .unwrap_or_else(|| definition_node.end_byte());
+            .map_or_else(|| definition_node.end_byte(), |body| body.start_byte());
         self.parser
             .source_text(definition_node.start_byte(), end_byte)
             .trim_end()
@@ -514,8 +512,8 @@ impl<'a> PythonAnnotationCollector<'a> {
     }
 
     fn decorator_name(&self, decorator_node: Node<'_>) -> String {
-        for i in 0..decorator_node.child_count() {
-            let child = decorator_node.child(i as u32).unwrap();
+        let mut cursor = decorator_node.walk();
+        for child in decorator_node.children(&mut cursor) {
             match child.kind() {
                 "identifier" | "attribute" => return self.parser.node_text(child),
                 "call" => {
@@ -711,10 +709,8 @@ impl<'a> PythonPropertyAnalyzer<'a> {
                 };
 
                 let mut is_property = false;
-                for i in 0..node.named_child_count() {
-                    let Some(child) = node.named_child(i as u32) else {
-                        continue;
-                    };
+                let mut cursor = node.walk();
+                for child in node.named_children(&mut cursor) {
                     if child.kind() == "decorator"
                         && self.parser.node_trimmed_text_eq(child, "@property")
                     {
@@ -733,10 +729,10 @@ impl<'a> PythonPropertyAnalyzer<'a> {
                 }
             }
 
-            for i in (0..node.named_child_count()).rev() {
-                if let Some(child) = node.named_child(i as u32) {
-                    stack.push(child);
-                }
+            let mut cursor = node.walk();
+            let children: Vec<_> = node.named_children(&mut cursor).collect();
+            for child in children.into_iter().rev() {
+                stack.push(child);
             }
         }
 
@@ -756,7 +752,7 @@ impl<'a> PythonPropertyAnalyzer<'a> {
 
         while let Some(node) = stack.pop() {
             if node.kind() == "attribute" {
-                if !self.is_load_like_property_access(node) {
+                if !Self::is_load_like_property_access(node) {
                     continue;
                 }
                 let parts = AttributeParts::from_attribute(self.parser, node);
@@ -805,17 +801,17 @@ impl<'a> PythonPropertyAnalyzer<'a> {
                 }
             }
 
-            for i in (0..node.named_child_count()).rev() {
-                if let Some(child) = node.named_child(i as u32) {
-                    stack.push(child);
-                }
+            let mut cursor = node.walk();
+            let children: Vec<_> = node.named_children(&mut cursor).collect();
+            for child in children.into_iter().rev() {
+                stack.push(child);
             }
         }
 
         callers_by_property
     }
 
-    fn is_load_like_property_access(&self, node: Node<'_>) -> bool {
+    fn is_load_like_property_access(node: Node<'_>) -> bool {
         let mut current = node;
         while let Some(parent) = current.parent() {
             match parent.kind() {
@@ -837,76 +833,60 @@ impl<'a> PythonPropertyAnalyzer<'a> {
         let mut bindings = HashMap::new();
         let root = self.parser.tree().root_node();
 
-        for index in 0..root.named_child_count() {
-            let Some(node) = root.named_child(index as u32) else {
-                continue;
-            };
-            self.collect_module_binding_from_statement(node, &mut bindings);
+        let mut cursor = root.walk();
+        for node in root.named_children(&mut cursor) {
+            let mut assignments = Vec::new();
+            match node.kind() {
+                "expression_statement" => {
+                    let mut cursor = node.walk();
+                    assignments.extend(
+                        node.named_children(&mut cursor)
+                            .filter(|child| child.kind() == "assignment"),
+                    );
+                }
+                "assignment" => assignments.push(node),
+                _ => {}
+            }
+
+            for assignment in assignments {
+                let Some(left) = assignment.child_by_field_name("left") else {
+                    continue;
+                };
+                if left.kind() != "identifier" {
+                    continue;
+                }
+                let name = self.parser.node_text(left);
+                if name.is_empty() {
+                    continue;
+                }
+
+                if let Some(type_node) = assignment.child_by_field_name("type") {
+                    let class_name = self
+                        .parser
+                        .node_text(type_node)
+                        .rsplit('.')
+                        .next()
+                        .unwrap_or_default()
+                        .to_string();
+                    if !class_name.is_empty() {
+                        bindings.insert(name, class_name);
+                        continue;
+                    }
+                }
+
+                let Some(right) = assignment.child_by_field_name("right") else {
+                    bindings.remove(&name);
+                    continue;
+                };
+                if let Some(class_name) = self.infer_module_binding_type(right) {
+                    bindings.insert(name, class_name);
+                } else {
+                    bindings.remove(&name);
+                }
+            }
         }
 
         bindings
-    }
-
-    fn collect_module_binding_from_statement(
-        &self,
-        node: Node<'_>,
-        bindings: &mut HashMap<String, String>,
-    ) {
-        match node.kind() {
-            "expression_statement" => {
-                for index in 0..node.named_child_count() {
-                    let Some(child) = node.named_child(index as u32) else {
-                        continue;
-                    };
-                    if child.kind() == "assignment" {
-                        self.collect_module_binding_from_assignment(child, bindings);
-                    }
-                }
-            }
-            "assignment" => self.collect_module_binding_from_assignment(node, bindings),
-            _ => {}
-        }
-    }
-
-    fn collect_module_binding_from_assignment(
-        &self,
-        node: Node<'_>,
-        bindings: &mut HashMap<String, String>,
-    ) {
-        let Some(left) = node.child_by_field_name("left") else {
-            return;
-        };
-        if left.kind() != "identifier" {
-            return;
-        }
-        let name = self.parser.node_text(left);
-        if name.is_empty() {
-            return;
-        }
-
-        if let Some(type_node) = node.child_by_field_name("type") {
-            let class_name = self
-                .parser
-                .node_text(type_node)
-                .rsplit('.')
-                .next()
-                .unwrap_or_default()
-                .to_string();
-            if !class_name.is_empty() {
-                bindings.insert(name, class_name);
-                return;
-            }
-        }
-
-        let Some(right) = node.child_by_field_name("right") else {
-            bindings.remove(&name);
-            return;
-        };
-        if let Some(class_name) = self.infer_module_binding_type(right) {
-            bindings.insert(name, class_name);
-        } else {
-            bindings.remove(&name);
-        }
     }
 
     fn infer_module_binding_type(&self, node: Node<'_>) -> Option<String> {
@@ -987,11 +967,8 @@ impl<'a> PythonPropertyAnalyzer<'a> {
         if caller.caller == "<module>" {
             return candidates.iter().any(|property| {
                 property.class_name.as_deref().is_some_and(|class_name| {
-                    matches_module_property_target(
-                        caller.object_name.as_deref(),
-                        caller.object_type.as_deref(),
-                        class_name,
-                    )
+                    caller.object_name.as_deref() != Some(class_name)
+                        && type_matches_class(caller.object_type.as_deref(), class_name)
                 })
             });
         }
@@ -1018,7 +995,7 @@ impl<'a> PythonPropertyAnalyzer<'a> {
                 return false;
             };
 
-            if matches!(caller.object_name.as_deref(), Some("self") | Some("cls")) {
+            if matches!(caller.object_name.as_deref(), Some("self" | "cls")) {
                 caller
                     .caller_class_name
                     .as_deref()

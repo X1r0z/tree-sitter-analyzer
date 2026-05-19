@@ -1,4 +1,5 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::fmt::Write;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -126,6 +127,7 @@ impl IndexStore {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     pub(crate) fn ensure_core_schema(conn: &Connection) -> anyhow::Result<()> {
         conn.execute_batch(
             "
@@ -537,13 +539,13 @@ impl IndexStore {
         );
         if !scope_languages.is_empty() {
             let placeholders = vec!["?"; scope_languages.len()].join(", ");
-            query.push_str(&format!(" AND language IN ({placeholders})"));
+            let _ = write!(query, " AND language IN ({placeholders})");
         }
 
-        let count = tx.query_row(&query, params_from_iter(scope_languages.iter()), |row| {
-            row.get::<_, i64>(0)
-        })?;
-        Ok(count as u64)
+        tx.query_row(&query, params_from_iter(scope_languages.iter()), |row| {
+            row.get::<_, u64>(0)
+        })
+        .map_err(Into::into)
     }
 
     pub(crate) fn stale_indexed_file_ids(
@@ -563,7 +565,7 @@ impl IndexStore {
         );
         if !scope_languages.is_empty() {
             let placeholders = vec!["?"; scope_languages.len()].join(", ");
-            query.push_str(&format!(" AND language IN ({placeholders})"));
+            let _ = write!(query, " AND language IN ({placeholders})");
         }
         let mut stmt = tx.prepare(&query)?;
         let rows = stmt.query_map(params_from_iter(scope_languages.iter()), |row| row.get(0))?;
@@ -586,9 +588,8 @@ impl IndexStore {
                 "
                 SELECT path, language, mtime_nanos, size_bytes, content_hash
                 FROM files
-                WHERE path IN ({})
-                ",
-                placeholders
+                WHERE path IN ({placeholders})
+                "
             );
             let mut stmt = self.conn.prepare(&query)?;
             let rows = stmt.query_map(params_from_iter(chunk.iter()), |row| {
@@ -624,9 +625,8 @@ impl IndexStore {
                 "
                 SELECT id, path, language, mtime_nanos, size_bytes, content_hash
                 FROM files
-                WHERE path IN ({})
-                ",
-                placeholders
+                WHERE path IN ({placeholders})
+                "
             );
             let mut stmt = tx.prepare(&query)?;
             let rows = stmt.query_map(params_from_iter(chunk.iter()), |row| {

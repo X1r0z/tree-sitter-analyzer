@@ -230,8 +230,8 @@ impl LanguageEngine for JavaScriptFamilyEngine {
         if matches!(node.kind(), "arrow_function" | "function_expression") {
             return anonymous_function_name(ctx, node);
         }
-        for i in 0..node.child_count() {
-            let child = node.child(i as u32).unwrap();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
             if matches!(
                 child.kind(),
                 "identifier" | "property_identifier" | "field_identifier"
@@ -256,10 +256,8 @@ impl LanguageEngine for JavaScriptFamilyEngine {
         };
 
         let mut params = Vec::new();
-        for i in 0..parameters.named_child_count() {
-            let Some(param) = parameters.named_child(i as u32) else {
-                continue;
-            };
+        let mut cursor = parameters.walk();
+        for param in parameters.named_children(&mut cursor) {
             if let Some(info) = type_helper.build_parameter_info(param) {
                 params.push(info);
             }
@@ -349,7 +347,7 @@ impl LanguageEngine for JavaScriptFamilyEngine {
         call_node: Node<'_>,
         identifier_name: &str,
     ) -> Vec<String> {
-        let function_id = ctx.node_id(function_node);
+        let function_id = ParseContext::node_id(function_node);
         let mut caches = ctx.caches.borrow_mut();
         let resolver = caches
             .language
@@ -391,16 +389,16 @@ impl LanguageEngine for JavaScriptFamilyEngine {
     fn super_types(&self, ctx: &ParseContext, class_node: Node<'_>) -> Vec<String> {
         let mut super_classes = Vec::new();
         let mut seen = HashSet::new();
-        for i in 0..class_node.child_count() {
-            let child = class_node.child(i as u32).unwrap();
+        let mut cursor = class_node.walk();
+        for child in class_node.children(&mut cursor) {
             if child.kind() != "class_heritage" {
                 continue;
             }
-            for j in 0..child.child_count() {
-                let sub = child.child(j as u32).unwrap();
+            let mut child_cursor = child.walk();
+            for sub in child.children(&mut child_cursor) {
                 if matches!(sub.kind(), "extends_clause" | "implements_clause") {
-                    for k in 0..sub.child_count() {
-                        let grandchild = sub.child(k as u32).unwrap();
+                    let mut sub_cursor = sub.walk();
+                    for grandchild in sub.children(&mut sub_cursor) {
                         if grandchild.is_named() {
                             collect_super_types_from_expr(
                                 ctx,
@@ -479,18 +477,18 @@ impl<'a> JsSemanticFactsBuilder<'a> {
 
     fn collect_class_facts(&mut self, class_node: Node<'a>, class_name: &str) {
         let body = class_node.child_by_field_name("body").or_else(|| {
-            (0..class_node.child_count())
-                .filter_map(|i| class_node.child(i as u32))
-                .find(|child| child.kind() == "class_body")
+            let mut cursor = class_node.walk();
+            let body = class_node
+                .children(&mut cursor)
+                .find(|child| child.kind() == "class_body");
+            body
         });
         let Some(body) = body else {
             return;
         };
 
-        for i in 0..body.child_count() {
-            let Some(member) = body.child(i as u32) else {
-                continue;
-            };
+        let mut cursor = body.walk();
+        for member in body.children(&mut cursor) {
             if !member.is_named() {
                 continue;
             }
@@ -546,7 +544,7 @@ impl<'a> JsSemanticFactsBuilder<'a> {
         let type_helper = self.type_helper();
         let field_type = member
             .child_by_field_name("type")
-            .map(|type_node| type_helper.normalize_type_text(&self.parser.node_text(type_node)))
+            .map(|type_node| JsTypeHelper::normalize_type_text(&self.parser.node_text(type_node)))
             .or_else(|| {
                 member
                     .child_by_field_name("value")
@@ -562,17 +560,15 @@ impl<'a> JsSemanticFactsBuilder<'a> {
     }
 
     fn collect_constructor_param_facts(&mut self, params: Node<'a>, class_name: &str) {
-        for j in 0..params.child_count() {
-            let Some(param) = params.child(j as u32) else {
-                continue;
-            };
+        let mut cursor = params.walk();
+        for param in params.children(&mut cursor) {
             if !param.is_named() {
                 continue;
             }
-            let has_modifier = (0..param.child_count()).any(|k| {
-                let child = param.child(k as u32).unwrap();
-                matches!(child.kind(), "accessibility_modifier" | "readonly")
-            });
+            let mut param_cursor = param.walk();
+            let has_modifier = param
+                .children(&mut param_cursor)
+                .any(|child| matches!(child.kind(), "accessibility_modifier" | "readonly"));
             if !has_modifier {
                 continue;
             }
@@ -597,8 +593,7 @@ impl<'a> JsSemanticFactsBuilder<'a> {
                 continue;
             }
             let param_type = param.child_by_field_name("type").map(|type_node| {
-                self.type_helper()
-                    .normalize_type_text(&self.parser.node_text(type_node))
+                JsTypeHelper::normalize_type_text(&self.parser.node_text(type_node))
             });
             self.upsert_field_fact(
                 class_name,
@@ -688,10 +683,10 @@ impl<'a> JsSemanticFactsBuilder<'a> {
             {
                 continue;
             }
-            for i in (0..node.child_count()).rev() {
-                if let Some(child) = node.child(i as u32) {
-                    stack.push(child);
-                }
+            let mut cursor = node.walk();
+            let children: Vec<_> = node.children(&mut cursor).collect();
+            for child in children.into_iter().rev() {
+                stack.push(child);
             }
         }
     }
@@ -732,7 +727,9 @@ impl<'a> JsSemanticFactsBuilder<'a> {
                     if let Some(required_indexes) = required_params.get(&class_name) {
                         if let Some(arguments) = node.child_by_field_name("arguments") {
                             for &param_index in required_indexes {
-                                let Some(argument) = arguments.named_child(param_index as u32)
+                                let mut cursor = arguments.walk();
+                                let Some(argument) =
+                                    arguments.named_children(&mut cursor).nth(param_index)
                                 else {
                                     continue;
                                 };
@@ -772,10 +769,10 @@ impl<'a> JsSemanticFactsBuilder<'a> {
             ) {
                 child_context.function_node = Some(node);
             }
-            for i in (0..node.named_child_count()).rev() {
-                if let Some(child) = node.named_child(i as u32) {
-                    stack.push((child, child_context.clone()));
-                }
+            let mut cursor = node.walk();
+            let children: Vec<_> = node.named_children(&mut cursor).collect();
+            for child in children.into_iter().rev() {
+                stack.push((child, child_context.clone()));
             }
         }
 
@@ -855,7 +852,7 @@ impl JsReceiverResolver {
         call_node: Node<'_>,
         identifier_name: &str,
     ) -> Vec<String> {
-        let function_id = parser.node_id(function_node);
+        let function_id = ParseContext::node_id(function_node);
         let class_names = js_class_names(parser);
         let symbolic_targets = {
             let mut caches = parser.caches.borrow_mut();
@@ -893,11 +890,7 @@ impl<'a> JsTypeHelper<'a> {
         Self { parser }
     }
 
-    fn extract_class_targets(
-        &self,
-        class_names: &HashSet<String>,
-        field_type: &str,
-    ) -> Vec<String> {
+    fn extract_class_targets(class_names: &HashSet<String>, field_type: &str) -> Vec<String> {
         let mut targets: Vec<String> = field_type
             .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
             .filter(|token| !token.is_empty())
@@ -934,8 +927,8 @@ impl<'a> JsTypeHelper<'a> {
     }
 
     fn field_type_from_member(&self, member: Node<'_>, name_node_id: usize) -> Option<String> {
-        for i in 0..member.named_child_count() {
-            let child = member.named_child(i as u32)?;
+        let mut cursor = member.walk();
+        for child in member.named_children(&mut cursor) {
             if child.id() == name_node_id || child.kind().ends_with("modifier") {
                 continue;
             }
@@ -979,8 +972,8 @@ impl<'a> JsTypeHelper<'a> {
     }
 
     fn find_first_type_name(&self, node: Node<'_>) -> Option<String> {
-        for i in 0..node.named_child_count() {
-            let child = node.named_child(i as u32)?;
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
             if let Some(name) = self.type_name_from_node(child) {
                 return Some(name);
             }
@@ -1004,11 +997,7 @@ impl<'a> JsTypeHelper<'a> {
         }
     }
 
-    fn normalize_type_text(&self, text: &str) -> String {
-        Self::normalize_type_text_value(text)
-    }
-
-    fn normalize_type_text_value(text: &str) -> String {
+    fn normalize_type_text(text: &str) -> String {
         let stripped = text.trim();
         if let Some(rest) = stripped.strip_prefix(':') {
             rest.trim().to_string()
@@ -1030,7 +1019,7 @@ impl<'a> JsTypeHelper<'a> {
         })
     }
 
-    fn find_param_name_node<'b>(node: Node<'b>) -> Option<Node<'b>> {
+    fn find_param_name_node(node: Node<'_>) -> Option<Node<'_>> {
         match node.kind() {
             "identifier"
             | "property_identifier"
@@ -1056,7 +1045,7 @@ impl<'a> JsTypeHelper<'a> {
 
     fn find_param_type(&self, node: Node<'_>) -> Option<String> {
         if let Some(type_node) = node.child_by_field_name("type") {
-            return Some(self.normalize_type_text(&self.parser.node_text(type_node)));
+            return Some(Self::normalize_type_text(&self.parser.node_text(type_node)));
         }
 
         node.child_by_field_name("pattern")
@@ -1067,10 +1056,8 @@ impl<'a> JsTypeHelper<'a> {
 
     fn collect_constructor_params(&self, params_node: Node<'_>) -> Vec<FunctionParamInfo> {
         let mut params = Vec::new();
-        for i in 0..params_node.named_child_count() {
-            let Some(param) = params_node.named_child(i as u32) else {
-                continue;
-            };
+        let mut cursor = params_node.walk();
+        for param in params_node.named_children(&mut cursor) {
             if let Some(info) = self.build_parameter_info(param) {
                 params.push(info);
             }
@@ -1090,7 +1077,7 @@ impl<'a> JsBindingEventCollector<'a> {
     fn collect_alias_events(&self, function_node: Node<'a>) -> Vec<JsAliasEvent> {
         let mut aliases: HashMap<String, Vec<String>> = HashMap::new();
         let mut events = Vec::new();
-        self.walk_function(function_node, false, |node| {
+        Self::walk_function(function_node, false, |node| {
             if node.kind() == "variable_declarator" {
                 let Some(name_node) = node.child_by_field_name("name") else {
                     return;
@@ -1104,7 +1091,7 @@ impl<'a> JsBindingEventCollector<'a> {
 
                 let name = self.parser.node_text(name_node);
                 let alias = match value_node.kind() {
-                    "identifier" => self.merge_binding(
+                    "identifier" | "member_expression" => Self::merge_binding(
                         &mut aliases,
                         Some(name),
                         [self.parser.node_text(value_node)],
@@ -1117,20 +1104,16 @@ impl<'a> JsBindingEventCollector<'a> {
                             })
                             .into_iter()
                             .collect::<Vec<_>>();
-                        self.merge_binding(&mut aliases, Some(name), targets)
+                        Self::merge_binding(&mut aliases, Some(name), targets)
                     }
-                    "member_expression" => self.merge_binding(
-                        &mut aliases,
-                        Some(name),
-                        [self.parser.node_text(value_node)],
-                    ),
                     "array" => {
-                        let targets = (0..value_node.named_child_count())
-                            .filter_map(|i| value_node.named_child(i as u32))
+                        let mut cursor = value_node.walk();
+                        let targets = value_node
+                            .named_children(&mut cursor)
                             .filter(|child| child.kind() == "identifier")
                             .map(|child| self.parser.node_text(child))
                             .collect::<Vec<_>>();
-                        self.merge_binding(&mut aliases, Some(name), targets)
+                        Self::merge_binding(&mut aliases, Some(name), targets)
                     }
                     _ => None,
                 };
@@ -1158,9 +1141,9 @@ impl<'a> JsBindingEventCollector<'a> {
                 let loop_var = self.find_loop_var_name(left_node);
                 let iterable = self.parser.node_text(right_node);
                 let alias = if let Some(targets) = aliases.get(&iterable).cloned() {
-                    self.merge_binding(&mut aliases, loop_var, targets)
+                    Self::merge_binding(&mut aliases, loop_var, targets)
                 } else {
-                    self.merge_binding(&mut aliases, loop_var, [iterable])
+                    Self::merge_binding(&mut aliases, loop_var, [iterable])
                 };
                 if let Some((name, targets)) = alias {
                     events.push(JsAliasEvent {
@@ -1181,7 +1164,7 @@ impl<'a> JsBindingEventCollector<'a> {
     ) -> Vec<JsReceiverEvent> {
         let mut receivers: HashMap<String, Vec<String>> = HashMap::new();
         let mut events = Vec::new();
-        self.walk_function(function_node, true, |node| {
+        Self::walk_function(function_node, true, |node| {
             if node.kind() != "variable_declarator" {
                 return;
             }
@@ -1200,13 +1183,13 @@ impl<'a> JsBindingEventCollector<'a> {
                 "identifier" => {
                     let value_name = self.parser.node_text(value_node);
                     let targets = if let Some(existing) = receivers.get(&value_name) {
-                        existing.to_vec()
+                        existing.clone()
                     } else if class_names.contains(&value_name) {
                         vec![value_name]
                     } else {
                         Vec::new()
                     };
-                    self.overwrite_binding(&mut receivers, Some(name), targets)
+                    Self::overwrite_binding(&mut receivers, Some(name), targets)
                 }
                 "new_expression" => {
                     let targets = value_node
@@ -1214,7 +1197,7 @@ impl<'a> JsBindingEventCollector<'a> {
                         .and_then(|constructor| self.type_helper.type_name_from_node(constructor))
                         .into_iter()
                         .collect::<Vec<_>>();
-                    self.overwrite_binding(&mut receivers, Some(name), targets)
+                    Self::overwrite_binding(&mut receivers, Some(name), targets)
                 }
                 "member_expression" => {
                     let value_text = self.parser.node_text(value_node);
@@ -1223,7 +1206,7 @@ impl<'a> JsBindingEventCollector<'a> {
                         .then_some(value_text)
                         .into_iter()
                         .collect::<Vec<_>>();
-                    self.overwrite_binding(&mut receivers, Some(name), targets)
+                    Self::overwrite_binding(&mut receivers, Some(name), targets)
                 }
                 _ => None,
             };
@@ -1239,7 +1222,6 @@ impl<'a> JsBindingEventCollector<'a> {
     }
 
     fn walk_function(
-        &self,
         function_node: Node<'a>,
         skip_nested_scopes: bool,
         mut visit: impl FnMut(Node<'a>),
@@ -1247,14 +1229,14 @@ impl<'a> JsBindingEventCollector<'a> {
         let mut stack = vec![function_node];
         while let Some(node) = stack.pop() {
             visit(node);
-            if skip_nested_scopes && self.is_nested_scope(node, function_node) {
+            if skip_nested_scopes && Self::is_nested_scope(node, function_node) {
                 continue;
             }
-            self.push_named_children_reversed(node, &mut stack);
+            Self::push_named_children_reversed(node, &mut stack);
         }
     }
 
-    fn is_nested_scope(&self, node: Node<'a>, root: Node<'a>) -> bool {
+    fn is_nested_scope(node: Node<'a>, root: Node<'a>) -> bool {
         matches!(
             node.kind(),
             "function_declaration"
@@ -1266,15 +1248,15 @@ impl<'a> JsBindingEventCollector<'a> {
         ) && node.id() != root.id()
     }
 
-    fn push_named_children_reversed(&self, node: Node<'a>, stack: &mut Vec<Node<'a>>) {
-        for i in (0..node.named_child_count()).rev() {
-            if let Some(child) = node.named_child(i as u32) {
-                stack.push(child);
-            }
+    fn push_named_children_reversed(node: Node<'a>, stack: &mut Vec<Node<'a>>) {
+        let mut cursor = node.walk();
+        let children: Vec<_> = node.named_children(&mut cursor).collect();
+        for child in children.into_iter().rev() {
+            stack.push(child);
         }
     }
 
-    fn sorted_unique_targets(&self, targets: impl IntoIterator<Item = String>) -> Vec<String> {
+    fn sorted_unique_targets(targets: impl IntoIterator<Item = String>) -> Vec<String> {
         let mut normalized: Vec<String> = targets
             .into_iter()
             .filter(|target| !target.is_empty())
@@ -1285,7 +1267,6 @@ impl<'a> JsBindingEventCollector<'a> {
     }
 
     fn merge_binding(
-        &self,
         bindings: &mut HashMap<String, Vec<String>>,
         name: Option<String>,
         targets: impl IntoIterator<Item = String>,
@@ -1294,7 +1275,7 @@ impl<'a> JsBindingEventCollector<'a> {
         if name.is_empty() {
             return None;
         }
-        let normalized = self.sorted_unique_targets(targets);
+        let normalized = Self::sorted_unique_targets(targets);
         if normalized.is_empty() {
             return None;
         }
@@ -1313,13 +1294,12 @@ impl<'a> JsBindingEventCollector<'a> {
         let targets = if entry.len() == 1 {
             vec![entry[0].clone()]
         } else {
-            entry.to_vec()
+            entry.clone()
         };
         Some((name, targets))
     }
 
     fn overwrite_binding(
-        &self,
         bindings: &mut HashMap<String, Vec<String>>,
         name: Option<String>,
         targets: impl IntoIterator<Item = String>,
@@ -1328,7 +1308,7 @@ impl<'a> JsBindingEventCollector<'a> {
         if name.is_empty() {
             return None;
         }
-        let normalized = self.sorted_unique_targets(targets);
+        let normalized = Self::sorted_unique_targets(targets);
         if normalized.is_empty() {
             return None;
         }
@@ -1336,7 +1316,7 @@ impl<'a> JsBindingEventCollector<'a> {
         if *entry == normalized {
             return None;
         }
-        *entry = normalized.clone();
+        entry.clone_from(&normalized);
         Some((name, normalized))
     }
 
@@ -1344,10 +1324,8 @@ impl<'a> JsBindingEventCollector<'a> {
         if node.kind() == "identifier" {
             return Some(self.parser.node_text(node));
         }
-        for i in 0..node.named_child_count() {
-            let Some(child) = node.named_child(i as u32) else {
-                continue;
-            };
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
             if child.kind() == "identifier" {
                 return Some(self.parser.node_text(child));
             }
@@ -1441,10 +1419,13 @@ impl<'a> ExpressionTargetResolver<'a> {
                     })
                     .collect()
             }
-            "parenthesized_expression" => (0..expression_node.named_child_count())
-                .filter_map(|i| expression_node.named_child(i as u32))
-                .flat_map(|child| self.visit(child))
-                .collect(),
+            "parenthesized_expression" => {
+                let mut cursor = expression_node.walk();
+                expression_node
+                    .named_children(&mut cursor)
+                    .flat_map(|child| self.visit(child))
+                    .collect()
+            }
             _ => Vec::new(),
         }
     }
@@ -1507,8 +1488,7 @@ impl<'a> ExpressionTargetResolver<'a> {
             .into_iter()
             .flatten()
             .flat_map(|field_type| {
-                self.type_helper()
-                    .extract_class_targets(&self.type_index.class_names, &field_type)
+                JsTypeHelper::extract_class_targets(&self.type_index.class_names, &field_type)
             })
             .collect();
         targets.sort_unstable();
@@ -1613,21 +1593,11 @@ pub(crate) fn type_index(parser: &ParseContext) -> Rc<JsTypeIndex> {
 }
 
 pub(crate) fn receiver_index(parser: &ParseContext) -> Rc<JsReceiverIndex> {
-    if let Some(cached) = {
-        parser
-            .caches
-            .borrow()
-            .language
-            .js
-            .receiver_index
-            .as_ref()
-            .cloned()
-    } {
+    if let Some(cached) = { parser.caches.borrow().language.js.receiver_index.clone() } {
         return cached;
     }
 
     let semantic = semantic_facts(parser);
-    let type_helper = JsTypeHelper::new(parser);
     let mut field_targets_by_class = HashMap::new();
     for (class_name, fields) in &semantic.field_types_by_class {
         let mut targets_by_field = HashMap::new();
@@ -1635,7 +1605,7 @@ pub(crate) fn receiver_index(parser: &ParseContext) -> Rc<JsReceiverIndex> {
             let targets = field_type
                 .as_deref()
                 .map(|field_type| {
-                    type_helper.extract_class_targets(&semantic.class_names, field_type)
+                    JsTypeHelper::extract_class_targets(&semantic.class_names, field_type)
                 })
                 .unwrap_or_default();
             if !targets.is_empty() {
@@ -1681,8 +1651,8 @@ fn anonymous_function_name(context: &ParseContext, function_node: Node<'_>) -> O
             }
         }
         "export_statement" => {
-            for i in 0..parent.child_count() {
-                let child = parent.child(i as u32).unwrap();
+            let mut cursor = parent.walk();
+            for child in parent.children(&mut cursor) {
                 if context.node_text_eq(child, "default") {
                     return Some("<default_export>".to_string());
                 }
@@ -1700,36 +1670,33 @@ pub(crate) fn split_attribute_parts(
     let mut callee = String::new();
     let mut object_name: Option<String> = None;
 
-    match node.kind() {
-        "member_expression" => {
-            if let Some(prop_node) = node.child_by_field_name("property") {
-                callee = parser.node_text(prop_node);
-            }
-            if let Some(obj_node) = node.child_by_field_name("object") {
-                object_name = Some(parser.node_text(obj_node));
+    if node.kind() == "member_expression" {
+        if let Some(prop_node) = node.child_by_field_name("property") {
+            callee = parser.node_text(prop_node);
+        }
+        if let Some(obj_node) = node.child_by_field_name("object") {
+            object_name = Some(parser.node_text(obj_node));
+        }
+    } else {
+        let mut ids = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if matches!(
+                child.kind(),
+                "identifier"
+                    | "property_identifier"
+                    | "private_property_identifier"
+                    | "field_identifier"
+            ) {
+                ids.push(parser.node_text(child));
+            } else if child.kind() == "member_expression" {
+                object_name = Some(parser.node_text(child));
             }
         }
-        _ => {
-            let mut ids = Vec::new();
-            for child_index in 0..node.named_child_count() {
-                let child = node.named_child(child_index as u32).unwrap();
-                if matches!(
-                    child.kind(),
-                    "identifier"
-                        | "property_identifier"
-                        | "private_property_identifier"
-                        | "field_identifier"
-                ) {
-                    ids.push(parser.node_text(child));
-                } else if child.kind() == "member_expression" {
-                    object_name = Some(parser.node_text(child));
-                }
-            }
-            if let Some(last) = ids.last() {
-                callee = last.clone();
-                if ids.len() > 1 && object_name.is_none() {
-                    object_name = Some(ids[0].clone());
-                }
+        if let Some(last) = ids.last() {
+            callee.clone_from(last);
+            if ids.len() > 1 && object_name.is_none() {
+                object_name = Some(ids[0].clone());
             }
         }
     }
@@ -1755,8 +1722,9 @@ fn collect_super_types_from_expr(
             if !text.is_empty() && seen.insert(text.clone()) {
                 super_classes.push(text);
             }
-            for i in (0..node.child_count()).rev() {
-                let child = node.child(i as u32).unwrap();
+            let mut cursor = node.walk();
+            let children: Vec<_> = node.children(&mut cursor).collect();
+            for child in children.into_iter().rev() {
                 if matches!(child.kind(), "identifier" | "property_identifier") {
                     let name = parser.node_text(child).trim().to_string();
                     if !name.is_empty() && seen.insert(name.clone()) {
@@ -1771,11 +1739,10 @@ fn collect_super_types_from_expr(
                 collect_super_types_from_expr(parser, expr, super_classes, seen);
                 return;
             }
-            for i in 0..node.named_child_count() {
-                if let Some(child) = node.named_child(i as u32) {
-                    collect_super_types_from_expr(parser, child, super_classes, seen);
-                    return;
-                }
+            let mut cursor = node.walk();
+            let first_child = node.named_children(&mut cursor).next();
+            if let Some(child) = first_child {
+                collect_super_types_from_expr(parser, child, super_classes, seen);
             }
         }
         "call_expression" => {
@@ -1784,10 +1751,9 @@ fn collect_super_types_from_expr(
             }
         }
         _ => {
-            for i in 0..node.named_child_count() {
-                if let Some(child) = node.named_child(i as u32) {
-                    collect_super_types_from_expr(parser, child, super_classes, seen);
-                }
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                collect_super_types_from_expr(parser, child, super_classes, seen);
             }
         }
     }

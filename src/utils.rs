@@ -74,12 +74,13 @@ fn file_identity(path: &Path) -> FileIdentity {
     use std::fs;
     use std::os::unix::fs::MetadataExt;
 
-    fs::metadata(path)
-        .map(|metadata| FileIdentity {
+    fs::metadata(path).map_or_else(
+        |_| FileIdentity::default(),
+        |metadata| FileIdentity {
             device: metadata.dev(),
             inode: metadata.ino(),
-        })
-        .unwrap_or_else(|_| FileIdentity::default())
+        },
+    )
 }
 
 #[cfg(not(unix))]
@@ -252,27 +253,29 @@ where
 pub fn relative_path(path: &str, root: &str) -> String {
     let path = Path::new(path);
     let root = Path::new(root);
-    path.strip_prefix(root)
-        .map(|relative| relative.to_string_lossy().to_string())
-        .unwrap_or_else(|_| path.to_string_lossy().to_string())
+    path.strip_prefix(root).map_or_else(
+        |_| path.to_string_lossy().to_string(),
+        |relative| relative.to_string_lossy().to_string(),
+    )
 }
 
 pub fn resolve_path(path: &str) -> String {
-    match std::fs::canonicalize(path) {
-        Ok(path) => path.to_string_lossy().to_string(),
-        Err(_) => {
-            let path_ref = Path::new(path);
-            if path_ref.is_absolute() {
-                path.to_string()
-            } else {
-                std::env::current_dir()
-                    .map(|cwd| cwd.join(path).to_string_lossy().to_string())
-                    .unwrap_or_else(|_| path.to_string())
-            }
+    if let Ok(path) = std::fs::canonicalize(path) {
+        path.to_string_lossy().to_string()
+    } else {
+        let path_ref = Path::new(path);
+        if path_ref.is_absolute() {
+            path.to_string()
+        } else {
+            std::env::current_dir().map_or_else(
+                |_| path.to_string(),
+                |cwd| cwd.join(path).to_string_lossy().to_string(),
+            )
         }
     }
 }
 
+#[allow(clippy::needless_pass_by_value)]
 pub fn success_response(path: &str, searched_files: usize, results: Value) -> Value {
     let count = match &results {
         Value::Array(items) => items.len(),

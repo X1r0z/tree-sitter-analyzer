@@ -166,7 +166,7 @@ impl LanguageEngine for GoEngine {
         class_node: Node<'_>,
         class_name: &str,
     ) -> Vec<FieldInfo> {
-        context::collect_field_infos_from_declarations(ctx, class_node, class_name, true)
+        context::collect_fields_from_declarations(ctx, class_node, class_name, true)
     }
 
     fn super_types(&self, ctx: &ParseContext, class_node: Node<'_>) -> Vec<String> {
@@ -192,9 +192,7 @@ impl LanguageEngine for GoEngine {
                         if field_declaration.kind() != "field_declaration" {
                             continue;
                         }
-                        if let Some(embedded) =
-                            embedded_type_from_field_declaration(ctx, field_declaration)
-                        {
+                        if let Some(embedded) = embedded_type_from_field(ctx, field_declaration) {
                             embedded_type_names.push(embedded);
                         }
                     }
@@ -324,10 +322,7 @@ fn embedded_type_name(parser: &ParseContext, node: Node<'_>) -> Option<String> {
     }
 }
 
-fn embedded_type_from_field_declaration(
-    parser: &ParseContext,
-    field_declaration: Node<'_>,
-) -> Option<String> {
+fn embedded_type_from_field(parser: &ParseContext, field_declaration: Node<'_>) -> Option<String> {
     let mut cursor = field_declaration.walk();
     for child in field_declaration.children(&mut cursor) {
         if child.kind() == "field_identifier" {

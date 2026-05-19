@@ -987,7 +987,7 @@ impl<'a> PythonPropertyAnalyzer<'a> {
         let caller_fields = caller
             .caller_class_name
             .as_deref()
-            .map(|class_name| self.parser.collect_field_infos_for_class(class_name))
+            .map(|class_name| self.parser.collect_fields_for_class(class_name))
             .unwrap_or_default();
 
         candidates.iter().any(|property| {

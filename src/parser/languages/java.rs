@@ -146,7 +146,7 @@ impl LanguageEngine for JavaEngine {
         class_node: Node<'_>,
         class_name: &str,
     ) -> Vec<FieldInfo> {
-        context::collect_field_infos_from_declarations(ctx, class_node, class_name, false)
+        context::collect_fields_from_declarations(ctx, class_node, class_name, false)
     }
 
     fn super_types(&self, ctx: &ParseContext, class_node: Node<'_>) -> Vec<String> {

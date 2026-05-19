@@ -278,7 +278,7 @@ impl ParseContext {
         self.input.language.query(kind)
     }
 
-    pub(crate) fn resolve_call_targets_with_function_node(
+    pub(crate) fn resolve_call_targets_in_function(
         &self,
         function_node: Node<'_>,
         call_node: Node<'_>,
@@ -366,7 +366,7 @@ impl ParseContext {
             return names.clone();
         }
 
-        let names = self.compute_enclosing_names_by_walk(node);
+        let names = self.compute_enclosing_names(node);
         self.caches
             .borrow_mut()
             .common
@@ -495,7 +495,7 @@ impl ParseContext {
             .unwrap_or_default()
     }
 
-    pub(crate) fn collect_field_infos_for_class(&self, class_name: &str) -> Vec<FieldInfo> {
+    pub(crate) fn collect_fields_for_class(&self, class_name: &str) -> Vec<FieldInfo> {
         self.ensure_structural_index();
         self.caches
             .borrow()
@@ -593,11 +593,8 @@ impl ParseContext {
                 && callee_function_node.is_some_and(|node| node.kind() == "identifier")
             {
                 if let Some(function_node) = enclosing.function_node {
-                    let resolved = self.resolve_call_targets_with_function_node(
-                        function_node,
-                        call_node,
-                        &callee,
-                    );
+                    let resolved =
+                        self.resolve_call_targets_in_function(function_node, call_node, &callee);
                     if !resolved.is_empty() {
                         for resolved_callee in resolved {
                             calls.push(CallInfo {
@@ -727,9 +724,7 @@ impl ParseContext {
             if name.is_empty() {
                 continue;
             }
-            let class_name = self
-                .compute_enclosing_names_by_walk(function_node)
-                .class_name;
+            let class_name = self.compute_enclosing_names(function_node).class_name;
             let key = (
                 function_node.start_byte(),
                 function_node.end_byte(),
@@ -916,7 +911,7 @@ impl ParseContext {
         None
     }
 
-    fn compute_enclosing_names_by_walk(&self, node: Node<'_>) -> CachedEnclosingNames {
+    fn compute_enclosing_names(&self, node: Node<'_>) -> CachedEnclosingNames {
         let mut current = Some(node);
         let mut function_name: Option<String> = None;
         let mut class_name: Option<String> = None;
@@ -1070,7 +1065,7 @@ fn class_method_names(parser: &ParseContext, class_node: Node<'_>) -> Vec<String
     methods
 }
 
-pub(crate) fn collect_field_infos_from_declarations(
+pub(crate) fn collect_fields_from_declarations(
     parser: &ParseContext,
     class_node: Node<'_>,
     class_name: &str,

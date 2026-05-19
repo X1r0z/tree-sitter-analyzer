@@ -454,7 +454,7 @@ impl<'a> JsSemanticFactsBuilder<'a> {
         }
 
         if !self.pending_fields.is_empty() {
-            self.collect_constructor_arg_types();
+            self.infer_constructor_arg_types();
 
             for pending in std::mem::take(&mut self.pending_fields) {
                 let inferred_type = self
@@ -496,7 +496,7 @@ impl<'a> JsSemanticFactsBuilder<'a> {
             if member.kind().ends_with("field_definition")
                 || matches!(member.kind(), "property_definition" | "field_definition")
             {
-                self.collect_declared_field_fact(member, class_name);
+                self.collect_declared_field_facts(member, class_name);
                 continue;
             }
 
@@ -513,14 +513,18 @@ impl<'a> JsSemanticFactsBuilder<'a> {
                 continue;
             };
             let constructor_params = self.type_helper().collect_constructor_params(params);
-            self.collect_constructor_param_facts(params, class_name);
+            self.collect_parameter_property_facts(params, class_name);
             if let Some(body_node) = member.child_by_field_name("body") {
-                self.collect_constructor_field_facts(body_node, class_name, &constructor_params);
+                self.collect_constructor_assignment_facts(
+                    body_node,
+                    class_name,
+                    &constructor_params,
+                );
             }
         }
     }
 
-    fn collect_declared_field_fact(&mut self, member: Node<'a>, class_name: &str) {
+    fn collect_declared_field_facts(&mut self, member: Node<'a>, class_name: &str) {
         let name_node = member
             .child_by_field_name("name")
             .or_else(|| member.child_by_field_name("property"))
@@ -559,7 +563,7 @@ impl<'a> JsSemanticFactsBuilder<'a> {
         );
     }
 
-    fn collect_constructor_param_facts(&mut self, params: Node<'a>, class_name: &str) {
+    fn collect_parameter_property_facts(&mut self, params: Node<'a>, class_name: &str) {
         let mut cursor = params.walk();
         for param in params.children(&mut cursor) {
             if !param.is_named() {
@@ -604,7 +608,7 @@ impl<'a> JsSemanticFactsBuilder<'a> {
         }
     }
 
-    fn collect_constructor_field_facts(
+    fn collect_constructor_assignment_facts(
         &mut self,
         body_node: Node<'a>,
         class_name: &str,
@@ -691,7 +695,7 @@ impl<'a> JsSemanticFactsBuilder<'a> {
         }
     }
 
-    fn collect_constructor_arg_types(&mut self) {
+    fn infer_constructor_arg_types(&mut self) {
         let mut required_params: HashMap<String, HashSet<usize>> = HashMap::new();
         for pending in &self.pending_fields {
             required_params
@@ -1375,14 +1379,10 @@ impl<'a> ExpressionTargetResolver<'a> {
                 .into_iter()
                 .flat_map(|function_node| {
                     self.parser
-                        .resolve_call_targets_with_function_node(
-                            function_node,
-                            self.call_node,
-                            &expr_text,
-                        )
+                        .resolve_call_targets_in_function(function_node, self.call_node, &expr_text)
                         .into_iter()
                 })
-                .flat_map(|target| self.resolve_symbolic_targets_in_scope(&target))
+                .flat_map(|target| self.resolve_scoped_symbolic_targets(&target))
                 .collect(),
             "new_expression" => expression_node
                 .child_by_field_name("constructor")
@@ -1407,7 +1407,7 @@ impl<'a> ExpressionTargetResolver<'a> {
                         .clone()
                         .into_iter()
                         .flat_map(|class_name| {
-                            self.class_targets_for_field_type(&class_name, &property_name)
+                            self.class_targets_for_field(&class_name, &property_name)
                         })
                         .collect();
                 }
@@ -1415,7 +1415,7 @@ impl<'a> ExpressionTargetResolver<'a> {
                 self.visit(object_node)
                     .into_iter()
                     .flat_map(|class_name| {
-                        self.class_targets_for_field_type(&class_name, &property_name)
+                        self.class_targets_for_field(&class_name, &property_name)
                     })
                     .collect()
             }
@@ -1437,7 +1437,7 @@ impl<'a> ExpressionTargetResolver<'a> {
         targets
     }
 
-    fn resolve_symbolic_targets_in_scope(&self, target: &str) -> Vec<String> {
+    fn resolve_scoped_symbolic_targets(&self, target: &str) -> Vec<String> {
         if target.is_empty() {
             return Vec::new();
         }
@@ -1452,13 +1452,13 @@ impl<'a> ExpressionTargetResolver<'a> {
                 .class_name
                 .clone()
                 .into_iter()
-                .flat_map(|class_name| self.resolve_field_chain_in_scope(&class_name, chain))
+                .flat_map(|class_name| self.resolve_scoped_field_chain(&class_name, chain))
                 .collect();
         }
         Vec::new()
     }
 
-    fn resolve_field_chain_in_scope(&self, root_class: &str, chain: &str) -> Vec<String> {
+    fn resolve_scoped_field_chain(&self, root_class: &str, chain: &str) -> Vec<String> {
         let mut current = vec![root_class.to_string()];
         for segment in chain.split('.') {
             if segment.is_empty() {
@@ -1466,7 +1466,7 @@ impl<'a> ExpressionTargetResolver<'a> {
             }
             let mut next = Vec::new();
             for class_name in &current {
-                next.extend(self.class_targets_for_field_type(class_name, segment));
+                next.extend(self.class_targets_for_field(class_name, segment));
             }
             next.sort_unstable();
             next.dedup();
@@ -1478,7 +1478,7 @@ impl<'a> ExpressionTargetResolver<'a> {
         current
     }
 
-    fn class_targets_for_field_type(&self, class_name: &str, field_name: &str) -> Vec<String> {
+    fn class_targets_for_field(&self, class_name: &str, field_name: &str) -> Vec<String> {
         let mut targets: Vec<String> = self
             .type_index
             .field_types_by_class

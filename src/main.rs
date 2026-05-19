@@ -2,6 +2,8 @@ mod analyzer;
 mod commands;
 mod db;
 mod extractor;
+mod hydrator;
+mod indexer;
 mod languages;
 mod models;
 mod output;

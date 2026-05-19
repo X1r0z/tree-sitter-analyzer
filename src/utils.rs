@@ -5,7 +5,7 @@ use std::sync::Mutex;
 
 use ignore::WalkState;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressState, ProgressStyle};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::languages::detect_language;
 use crate::models::{CalleeInfo, CallerInfo};
@@ -255,6 +255,41 @@ pub fn relative_path(path: &str, root: &str) -> String {
     path.strip_prefix(root)
         .map(|relative| relative.to_string_lossy().to_string())
         .unwrap_or_else(|_| path.to_string_lossy().to_string())
+}
+
+pub fn resolve_path(path: &str) -> String {
+    match std::fs::canonicalize(path) {
+        Ok(path) => path.to_string_lossy().to_string(),
+        Err(_) => {
+            let path_ref = Path::new(path);
+            if path_ref.is_absolute() {
+                path.to_string()
+            } else {
+                std::env::current_dir()
+                    .map(|cwd| cwd.join(path).to_string_lossy().to_string())
+                    .unwrap_or_else(|_| path.to_string())
+            }
+        }
+    }
+}
+
+pub fn success_response(path: &str, searched_files: usize, results: Value) -> Value {
+    let count = match &results {
+        Value::Array(items) => items.len(),
+        _ => 0,
+    };
+    json!({
+        "meta": {
+            "root": path,
+            "files": searched_files,
+            "count": count,
+        },
+        "results": results,
+    })
+}
+
+pub fn error_response(error: impl std::fmt::Display) -> Value {
+    json!({ "error": error.to_string() })
 }
 
 pub fn relativize_json_file_paths(value: &mut Value, root: &str) {

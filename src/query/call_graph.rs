@@ -362,65 +362,6 @@ impl<'a> CallGraphQuery<'a> {
         Ok(results)
     }
 
-    fn load_forward_property_rows(
-        &self,
-        node: &IndexedFunction,
-    ) -> anyhow::Result<Vec<(String, Option<String>, usize)>> {
-        let start_line = node.function.location.start_line;
-        let end_line = node.function.location.end_line;
-        let rows = if let Some(class_name) = node.function.class_name.as_deref() {
-            let mut stmt = self.ctx.conn.prepare_cached(
-                "
-                SELECT property_name, object_name, start_line
-                FROM python_property_callers
-                WHERE file_id = ?1 AND caller = ?2 AND start_line >= ?3 AND start_line <= ?4
-                  AND caller_class_name = ?5
-                ORDER BY start_line
-                ",
-            )?;
-            let rows = stmt.query_map(
-                params![
-                    node.file_id,
-                    node.function.name,
-                    start_line,
-                    end_line,
-                    class_name
-                ],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, Option<String>>(1)?,
-                        row.get::<_, usize>(2)?,
-                    ))
-                },
-            )?;
-            rows.collect::<Result<Vec<_>, _>>()?
-        } else {
-            let mut stmt = self.ctx.conn.prepare_cached(
-                "
-                SELECT property_name, object_name, start_line
-                FROM python_property_callers
-                WHERE file_id = ?1 AND caller = ?2 AND start_line >= ?3 AND start_line <= ?4
-                  AND caller_class_name IS NULL
-                ORDER BY start_line
-                ",
-            )?;
-            let rows = stmt.query_map(
-                params![node.file_id, node.function.name, start_line, end_line],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, Option<String>>(1)?,
-                        row.get::<_, usize>(2)?,
-                    ))
-                },
-            )?;
-            rows.collect::<Result<Vec<_>, _>>()?
-        };
-
-        Ok(rows)
-    }
-
     #[allow(clippy::too_many_lines)]
     fn load_backward_neighbors(
         &self,
@@ -662,6 +603,65 @@ impl<'a> CallGraphQuery<'a> {
                 "
                 SELECT callee, object_name, start_line
                 FROM calls
+                WHERE file_id = ?1 AND caller = ?2 AND start_line >= ?3 AND start_line <= ?4
+                  AND caller_class_name IS NULL
+                ORDER BY start_line
+                ",
+            )?;
+            let rows = stmt.query_map(
+                params![node.file_id, node.function.name, start_line, end_line],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, usize>(2)?,
+                    ))
+                },
+            )?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+
+        Ok(rows)
+    }
+
+    fn load_forward_property_rows(
+        &self,
+        node: &IndexedFunction,
+    ) -> anyhow::Result<Vec<(String, Option<String>, usize)>> {
+        let start_line = node.function.location.start_line;
+        let end_line = node.function.location.end_line;
+        let rows = if let Some(class_name) = node.function.class_name.as_deref() {
+            let mut stmt = self.ctx.conn.prepare_cached(
+                "
+                SELECT property_name, object_name, start_line
+                FROM python_property_callers
+                WHERE file_id = ?1 AND caller = ?2 AND start_line >= ?3 AND start_line <= ?4
+                  AND caller_class_name = ?5
+                ORDER BY start_line
+                ",
+            )?;
+            let rows = stmt.query_map(
+                params![
+                    node.file_id,
+                    node.function.name,
+                    start_line,
+                    end_line,
+                    class_name
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, usize>(2)?,
+                    ))
+                },
+            )?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        } else {
+            let mut stmt = self.ctx.conn.prepare_cached(
+                "
+                SELECT property_name, object_name, start_line
+                FROM python_property_callers
                 WHERE file_id = ?1 AND caller = ?2 AND start_line >= ?3 AND start_line <= ?4
                   AND caller_class_name IS NULL
                 ORDER BY start_line

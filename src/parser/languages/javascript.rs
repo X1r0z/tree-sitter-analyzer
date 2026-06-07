@@ -1557,16 +1557,6 @@ impl JsReceiverIndex {
     }
 }
 
-fn js_class_names(parser: &ParseContext) -> Rc<HashSet<String>> {
-    if let Some(cached) = parser.caches.borrow().language.js.class_names.as_ref() {
-        return Rc::clone(cached);
-    }
-
-    let class_names = Rc::new(semantic_facts(parser).class_names.clone());
-    parser.caches.borrow_mut().language.js.class_names = Some(Rc::clone(&class_names));
-    class_names
-}
-
 pub(crate) fn semantic_facts(parser: &ParseContext) -> Rc<JsSemanticFacts> {
     if let Some(cached) = parser.caches.borrow().language.js.semantic_facts.as_ref() {
         return Rc::clone(cached);
@@ -1625,44 +1615,6 @@ pub(crate) fn receiver_index(parser: &ParseContext) -> Rc<JsReceiverIndex> {
     index
 }
 
-fn anonymous_function_name(context: &ParseContext, function_node: Node<'_>) -> Option<String> {
-    let parent = function_node.parent()?;
-    match parent.kind() {
-        "variable_declarator" => {
-            let name_node = parent.child_by_field_name("name")?;
-            if name_node.kind() == "identifier" {
-                return Some(context.node_text(name_node));
-            }
-        }
-        "assignment_expression" | "assignment" => {
-            let left_node = parent.child_by_field_name("left")?;
-            if left_node.kind() == "identifier" {
-                return Some(context.node_text(left_node));
-            }
-        }
-        "pair" | "property" => {
-            let key_node = parent.child_by_field_name("key")?;
-            if matches!(
-                key_node.kind(),
-                "identifier" | "property_identifier" | "string"
-            ) {
-                let text = context.node_text_lossy(key_node);
-                return Some(text.trim_matches(|c| c == '"' || c == '\'').to_string());
-            }
-        }
-        "export_statement" => {
-            let mut cursor = parent.walk();
-            for child in parent.children(&mut cursor) {
-                if context.node_text_eq(child, "default") {
-                    return Some("<default_export>".to_string());
-                }
-            }
-        }
-        _ => {}
-    }
-    None
-}
-
 pub(crate) fn split_attribute_parts(
     parser: &ParseContext,
     node: Node<'_>,
@@ -1702,6 +1654,54 @@ pub(crate) fn split_attribute_parts(
     }
 
     (callee, object_name)
+}
+
+fn js_class_names(parser: &ParseContext) -> Rc<HashSet<String>> {
+    if let Some(cached) = parser.caches.borrow().language.js.class_names.as_ref() {
+        return Rc::clone(cached);
+    }
+
+    let class_names = Rc::new(semantic_facts(parser).class_names.clone());
+    parser.caches.borrow_mut().language.js.class_names = Some(Rc::clone(&class_names));
+    class_names
+}
+
+fn anonymous_function_name(context: &ParseContext, function_node: Node<'_>) -> Option<String> {
+    let parent = function_node.parent()?;
+    match parent.kind() {
+        "variable_declarator" => {
+            let name_node = parent.child_by_field_name("name")?;
+            if name_node.kind() == "identifier" {
+                return Some(context.node_text(name_node));
+            }
+        }
+        "assignment_expression" | "assignment" => {
+            let left_node = parent.child_by_field_name("left")?;
+            if left_node.kind() == "identifier" {
+                return Some(context.node_text(left_node));
+            }
+        }
+        "pair" | "property" => {
+            let key_node = parent.child_by_field_name("key")?;
+            if matches!(
+                key_node.kind(),
+                "identifier" | "property_identifier" | "string"
+            ) {
+                let text = context.node_text_lossy(key_node);
+                return Some(text.trim_matches(|c| c == '"' || c == '\'').to_string());
+            }
+        }
+        "export_statement" => {
+            let mut cursor = parent.walk();
+            for child in parent.children(&mut cursor) {
+                if context.node_text_eq(child, "default") {
+                    return Some("<default_export>".to_string());
+                }
+            }
+        }
+        _ => {}
+    }
+    None
 }
 
 fn collect_super_classes_from_expr(

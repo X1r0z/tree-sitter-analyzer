@@ -188,25 +188,6 @@ impl IndexSynchronizer {
     }
 }
 
-fn scope_languages(language: Option<&str>) -> Vec<String> {
-    match language {
-        Some(language) => vec![language.to_string()],
-        None => crate::languages::supported_language_names()
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
-    }
-}
-
-fn parse_language_set(value: &str) -> std::collections::BTreeSet<String> {
-    value
-        .split(',')
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .collect()
-}
-
 pub(crate) fn db_path_in_current_dir() -> anyhow::Result<std::path::PathBuf> {
     Ok(std::env::current_dir()?.join("tsa.db"))
 }
@@ -230,4 +211,23 @@ pub(crate) fn file_record_from_metadata(
         size_bytes: i64::try_from(metadata.len())?,
         content_hash: String::new(),
     })
+}
+
+fn scope_languages(language: Option<&str>) -> Vec<String> {
+    match language {
+        Some(language) => vec![language.to_string()],
+        None => crate::languages::supported_language_names()
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+    }
+}
+
+fn parse_language_set(value: &str) -> std::collections::BTreeSet<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect()
 }

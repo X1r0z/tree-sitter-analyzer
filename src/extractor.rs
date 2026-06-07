@@ -31,28 +31,6 @@ impl CodeExtractor {
         Ok(Self::from_parser(parser))
     }
 
-    fn from_parser(parser: ParseContext) -> Self {
-        Self {
-            parser,
-            cache: ParseCache {
-                functions: None,
-                functions_with_bodies: None,
-                classes: None,
-                snapshot_fields: None,
-                calls: None,
-                imports: None,
-                fields_by_class: HashMap::new(),
-            },
-        }
-    }
-
-    fn ensure_calls(&mut self) {
-        if self.cache.calls.is_some() {
-            return;
-        }
-        self.cache.calls = Some(self.parser.collect_calls());
-    }
-
     pub fn collect_functions(&mut self) -> Vec<FunctionInfo> {
         if self.cache.functions.is_none() {
             let mut functions = self.parser.collect_functions(false);
@@ -146,6 +124,32 @@ impl CodeExtractor {
         }
     }
 
+    pub fn hydrate_refs(&mut self, candidates: &[RefInfo]) -> Vec<RefInfo> {
+        self.parser.hydrate_refs(candidates)
+    }
+
+    fn from_parser(parser: ParseContext) -> Self {
+        Self {
+            parser,
+            cache: ParseCache {
+                functions: None,
+                functions_with_bodies: None,
+                classes: None,
+                snapshot_fields: None,
+                calls: None,
+                imports: None,
+                fields_by_class: HashMap::new(),
+            },
+        }
+    }
+
+    fn ensure_calls(&mut self) {
+        if self.cache.calls.is_some() {
+            return;
+        }
+        self.cache.calls = Some(self.parser.collect_calls());
+    }
+
     fn ensure_class_snapshot(&mut self) {
         if self.cache.classes.is_some() && self.cache.snapshot_fields.is_some() {
             return;
@@ -154,9 +158,5 @@ impl CodeExtractor {
         self.cache.classes = Some(snapshot.classes);
         self.cache.snapshot_fields = Some(snapshot.fields);
         self.cache.fields_by_class = snapshot.field_infos_by_class;
-    }
-
-    pub fn hydrate_refs(&mut self, candidates: &[RefInfo]) -> Vec<RefInfo> {
-        self.parser.hydrate_refs(candidates)
     }
 }

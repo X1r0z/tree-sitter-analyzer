@@ -98,22 +98,6 @@ impl IndexStore {
         }
     }
 
-    fn parse_language_set(value: &str) -> BTreeSet<String> {
-        value
-            .split(',')
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-            .collect()
-    }
-
-    fn required_languages(root_path: &str, language: Option<&str>) -> BTreeSet<String> {
-        match language {
-            Some(language) => std::iter::once(language.to_string()).collect(),
-            None => collect_files(root_path, None).languages,
-        }
-    }
-
     pub(crate) fn open_connection(path: &Path) -> anyhow::Result<Connection> {
         let conn = Connection::open(path)?;
         Self::register_regexp_function(&conn)?;
@@ -692,6 +676,16 @@ impl IndexStore {
         ))
     }
 
+    pub(crate) fn table_exists(conn: &Connection, table_name: &str) -> anyhow::Result<bool> {
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?1)",
+            [table_name],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|exists| exists != 0)
+        .map_err(Into::into)
+    }
+
     fn metadata_value(&self, key: &str) -> anyhow::Result<Option<String>> {
         self.conn
             .query_row("SELECT value FROM metadata WHERE key = ?1", [key], |row| {
@@ -756,13 +750,19 @@ impl IndexStore {
         rows.collect::<Result<HashSet<_>, _>>().map_err(Into::into)
     }
 
-    pub(crate) fn table_exists(conn: &Connection, table_name: &str) -> anyhow::Result<bool> {
-        conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?1)",
-            [table_name],
-            |row| row.get::<_, i64>(0),
-        )
-        .map(|exists| exists != 0)
-        .map_err(Into::into)
+    fn parse_language_set(value: &str) -> BTreeSet<String> {
+        value
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn required_languages(root_path: &str, language: Option<&str>) -> BTreeSet<String> {
+        match language {
+            Some(language) => std::iter::once(language.to_string()).collect(),
+            None => collect_files(root_path, None).languages,
+        }
     }
 }

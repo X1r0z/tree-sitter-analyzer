@@ -7,7 +7,7 @@ use crate::models::FieldInfo;
 use super::ParseContext;
 
 pub(crate) fn collect_class_fields(
-    parser: &ParseContext,
+    ctx: &ParseContext,
     class_node: Node<'_>,
     class_name: &str,
     include_embedded_type_names: bool,
@@ -23,7 +23,7 @@ pub(crate) fn collect_class_fields(
         {
             let nested_name = node
                 .child_by_field_name("name")
-                .map(|child| parser.node_text(child))
+                .map(|child| ctx.node_text(child))
                 .unwrap_or_default();
             if !nested_name.is_empty() && nested_name != class_name {
                 continue;
@@ -44,7 +44,7 @@ pub(crate) fn collect_class_fields(
             let mut names = Vec::new();
             let mut field_type = node
                 .child_by_field_name("type")
-                .map(|child| parser.node_text(child));
+                .map(|child| ctx.node_text(child));
 
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
@@ -52,12 +52,12 @@ pub(crate) fn collect_class_fields(
                     child.kind(),
                     "identifier" | "property_identifier" | "field_identifier"
                 ) {
-                    names.push(parser.node_text(child));
+                    names.push(ctx.node_text(child));
                 } else if child.kind() == "variable_declarator" {
                     let mut child_cursor = child.walk();
                     for sub in child.children(&mut child_cursor) {
                         if sub.kind() == "identifier" {
-                            names.push(parser.node_text(sub));
+                            names.push(ctx.node_text(sub));
                             break;
                         }
                     }
@@ -75,7 +75,7 @@ pub(crate) fn collect_class_fields(
                             | "scoped_type_identifier"
                     )
                 {
-                    field_type = Some(parser.node_text(child));
+                    field_type = Some(ctx.node_text(child));
                 }
             }
 
@@ -95,7 +95,7 @@ pub(crate) fn collect_class_fields(
                 if !name.is_empty() && seen.insert(name.clone()) {
                     fields.push(FieldInfo {
                         name,
-                        location: parser.node_location(node),
+                        location: ctx.node_location(node),
                         field_type: field_type.clone(),
                         class_name: Some(class_name.to_string()),
                     });
@@ -158,7 +158,7 @@ pub(super) fn class_kind(context: &ParseContext, node: Node<'_>) -> String {
     }
 }
 
-pub(super) fn class_methods(parser: &ParseContext, class_node: Node<'_>) -> Vec<String> {
+pub(super) fn class_methods(ctx: &ParseContext, class_node: Node<'_>) -> Vec<String> {
     let mut methods = Vec::new();
     let mut stack = vec![class_node];
     while let Some(node) = stack.pop() {
@@ -180,7 +180,7 @@ pub(super) fn class_methods(parser: &ParseContext, class_node: Node<'_>) -> Vec<
                     child.kind(),
                     "identifier" | "property_identifier" | "field_identifier" | "name"
                 ) {
-                    methods.push(parser.node_text(child));
+                    methods.push(ctx.node_text(child));
                     break;
                 }
             }

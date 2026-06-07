@@ -7,6 +7,7 @@ use crate::models::{FieldInfo, FunctionParamInfo};
 use crate::parser::capture::CallCaptureMatch;
 use crate::parser::{EnclosingContext, ParseContext};
 
+mod attribute;
 mod binding_events;
 mod expression;
 mod index;
@@ -18,6 +19,7 @@ pub(crate) use index::{JsReceiverIndex, JsTypeIndex};
 pub(crate) use resolvers::{JsAliasResolver, JsReceiverResolver};
 pub(crate) use semantic_facts::JsSemanticFacts;
 
+use attribute::AttributeParts;
 use binding_events::JsBindingEventCollector;
 use index::type_index;
 use type_helper::JsTypeHelper;
@@ -108,10 +110,9 @@ impl LanguageEngine for JavaScriptFamilyEngine {
                             callee = ctx.node_text(func_node);
                         } else if func_node.kind() == "member_expression" {
                             is_method = true;
-                            let (callee_name, resolved_object_name) =
-                                split_attribute_parts(ctx, func_node);
-                            callee = callee_name;
-                            object_name = resolved_object_name;
+                            let parts = AttributeParts::from_member_expression(ctx, func_node);
+                            callee = parts.name;
+                            object_name = parts.object;
                             if let Some(function_node) = enclosing.function_node {
                                 if let Some(object_node) = func_node.child_by_field_name("object") {
                                     if let Some(receiver_class_name) =
@@ -219,7 +220,7 @@ impl LanguageEngine for JavaScriptFamilyEngine {
                     let mut sub_cursor = sub.walk();
                     for grandchild in sub.children(&mut sub_cursor) {
                         if grandchild.is_named() {
-                            collect_super_classes_from_expr(
+                            collect_super_classes_from_node(
                                 ctx,
                                 grandchild,
                                 &mut super_classes,
@@ -228,7 +229,7 @@ impl LanguageEngine for JavaScriptFamilyEngine {
                         }
                     }
                 } else if sub.is_named() {
-                    collect_super_classes_from_expr(ctx, sub, &mut super_classes, &mut seen);
+                    collect_super_classes_from_node(ctx, sub, &mut super_classes, &mut seen);
                 }
             }
         }
@@ -236,60 +237,19 @@ impl LanguageEngine for JavaScriptFamilyEngine {
     }
 }
 
-pub(crate) fn split_attribute_parts(
-    parser: &ParseContext,
-    node: Node<'_>,
-) -> (String, Option<String>) {
-    let mut callee = String::new();
-    let mut object_name: Option<String> = None;
-
-    if node.kind() == "member_expression" {
-        if let Some(prop_node) = node.child_by_field_name("property") {
-            callee = parser.node_text(prop_node);
-        }
-        if let Some(obj_node) = node.child_by_field_name("object") {
-            object_name = Some(parser.node_text(obj_node));
-        }
-    } else {
-        let mut ids = Vec::new();
-        let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            if matches!(
-                child.kind(),
-                "identifier"
-                    | "property_identifier"
-                    | "private_property_identifier"
-                    | "field_identifier"
-            ) {
-                ids.push(parser.node_text(child));
-            } else if child.kind() == "member_expression" {
-                object_name = Some(parser.node_text(child));
-            }
-        }
-        if let Some(last) = ids.last() {
-            callee.clone_from(last);
-            if ids.len() > 1 && object_name.is_none() {
-                object_name = Some(ids[0].clone());
-            }
-        }
-    }
-
-    (callee, object_name)
-}
-
-fn anonymous_function_name(context: &ParseContext, function_node: Node<'_>) -> Option<String> {
+fn anonymous_function_name(ctx: &ParseContext, function_node: Node<'_>) -> Option<String> {
     let parent = function_node.parent()?;
     match parent.kind() {
         "variable_declarator" => {
             let name_node = parent.child_by_field_name("name")?;
             if name_node.kind() == "identifier" {
-                return Some(context.node_text(name_node));
+                return Some(ctx.node_text(name_node));
             }
         }
         "assignment_expression" | "assignment" => {
             let left_node = parent.child_by_field_name("left")?;
             if left_node.kind() == "identifier" {
-                return Some(context.node_text(left_node));
+                return Some(ctx.node_text(left_node));
             }
         }
         "pair" | "property" => {
@@ -298,14 +258,14 @@ fn anonymous_function_name(context: &ParseContext, function_node: Node<'_>) -> O
                 key_node.kind(),
                 "identifier" | "property_identifier" | "string"
             ) {
-                let text = context.node_text_lossy(key_node);
+                let text = ctx.node_text_lossy(key_node);
                 return Some(text.trim_matches(|c| c == '"' || c == '\'').to_string());
             }
         }
         "export_statement" => {
             let mut cursor = parent.walk();
             for child in parent.children(&mut cursor) {
-                if context.node_text_eq(child, "default") {
+                if ctx.node_text_eq(child, "default") {
                     return Some("<default_export>".to_string());
                 }
             }
@@ -315,21 +275,21 @@ fn anonymous_function_name(context: &ParseContext, function_node: Node<'_>) -> O
     None
 }
 
-fn collect_super_classes_from_expr(
-    parser: &ParseContext,
+fn collect_super_classes_from_node(
+    ctx: &ParseContext,
     node: Node<'_>,
     super_classes: &mut Vec<String>,
     seen: &mut HashSet<String>,
 ) {
     match node.kind() {
         "identifier" | "type_identifier" | "property_identifier" => {
-            let name = parser.node_text(node).trim().to_string();
+            let name = ctx.node_text(node).trim().to_string();
             if !name.is_empty() && seen.insert(name.clone()) {
                 super_classes.push(name);
             }
         }
         "member_expression" => {
-            let text = parser.node_text(node).trim().to_string();
+            let text = ctx.node_text(node).trim().to_string();
             if !text.is_empty() && seen.insert(text.clone()) {
                 super_classes.push(text);
             }
@@ -337,7 +297,7 @@ fn collect_super_classes_from_expr(
             let children: Vec<_> = node.children(&mut cursor).collect();
             for child in children.into_iter().rev() {
                 if matches!(child.kind(), "identifier" | "property_identifier") {
-                    let name = parser.node_text(child).trim().to_string();
+                    let name = ctx.node_text(child).trim().to_string();
                     if !name.is_empty() && seen.insert(name.clone()) {
                         super_classes.push(name);
                     }
@@ -347,24 +307,24 @@ fn collect_super_classes_from_expr(
         }
         "expression_with_type_arguments" => {
             if let Some(expr) = node.child_by_field_name("expression") {
-                collect_super_classes_from_expr(parser, expr, super_classes, seen);
+                collect_super_classes_from_node(ctx, expr, super_classes, seen);
                 return;
             }
             let mut cursor = node.walk();
             let first_child = node.named_children(&mut cursor).next();
             if let Some(child) = first_child {
-                collect_super_classes_from_expr(parser, child, super_classes, seen);
+                collect_super_classes_from_node(ctx, child, super_classes, seen);
             }
         }
         "call_expression" => {
             if let Some(function) = node.child_by_field_name("function") {
-                collect_super_classes_from_expr(parser, function, super_classes, seen);
+                collect_super_classes_from_node(ctx, function, super_classes, seen);
             }
         }
         _ => {
             let mut cursor = node.walk();
             for child in node.named_children(&mut cursor) {
-                collect_super_classes_from_expr(parser, child, super_classes, seen);
+                collect_super_classes_from_node(ctx, child, super_classes, seen);
             }
         }
     }

@@ -4,17 +4,17 @@ use crate::models::AnnotationInfo;
 use crate::parser::ParseContext;
 
 pub(super) struct PythonAnnotationCollector<'a> {
-    parser: &'a ParseContext,
+    ctx: &'a ParseContext,
 }
 
 impl<'a> PythonAnnotationCollector<'a> {
-    pub(super) fn new(parser: &'a ParseContext) -> Self {
-        Self { parser }
+    pub(super) fn new(ctx: &'a ParseContext) -> Self {
+        Self { ctx }
     }
 
     pub(super) fn collect(&self) -> Vec<AnnotationInfo> {
         let mut annotations = Vec::new();
-        let mut stack = vec![self.parser.tree().root_node()];
+        let mut stack = vec![self.ctx.tree().root_node()];
 
         while let Some(node) = stack.pop() {
             if node.kind() == "decorated_definition" {
@@ -45,12 +45,12 @@ impl<'a> PythonAnnotationCollector<'a> {
             Some(definition_node) => {
                 let name = definition_node
                     .child_by_field_name("name")
-                    .map(|node| self.parser.node_text(node))
+                    .map(|node| self.ctx.node_text(node))
                     .unwrap_or_default();
                 let target_kind = match definition_node.kind() {
                     "function_definition" => {
                         if self
-                            .parser
+                            .ctx
                             .find_enclosing_context(definition_node)
                             .class_name
                             .is_some()
@@ -85,11 +85,11 @@ impl<'a> PythonAnnotationCollector<'a> {
 
             annotations.push(AnnotationInfo {
                 name,
-                signature: self.parser.node_text(child),
-                location: self.parser.node_location(child),
+                signature: self.ctx.node_text(child),
+                location: self.ctx.node_location(child),
                 target_name: target_name.clone(),
                 target_type: target_type.clone(),
-                target_signature: format!("{}\n{}", self.parser.node_text(child), target_signature),
+                target_signature: format!("{}\n{}", self.ctx.node_text(child), target_signature),
             });
         }
     }
@@ -98,7 +98,7 @@ impl<'a> PythonAnnotationCollector<'a> {
         let end_byte = definition_node
             .child_by_field_name("body")
             .map_or_else(|| definition_node.end_byte(), |body| body.start_byte());
-        self.parser
+        self.ctx
             .source_slice(definition_node.start_byte(), end_byte)
             .trim_end()
             .to_string()
@@ -108,11 +108,11 @@ impl<'a> PythonAnnotationCollector<'a> {
         let mut cursor = decorator_node.walk();
         for child in decorator_node.children(&mut cursor) {
             match child.kind() {
-                "identifier" | "attribute" => return self.parser.node_text(child),
+                "identifier" | "attribute" => return self.ctx.node_text(child),
                 "call" => {
                     return child
                         .child_by_field_name("function")
-                        .map(|node| self.parser.node_text(node))
+                        .map(|node| self.ctx.node_text(node))
                         .unwrap_or_default();
                 }
                 _ => {}

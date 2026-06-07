@@ -6,7 +6,7 @@ use crate::parser::ParseContext;
 
 use super::binding_events::JsBindingEventCollector;
 use super::index::receiver_index;
-use super::semantic_facts::js_class_names;
+use super::semantic_facts::class_names;
 
 #[derive(Clone)]
 pub(crate) struct JsAliasEvent {
@@ -135,7 +135,7 @@ impl JsReceiverResolver {
         }
     }
 
-    pub(crate) fn resolve_symbolic<'a>(
+    pub(crate) fn resolve<'a>(
         &'a mut self,
         call_start: usize,
         identifier_name: &'a str,
@@ -144,7 +144,7 @@ impl JsReceiverResolver {
     }
 
     pub(super) fn resolve_class_name(
-        parser: &ParseContext,
+        ctx: &ParseContext,
         function_node: Node<'_>,
         call_node: Node<'_>,
         object_node: Node<'_>,
@@ -153,31 +153,31 @@ impl JsReceiverResolver {
             return None;
         }
 
-        let object_name = parser.node_text(object_node);
+        let object_name = ctx.node_text(object_node);
         if object_name.is_empty() {
             return None;
         }
 
-        let class_names = js_class_names(parser);
+        let class_names = class_names(ctx);
         if class_names.contains(&object_name) {
             return Some(object_name);
         }
 
         let mut class_targets =
-            Self::resolve_targets_for_identifier(parser, function_node, call_node, &object_name);
+            Self::resolve_targets_for_identifier(ctx, function_node, call_node, &object_name);
         (class_targets.len() == 1).then(|| class_targets.swap_remove(0))
     }
 
     fn resolve_targets_for_identifier(
-        parser: &ParseContext,
+        ctx: &ParseContext,
         function_node: Node<'_>,
         call_node: Node<'_>,
         identifier_name: &str,
     ) -> Vec<String> {
         let function_id = ParseContext::node_id(function_node);
-        let class_names = js_class_names(parser);
+        let class_names = class_names(ctx);
         let symbolic_targets = {
-            let mut caches = parser.caches.borrow_mut();
+            let mut caches = ctx.caches.borrow_mut();
             let resolver = caches
                 .language
                 .js
@@ -185,21 +185,21 @@ impl JsReceiverResolver {
                 .entry(function_id)
                 .or_insert_with(|| {
                     JsReceiverResolver::new(
-                        JsBindingEventCollector::new(parser)
+                        JsBindingEventCollector::new(ctx)
                             .collect_receiver_events(function_node, class_names.as_ref()),
                     )
                 });
-            resolver.resolve_symbolic(call_node.start_byte(), identifier_name)
+            resolver.resolve(call_node.start_byte(), identifier_name)
         };
 
-        let index = receiver_index(parser);
+        let index = receiver_index(ctx);
         if symbolic_targets.len() == 1 {
-            return index.resolve_symbolic_targets(parser, call_node, &symbolic_targets[0]);
+            return index.symbolic_targets_via_index(ctx, call_node, &symbolic_targets[0]);
         }
 
         let mut resolved = symbolic_targets
             .into_iter()
-            .flat_map(|target| index.resolve_symbolic_targets(parser, call_node, &target))
+            .flat_map(|target| index.symbolic_targets_via_index(ctx, call_node, &target))
             .collect::<Vec<_>>();
         resolved.sort_unstable();
         resolved.dedup();

@@ -29,7 +29,7 @@ struct PendingFieldInference {
 }
 
 struct JsSemanticFactsBuilder<'a> {
-    parser: &'a ParseContext,
+    ctx: &'a ParseContext,
     facts: JsSemanticFacts,
     pending_fields: Vec<PendingFieldInference>,
 }
@@ -42,17 +42,17 @@ struct TraversalContext<'a> {
 
 impl<'a> JsSemanticFactsBuilder<'a> {
     fn type_helper(&self) -> JsTypeHelper<'a> {
-        JsTypeHelper::new(self.parser)
+        JsTypeHelper::new(self.ctx)
     }
 
-    fn new(parser: &'a ParseContext) -> Self {
-        let class_names = capture::collect_capture_pairs(parser, QueryKind::Class, "class", "name")
+    fn new(ctx: &'a ParseContext) -> Self {
+        let class_names = capture::collect_capture_pairs(ctx, QueryKind::Class, "class", "name")
             .into_iter()
-            .map(|(_, name_node)| parser.node_text(name_node))
+            .map(|(_, name_node)| ctx.node_text(name_node))
             .filter(|name| !name.is_empty())
             .collect::<HashSet<_>>();
         Self {
-            parser,
+            ctx,
             facts: JsSemanticFacts {
                 class_names,
                 ..JsSemanticFacts::default()
@@ -63,16 +63,16 @@ impl<'a> JsSemanticFactsBuilder<'a> {
 
     fn build(mut self) -> JsSemanticFacts {
         for (class_node, name_node) in
-            capture::collect_capture_pairs(self.parser, QueryKind::Class, "class", "name")
+            capture::collect_capture_pairs(self.ctx, QueryKind::Class, "class", "name")
         {
-            let class_name = self.parser.node_text(name_node);
+            let class_name = self.ctx.node_text(name_node);
             if class_name.is_empty() {
                 continue;
             }
             let class_node = self
-                .parser
+                .ctx
                 .engine()
-                .normalize_class_node(self.parser, class_node);
+                .normalize_class_node(self.ctx, class_node);
             self.collect_class_facts(class_node, &class_name);
         }
 
@@ -129,7 +129,7 @@ impl<'a> JsSemanticFactsBuilder<'a> {
             let Some(name_node) = member.child_by_field_name("name") else {
                 continue;
             };
-            if !self.parser.node_text_eq(name_node, "constructor") {
+            if !self.ctx.node_text_eq(name_node, "constructor") {
                 continue;
             }
             let Some(params) = member.child_by_field_name("parameters") else {
@@ -164,14 +164,14 @@ impl<'a> JsSemanticFactsBuilder<'a> {
         ) {
             return;
         }
-        let name = self.parser.node_text(name_node);
+        let name = self.ctx.node_text(name_node);
         if name.is_empty() {
             return;
         }
         let type_helper = self.type_helper();
         let field_type = member
             .child_by_field_name("type")
-            .map(|type_node| JsTypeHelper::normalize_type_text(&self.parser.node_text(type_node)))
+            .map(|type_node| JsTypeHelper::normalize_type_text(&self.ctx.node_text(type_node)))
             .or_else(|| {
                 member
                     .child_by_field_name("value")
@@ -181,7 +181,7 @@ impl<'a> JsSemanticFactsBuilder<'a> {
         self.upsert_field_fact(
             class_name,
             &name,
-            self.parser.node_location(member),
+            self.ctx.node_location(member),
             field_type,
         );
     }
@@ -215,17 +215,17 @@ impl<'a> JsSemanticFactsBuilder<'a> {
             if !matches!(pattern.kind(), "identifier" | "property_identifier") {
                 continue;
             }
-            let param_name = self.parser.node_text(pattern);
+            let param_name = self.ctx.node_text(pattern);
             if param_name.is_empty() {
                 continue;
             }
             let param_type = param.child_by_field_name("type").map(|type_node| {
-                JsTypeHelper::normalize_type_text(&self.parser.node_text(type_node))
+                JsTypeHelper::normalize_type_text(&self.ctx.node_text(type_node))
             });
             self.upsert_field_fact(
                 class_name,
                 &param_name,
-                self.parser.node_location(param),
+                self.ctx.node_location(param),
                 param_type,
             );
         }
@@ -252,16 +252,16 @@ impl<'a> JsSemanticFactsBuilder<'a> {
                 let Some(prop) = left.child_by_field_name("property") else {
                     continue;
                 };
-                if !self.parser.node_text_eq(obj, "this") {
+                if !self.ctx.node_text_eq(obj, "this") {
                     continue;
                 }
 
-                let name = self.parser.node_text(prop);
+                let name = self.ctx.node_text(prop);
                 if name.is_empty() {
                     continue;
                 }
 
-                let location = self.parser.node_location(node);
+                let location = self.ctx.node_location(node);
                 let right = node.child_by_field_name("right");
                 let type_helper = self.type_helper();
                 let field_type = right.and_then(|value| {
@@ -282,7 +282,7 @@ impl<'a> JsSemanticFactsBuilder<'a> {
                 let param_index = right
                     .filter(|value_node| value_node.kind() == "identifier")
                     .and_then(|value_node| {
-                        let param_name = self.parser.node_text(value_node);
+                        let param_name = self.ctx.node_text(value_node);
                         constructor_params
                             .iter()
                             .position(|param| param.name == param_name)
@@ -337,7 +337,7 @@ impl<'a> JsSemanticFactsBuilder<'a> {
         };
         let mut candidates_by_param: HashMap<(String, usize), Vec<String>> = HashMap::new();
         let mut stack = vec![(
-            self.parser.tree().root_node(),
+            self.ctx.tree().root_node(),
             TraversalContext {
                 function_node: None,
                 class_name: None,
@@ -361,7 +361,7 @@ impl<'a> JsSemanticFactsBuilder<'a> {
                                     continue;
                                 };
                                 let mut targets = ExpressionTargetResolver::new(
-                                    self.parser,
+                                    self.ctx,
                                     node,
                                     context.function_node,
                                     context.class_name.clone(),
@@ -385,7 +385,7 @@ impl<'a> JsSemanticFactsBuilder<'a> {
 
             let mut child_context = context;
             if matches!(node.kind(), "class_declaration" | "class_expression") {
-                child_context.class_name = self.parser.cached_class_name(node);
+                child_context.class_name = self.ctx.cached_class_name(node);
             }
             if matches!(
                 node.kind(),
@@ -447,22 +447,22 @@ impl<'a> JsSemanticFactsBuilder<'a> {
     }
 }
 
-pub(crate) fn semantic_facts(parser: &ParseContext) -> Rc<JsSemanticFacts> {
-    if let Some(cached) = parser.caches.borrow().language.js.semantic_facts.as_ref() {
+pub(crate) fn semantic_facts(ctx: &ParseContext) -> Rc<JsSemanticFacts> {
+    if let Some(cached) = ctx.caches.borrow().language.js.semantic_facts.as_ref() {
         return Rc::clone(cached);
     }
 
-    let facts = Rc::new(JsSemanticFactsBuilder::new(parser).build());
-    parser.caches.borrow_mut().language.js.semantic_facts = Some(Rc::clone(&facts));
+    let facts = Rc::new(JsSemanticFactsBuilder::new(ctx).build());
+    ctx.caches.borrow_mut().language.js.semantic_facts = Some(Rc::clone(&facts));
     facts
 }
 
-pub(super) fn js_class_names(parser: &ParseContext) -> Rc<HashSet<String>> {
-    if let Some(cached) = parser.caches.borrow().language.js.class_names.as_ref() {
+pub(super) fn class_names(ctx: &ParseContext) -> Rc<HashSet<String>> {
+    if let Some(cached) = ctx.caches.borrow().language.js.class_names.as_ref() {
         return Rc::clone(cached);
     }
 
-    let class_names = Rc::new(semantic_facts(parser).class_names.clone());
-    parser.caches.borrow_mut().language.js.class_names = Some(Rc::clone(&class_names));
+    let class_names = Rc::new(semantic_facts(ctx).class_names.clone());
+    ctx.caches.borrow_mut().language.js.class_names = Some(Rc::clone(&class_names));
     class_names
 }

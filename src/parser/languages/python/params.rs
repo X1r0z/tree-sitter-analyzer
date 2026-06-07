@@ -4,12 +4,12 @@ use crate::models::FunctionParamInfo;
 use crate::parser::ParseContext;
 
 pub(super) struct PythonParamHelper<'a> {
-    parser: &'a ParseContext,
+    ctx: &'a ParseContext,
 }
 
 impl<'a> PythonParamHelper<'a> {
-    pub(super) fn new(parser: &'a ParseContext) -> Self {
-        Self { parser }
+    pub(super) fn new(ctx: &'a ParseContext) -> Self {
+        Self { ctx }
     }
 
     pub(super) fn collect(&self, function_node: Node<'_>) -> Vec<FunctionParamInfo> {
@@ -30,17 +30,17 @@ impl<'a> PythonParamHelper<'a> {
     fn build_param_info(&self, param: Node<'_>) -> Option<FunctionParamInfo> {
         let type_node = param.child_by_field_name("type");
         let name = match param.kind() {
-            "identifier" => self.parser.node_text(param),
+            "identifier" => self.ctx.node_text(param),
             "typed_parameter" | "typed_default_parameter" | "default_parameter" => param
                 .child_by_field_name("name")
                 .or_else(|| param.child_by_field_name("pattern"))
                 .or_else(|| param.child_by_field_name("left"))
                 .map_or_else(
                     || self.first_identifier_text(param),
-                    |node| self.parser.node_text(node),
+                    |node| self.ctx.node_text(node),
                 ),
             "list_splat_pattern" | "dictionary_splat_pattern" => self
-                .parser
+                .ctx
                 .node_text(param)
                 .trim_start_matches('*')
                 .to_string(),
@@ -50,7 +50,7 @@ impl<'a> PythonParamHelper<'a> {
                 .or_else(|| param.child_by_field_name("left"))
                 .map_or_else(
                     || self.first_identifier_text(param),
-                    |node| self.parser.node_text(node),
+                    |node| self.ctx.node_text(node),
                 ),
         };
 
@@ -60,7 +60,7 @@ impl<'a> PythonParamHelper<'a> {
 
         Some(FunctionParamInfo {
             name,
-            param_type: type_node.map(|node| self.parser.node_text(node)),
+            param_type: type_node.map(|node| self.ctx.node_text(node)),
         })
     }
 
@@ -68,7 +68,7 @@ impl<'a> PythonParamHelper<'a> {
         let mut stack = vec![node];
         while let Some(current) = stack.pop() {
             if matches!(current.kind(), "identifier" | "keyword_identifier") {
-                let text = self.parser.node_text(current);
+                let text = self.ctx.node_text(current);
                 if !text.is_empty() {
                     return text;
                 }

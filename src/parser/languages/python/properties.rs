@@ -17,12 +17,12 @@ use crate::utils::select_most_specific_by_line;
 type PythonPropertyCallerKey = (String, String, Option<String>, Option<String>, usize, usize);
 
 pub(crate) struct PythonPropertyAnalyzer<'a> {
-    parser: &'a ParseContext,
+    ctx: &'a ParseContext,
 }
 
 impl<'a> PythonPropertyAnalyzer<'a> {
-    pub(crate) fn new(parser: &'a ParseContext) -> Self {
-        Self { parser }
+    pub(crate) fn new(ctx: &'a ParseContext) -> Self {
+        Self { ctx }
     }
 
     pub(crate) fn collect_properties(&self) -> Vec<PythonPropertyInfo> {
@@ -70,11 +70,11 @@ impl<'a> PythonPropertyAnalyzer<'a> {
     }
 
     fn ensure_definitions(&self) {
-        if self.parser.language() != "python" {
+        if self.ctx.language() != "python" {
             return;
         }
         if self
-            .parser
+            .ctx
             .caches
             .borrow()
             .language
@@ -85,7 +85,7 @@ impl<'a> PythonPropertyAnalyzer<'a> {
             return;
         }
         let definitions = self.collect_definitions();
-        self.parser
+        self.ctx
             .caches
             .borrow_mut()
             .language
@@ -97,13 +97,13 @@ impl<'a> PythonPropertyAnalyzer<'a> {
     }
 
     fn ensure_callers(&self) {
-        if self.parser.language() != "python" {
+        if self.ctx.language() != "python" {
             return;
         }
         self.ensure_definitions();
 
         let should_build = self
-            .parser
+            .ctx
             .caches
             .borrow()
             .language
@@ -116,7 +116,7 @@ impl<'a> PythonPropertyAnalyzer<'a> {
         }
 
         let definitions = {
-            let caches = self.parser.caches.borrow();
+            let caches = self.ctx.caches.borrow();
             caches
                 .language
                 .python
@@ -129,7 +129,7 @@ impl<'a> PythonPropertyAnalyzer<'a> {
         let candidate_callers = self.collect_candidate_callers();
         let callers_by_property = self.filter_callers(&definitions, &candidate_callers);
         if let Some(indexes) = self
-            .parser
+            .ctx
             .caches
             .borrow_mut()
             .language
@@ -142,11 +142,11 @@ impl<'a> PythonPropertyAnalyzer<'a> {
     }
 
     fn with_cached_definitions<R>(&self, f: impl FnOnce(&PythonPropertyDefinitions) -> R) -> R {
-        if self.parser.language() != "python" {
+        if self.ctx.language() != "python" {
             return f(&HashSet::new());
         }
         self.ensure_definitions();
-        let caches = self.parser.caches.borrow();
+        let caches = self.ctx.caches.borrow();
         let definitions = Ref::map(caches, |caches| {
             &caches
                 .language
@@ -160,11 +160,11 @@ impl<'a> PythonPropertyAnalyzer<'a> {
     }
 
     fn with_cached_callers<R>(&self, f: impl FnOnce(&PythonPropertyCallers) -> R) -> R {
-        if self.parser.language() != "python" {
+        if self.ctx.language() != "python" {
             return f(&HashMap::new());
         }
         self.ensure_callers();
-        let caches = self.parser.caches.borrow();
+        let caches = self.ctx.caches.borrow();
         let callers = Ref::map(caches, |caches| {
             caches
                 .language
@@ -180,12 +180,12 @@ impl<'a> PythonPropertyAnalyzer<'a> {
     }
 
     fn collect_definitions(&self) -> PythonPropertyDefinitions {
-        if self.parser.language() != "python" {
+        if self.ctx.language() != "python" {
             return HashSet::new();
         }
 
         let mut properties = HashSet::new();
-        let mut stack = vec![self.parser.tree().root_node()];
+        let mut stack = vec![self.ctx.tree().root_node()];
 
         while let Some(node) = stack.pop() {
             if node.kind() == "decorated_definition" {
@@ -203,7 +203,7 @@ impl<'a> PythonPropertyAnalyzer<'a> {
                 let mut cursor = node.walk();
                 for child in node.named_children(&mut cursor) {
                     if child.kind() == "decorator"
-                        && self.parser.node_text_trimmed_eq(child, "@property")
+                        && self.ctx.node_text_trimmed_eq(child, "@property")
                     {
                         is_property = true;
                         break;
@@ -212,8 +212,8 @@ impl<'a> PythonPropertyAnalyzer<'a> {
 
                 if is_property {
                     properties.insert((
-                        self.parser.node_text(name_node),
-                        self.parser
+                        self.ctx.node_text(name_node),
+                        self.ctx
                             .find_enclosing_context(definition_node)
                             .class_name,
                     ));
@@ -231,7 +231,7 @@ impl<'a> PythonPropertyAnalyzer<'a> {
     }
 
     fn collect_candidate_callers(&self) -> PythonPropertyCallers {
-        if self.parser.language() != "python" {
+        if self.ctx.language() != "python" {
             return HashMap::new();
         }
 
@@ -239,18 +239,18 @@ impl<'a> PythonPropertyAnalyzer<'a> {
         let mut callers_by_property: HashMap<String, Vec<PythonPropertyCallerInfo>> =
             HashMap::new();
         let mut seen_callers: HashSet<PythonPropertyCallerKey> = HashSet::new();
-        let mut stack = vec![self.parser.tree().root_node()];
+        let mut stack = vec![self.ctx.tree().root_node()];
 
         while let Some(node) = stack.pop() {
             if node.kind() == "attribute" {
-                if !Self::is_load_like_property_access(node) {
+                if !Self::is_property_read_access(node) {
                     continue;
                 }
-                let parts = AttributeParts::from_attribute(self.parser, node);
+                let parts = AttributeParts::from_attribute(self.ctx, node);
                 if parts.name.is_empty() {
                     continue;
                 }
-                let enclosing = self.parser.find_enclosing_context(node);
+                let enclosing = self.ctx.find_enclosing_context(node);
                 let caller = enclosing
                     .function_name
                     .unwrap_or_else(|| "<module>".to_string());
@@ -279,7 +279,7 @@ impl<'a> PythonPropertyAnalyzer<'a> {
                         .or_default()
                         .push(PythonPropertyCallerInfo {
                             location: Location {
-                                file: self.parser.file_path().to_string_lossy().into_owned(),
+                                file: self.ctx.file_path().to_string_lossy().into_owned(),
                                 start_line,
                                 end_line,
                             },
@@ -302,7 +302,7 @@ impl<'a> PythonPropertyAnalyzer<'a> {
         callers_by_property
     }
 
-    fn is_load_like_property_access(node: Node<'_>) -> bool {
+    fn is_property_read_access(node: Node<'_>) -> bool {
         let mut current = node;
         while let Some(parent) = current.parent() {
             match parent.kind() {
@@ -322,7 +322,7 @@ impl<'a> PythonPropertyAnalyzer<'a> {
 
     fn collect_module_binding_types(&self) -> HashMap<String, String> {
         let mut bindings = HashMap::new();
-        let root = self.parser.tree().root_node();
+        let root = self.ctx.tree().root_node();
 
         let mut cursor = root.walk();
         for node in root.named_children(&mut cursor) {
@@ -346,14 +346,14 @@ impl<'a> PythonPropertyAnalyzer<'a> {
                 if left.kind() != "identifier" {
                     continue;
                 }
-                let name = self.parser.node_text(left);
+                let name = self.ctx.node_text(left);
                 if name.is_empty() {
                     continue;
                 }
 
                 if let Some(type_node) = assignment.child_by_field_name("type") {
                     let class_name = self
-                        .parser
+                        .ctx
                         .node_text(type_node)
                         .rsplit('.')
                         .next()
@@ -387,7 +387,7 @@ impl<'a> PythonPropertyAnalyzer<'a> {
                 .and_then(|function| self.infer_module_binding_type(function)),
             "identifier" | "attribute" => {
                 let class_name = self
-                    .parser
+                    .ctx
                     .node_text(node)
                     .rsplit('.')
                     .next()
@@ -410,12 +410,12 @@ impl<'a> PythonPropertyAnalyzer<'a> {
             .map(|(name, class_name)| PythonPropertyInfo { name, class_name })
             .collect();
         let parents_by_class = self
-            .parser
+            .ctx
             .collect_classes()
             .into_iter()
             .map(|class| (class.name, class.super_classes))
             .collect::<HashMap<_, _>>();
-        let mut functions = self.parser.collect_functions(false);
+        let mut functions = self.ctx.collect_functions(false);
         functions
             .sort_by_key(|function| (function.location.start_line, function.location.end_line));
 
@@ -478,7 +478,7 @@ impl<'a> PythonPropertyAnalyzer<'a> {
         let caller_fields = caller
             .caller_class_name
             .as_deref()
-            .map(|class_name| self.parser.collect_fields_for_class(class_name))
+            .map(|class_name| self.ctx.collect_fields_for_class(class_name))
             .unwrap_or_default();
 
         candidates.iter().any(|property| {

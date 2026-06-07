@@ -6,7 +6,7 @@ use crate::models::FieldInfo;
 use crate::parser::ParseContext;
 
 pub(super) struct PythonFieldCollector<'a> {
-    parser: &'a ParseContext,
+    ctx: &'a ParseContext,
     class_node: Node<'a>,
     class_node_id: usize,
     class_name: String,
@@ -15,9 +15,9 @@ pub(super) struct PythonFieldCollector<'a> {
 }
 
 impl<'a> PythonFieldCollector<'a> {
-    pub(super) fn new(parser: &'a ParseContext, class_node: Node<'a>, class_name: &str) -> Self {
+    pub(super) fn new(ctx: &'a ParseContext, class_node: Node<'a>, class_name: &str) -> Self {
         Self {
-            parser,
+            ctx,
             class_node,
             class_node_id: class_node.id(),
             class_name: class_name.to_string(),
@@ -46,7 +46,7 @@ impl<'a> PythonFieldCollector<'a> {
         {
             let nested_name = node
                 .child_by_field_name("name")
-                .map(|child| self.parser.node_text(child))
+                .map(|child| self.ctx.node_text(child))
                 .unwrap_or_default();
             if !nested_name.is_empty() && nested_name != self.class_name {
                 return;
@@ -90,7 +90,7 @@ impl<'a> PythonFieldCollector<'a> {
             };
             let field_type = child
                 .child_by_field_name("type")
-                .map(|node| self.parser.node_text(node));
+                .map(|node| self.ctx.node_text(node));
             let mut name = String::new();
 
             if inside_method {
@@ -98,19 +98,19 @@ impl<'a> PythonFieldCollector<'a> {
                     let obj_node = left_node.child_by_field_name("object");
                     let attr_node = left_node.child_by_field_name("attribute");
                     if let (Some(obj), Some(attr)) = (obj_node, attr_node) {
-                        if self.parser.node_text_eq(obj, "self") {
-                            name = self.parser.node_text(attr);
+                        if self.ctx.node_text_eq(obj, "self") {
+                            name = self.ctx.node_text(attr);
                         }
                     }
                 }
             } else if left_node.kind() == "identifier" {
-                name = self.parser.node_text(left_node);
+                name = self.ctx.node_text(left_node);
             }
 
             if !name.is_empty() && self.seen.insert(name.clone()) {
                 self.fields.push(FieldInfo {
                     name,
-                    location: self.parser.node_location(child),
+                    location: self.ctx.node_location(child),
                     field_type,
                     class_name: Some(self.class_name.clone()),
                 });

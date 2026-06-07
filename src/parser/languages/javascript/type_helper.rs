@@ -6,12 +6,12 @@ use crate::models::FunctionParamInfo;
 use crate::parser::ParseContext;
 
 pub(super) struct JsTypeHelper<'a> {
-    pub(super) parser: &'a ParseContext,
+    pub(super) ctx: &'a ParseContext,
 }
 
 impl<'a> JsTypeHelper<'a> {
-    pub(super) fn new(parser: &'a ParseContext) -> Self {
-        Self { parser }
+    pub(super) fn new(ctx: &'a ParseContext) -> Self {
+        Self { ctx }
     }
 
     pub(super) fn extract_class_targets(class_names: &HashSet<String>, field_type: &str) -> Vec<String> {
@@ -35,13 +35,13 @@ impl<'a> JsTypeHelper<'a> {
                     function.kind(),
                     "identifier" | "property_identifier" | "member_expression"
                 ) && matches!(
-                    self.parser.node_text(function).as_str(),
+                    self.ctx.node_text(function).as_str(),
                     "inject" | "forwardRef" | "signal" | "computed"
                 );
                 if !is_supported_factory {
                     return None;
                 }
-                self.find_first_type_name(arguments)
+                self.first_type_name(arguments)
             }
             "new_expression" => value_node
                 .child_by_field_name("constructor")
@@ -73,7 +73,7 @@ impl<'a> JsTypeHelper<'a> {
         if value_node.kind() != "identifier" {
             return None;
         }
-        let param_name = self.parser.node_text(value_node);
+        let param_name = self.ctx.node_text(value_node);
         if param_name.is_empty() {
             return None;
         }
@@ -95,7 +95,7 @@ impl<'a> JsTypeHelper<'a> {
             .unwrap_or(None)
     }
 
-    fn find_first_type_name(&self, node: Node<'_>) -> Option<String> {
+    fn first_type_name(&self, node: Node<'_>) -> Option<String> {
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             if let Some(name) = self.type_name_from_node(child) {
@@ -108,14 +108,14 @@ impl<'a> JsTypeHelper<'a> {
     pub(super) fn type_name_from_node(&self, node: Node<'_>) -> Option<String> {
         match node.kind() {
             "identifier" | "type_identifier" => {
-                let name = self.parser.node_text(node);
+                let name = self.ctx.node_text(node);
                 (!name.is_empty()).then_some(name)
             }
             "member_expression" => node
                 .child_by_field_name("property")
                 .and_then(|property| self.type_name_from_node(property)),
             "type_arguments" | "arguments" | "parenthesized_expression" => {
-                self.find_first_type_name(node)
+                self.first_type_name(node)
             }
             _ => None,
         }
@@ -132,7 +132,7 @@ impl<'a> JsTypeHelper<'a> {
 
     pub(super) fn build_param_info(&self, param: Node<'_>) -> Option<FunctionParamInfo> {
         let name_node = Self::find_param_name_node(param)?;
-        let name = self.parser.node_text(name_node).trim().to_string();
+        let name = self.ctx.node_text(name_node).trim().to_string();
         if name.is_empty() {
             return None;
         }
@@ -169,7 +169,7 @@ impl<'a> JsTypeHelper<'a> {
 
     fn find_param_type(&self, node: Node<'_>) -> Option<String> {
         if let Some(type_node) = node.child_by_field_name("type") {
-            return Some(Self::normalize_type_text(&self.parser.node_text(type_node)));
+            return Some(Self::normalize_type_text(&self.ctx.node_text(type_node)));
         }
 
         node.child_by_field_name("pattern")

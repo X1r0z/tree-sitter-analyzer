@@ -8,7 +8,7 @@ use super::index::JsTypeIndex;
 use super::type_helper::JsTypeHelper;
 
 pub(super) struct ExpressionTargetResolver<'a> {
-    parser: &'a ParseContext,
+    ctx: &'a ParseContext,
     call_node: Node<'a>,
     function_node: Option<Node<'a>>,
     class_name: Option<String>,
@@ -18,18 +18,18 @@ pub(super) struct ExpressionTargetResolver<'a> {
 
 impl<'a> ExpressionTargetResolver<'a> {
     fn type_helper(&self) -> JsTypeHelper<'a> {
-        JsTypeHelper::new(self.parser)
+        JsTypeHelper::new(self.ctx)
     }
 
     pub(super) fn new(
-        parser: &'a ParseContext,
+        ctx: &'a ParseContext,
         call_node: Node<'a>,
         function_node: Option<Node<'a>>,
         class_name: Option<String>,
         type_index: &'a JsTypeIndex,
     ) -> Self {
         Self {
-            parser,
+            ctx,
             call_node,
             function_node,
             class_name,
@@ -38,8 +38,8 @@ impl<'a> ExpressionTargetResolver<'a> {
         }
     }
 
-    fn visit(&mut self, expression_node: Node<'a>) -> Vec<String> {
-        let expr_text = self.parser.node_text(expression_node);
+    fn visit_expression(&mut self, expression_node: Node<'a>) -> Vec<String> {
+        let expr_text = self.ctx.node_text(expression_node);
         if expr_text.is_empty() || !self.seen.insert(expr_text.clone()) {
             return Vec::new();
         }
@@ -49,11 +49,11 @@ impl<'a> ExpressionTargetResolver<'a> {
                 .function_node
                 .into_iter()
                 .flat_map(|function_node| {
-                    self.parser
+                    self.ctx
                         .resolve_call_targets(function_node, self.call_node, &expr_text)
                         .into_iter()
                 })
-                .flat_map(|target| self.resolve_scoped_symbolic_targets(&target))
+                .flat_map(|target| self.symbolic_targets_via_type_index(&target))
                 .collect(),
             "new_expression" => expression_node
                 .child_by_field_name("constructor")
@@ -67,26 +67,26 @@ impl<'a> ExpressionTargetResolver<'a> {
                 let Some(property_node) = expression_node.child_by_field_name("property") else {
                     return Vec::new();
                 };
-                let property_name = self.parser.node_text(property_node);
+                let property_name = self.ctx.node_text(property_node);
                 if property_name.is_empty() {
                     return Vec::new();
                 }
 
-                if self.parser.node_text_eq(object_node, "this") {
+                if self.ctx.node_text_eq(object_node, "this") {
                     return self
                         .class_name
                         .clone()
                         .into_iter()
                         .flat_map(|class_name| {
-                            self.class_targets_for_field(&class_name, &property_name)
+                            self.field_class_targets(&class_name, &property_name)
                         })
                         .collect();
                 }
 
-                self.visit(object_node)
+                self.visit_expression(object_node)
                     .into_iter()
                     .flat_map(|class_name| {
-                        self.class_targets_for_field(&class_name, &property_name)
+                        self.field_class_targets(&class_name, &property_name)
                     })
                     .collect()
             }
@@ -94,7 +94,7 @@ impl<'a> ExpressionTargetResolver<'a> {
                 let mut cursor = expression_node.walk();
                 expression_node
                     .named_children(&mut cursor)
-                    .flat_map(|child| self.visit(child))
+                    .flat_map(|child| self.visit_expression(child))
                     .collect()
             }
             _ => Vec::new(),
@@ -102,13 +102,13 @@ impl<'a> ExpressionTargetResolver<'a> {
     }
 
     pub(super) fn resolve_expression_targets(mut self, expression_node: Node<'a>) -> Vec<String> {
-        let mut targets = self.visit(expression_node);
+        let mut targets = self.visit_expression(expression_node);
         targets.sort_unstable();
         targets.dedup();
         targets
     }
 
-    fn resolve_scoped_symbolic_targets(&self, target: &str) -> Vec<String> {
+    fn symbolic_targets_via_type_index(&self, target: &str) -> Vec<String> {
         if target.is_empty() {
             return Vec::new();
         }
@@ -123,13 +123,13 @@ impl<'a> ExpressionTargetResolver<'a> {
                 .class_name
                 .clone()
                 .into_iter()
-                .flat_map(|class_name| self.resolve_scoped_field_chain(&class_name, chain))
+                .flat_map(|class_name| self.field_chain_via_type_index(&class_name, chain))
                 .collect();
         }
         Vec::new()
     }
 
-    fn resolve_scoped_field_chain(&self, root_class: &str, chain: &str) -> Vec<String> {
+    fn field_chain_via_type_index(&self, root_class: &str, chain: &str) -> Vec<String> {
         let mut current = vec![root_class.to_string()];
         for segment in chain.split('.') {
             if segment.is_empty() {
@@ -137,7 +137,7 @@ impl<'a> ExpressionTargetResolver<'a> {
             }
             let mut next = Vec::new();
             for class_name in &current {
-                next.extend(self.class_targets_for_field(class_name, segment));
+                next.extend(self.field_class_targets(class_name, segment));
             }
             next.sort_unstable();
             next.dedup();
@@ -149,7 +149,7 @@ impl<'a> ExpressionTargetResolver<'a> {
         current
     }
 
-    fn class_targets_for_field(&self, class_name: &str, field_name: &str) -> Vec<String> {
+    fn field_class_targets(&self, class_name: &str, field_name: &str) -> Vec<String> {
         let mut targets: Vec<String> = self
             .type_index
             .field_types_by_class

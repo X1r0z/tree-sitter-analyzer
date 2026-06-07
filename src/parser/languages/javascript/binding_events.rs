@@ -9,15 +9,15 @@ use super::resolvers::{JsAliasEvent, JsReceiverEvent};
 use super::type_helper::JsTypeHelper;
 
 pub(super) struct JsBindingEventCollector<'a> {
-    parser: &'a ParseContext,
+    ctx: &'a ParseContext,
     type_helper: JsTypeHelper<'a>,
 }
 
 impl<'a> JsBindingEventCollector<'a> {
-    pub(super) fn new(parser: &'a ParseContext) -> Self {
+    pub(super) fn new(ctx: &'a ParseContext) -> Self {
         Self {
-            parser,
-            type_helper: JsTypeHelper::new(parser),
+            ctx,
+            type_helper: JsTypeHelper::new(ctx),
         }
     }
 
@@ -36,12 +36,12 @@ impl<'a> JsBindingEventCollector<'a> {
                     return;
                 }
 
-                let name = self.parser.node_text(name_node);
+                let name = self.ctx.node_text(name_node);
                 let alias = match value_node.kind() {
                     "identifier" | "member_expression" => Self::merge_binding(
                         &mut aliases,
                         Some(name),
-                        [self.parser.node_text(value_node)],
+                        [self.ctx.node_text(value_node)],
                     ),
                     "new_expression" => {
                         let targets = value_node
@@ -58,7 +58,7 @@ impl<'a> JsBindingEventCollector<'a> {
                         let targets = value_node
                             .named_children(&mut cursor)
                             .filter(|child| child.kind() == "identifier")
-                            .map(|child| self.parser.node_text(child))
+                            .map(|child| self.ctx.node_text(child))
                             .collect::<Vec<_>>();
                         Self::merge_binding(&mut aliases, Some(name), targets)
                     }
@@ -86,7 +86,7 @@ impl<'a> JsBindingEventCollector<'a> {
                 }
 
                 let loop_var = self.find_loop_variable_name(left_node);
-                let iterable = self.parser.node_text(right_node);
+                let iterable = self.ctx.node_text(right_node);
                 let alias = if let Some(targets) = aliases.get(&iterable).cloned() {
                     Self::merge_binding(&mut aliases, loop_var, targets)
                 } else {
@@ -125,10 +125,10 @@ impl<'a> JsBindingEventCollector<'a> {
                 return;
             }
 
-            let name = self.parser.node_text(name_node);
+            let name = self.ctx.node_text(name_node);
             let receiver = match value_node.kind() {
                 "identifier" => {
-                    let value_name = self.parser.node_text(value_node);
+                    let value_name = self.ctx.node_text(value_node);
                     let targets = if let Some(existing) = receivers.get(&value_name) {
                         existing.clone()
                     } else if class_names.contains(&value_name) {
@@ -147,7 +147,7 @@ impl<'a> JsBindingEventCollector<'a> {
                     Self::overwrite_binding(&mut receivers, Some(name), targets)
                 }
                 "member_expression" => {
-                    let value_text = self.parser.node_text(value_node);
+                    let value_text = self.ctx.node_text(value_node);
                     let targets = value_text
                         .starts_with("this.")
                         .then_some(value_text)
@@ -269,17 +269,17 @@ impl<'a> JsBindingEventCollector<'a> {
 
     fn find_loop_variable_name(&self, node: Node<'a>) -> Option<String> {
         if node.kind() == "identifier" {
-            return Some(self.parser.node_text(node));
+            return Some(self.ctx.node_text(node));
         }
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             if child.kind() == "identifier" {
-                return Some(self.parser.node_text(child));
+                return Some(self.ctx.node_text(child));
             }
             if child.kind() == "variable_declarator" {
                 if let Some(name_node) = child.child_by_field_name("name") {
                     if name_node.kind() == "identifier" {
-                        return Some(self.parser.node_text(name_node));
+                        return Some(self.ctx.node_text(name_node));
                     }
                 }
             }

@@ -239,12 +239,12 @@ impl LanguageEngine for JavaEngine {
     }
 }
 
-pub(crate) fn extract_signature(parser: &ParseContext, declaration_node: Node<'_>) -> String {
+pub(crate) fn extract_signature(ctx: &ParseContext, declaration_node: Node<'_>) -> String {
     let end_byte = declaration_node
         .child_by_field_name("body")
         .map_or_else(|| declaration_node.end_byte(), |body| body.start_byte());
     let start_byte = signature_start_byte(declaration_node);
-    parser
+    ctx
         .source_slice(start_byte, end_byte)
         .trim_end()
         .trim_end_matches(';')
@@ -274,17 +274,17 @@ fn signature_start_byte(declaration_node: Node<'_>) -> usize {
 }
 
 fn find_annotation_target(
-    parser: &ParseContext,
+    ctx: &ParseContext,
     annotation_node: Node<'_>,
 ) -> (String, String, String) {
-    let annotation_signature = parser.node_text(annotation_node);
+    let annotation_signature = ctx.node_text(annotation_node);
     let mut current = annotation_node;
     while let Some(parent) = current.parent() {
         let (target_name, target_type, target_signature) = match parent.kind() {
             "method_declaration" | "constructor_declaration" => (
                 parent
                     .child_by_field_name("name")
-                    .map(|node| parser.node_text(node))
+                    .map(|node| ctx.node_text(node))
                     .unwrap_or_default(),
                 if parent.kind() == "method_declaration" {
                     "method".to_string()
@@ -294,7 +294,7 @@ fn find_annotation_target(
                 format!(
                     "{}\n{}",
                     annotation_signature,
-                    extract_signature(parser, parent)
+                    extract_signature(ctx, parent)
                 ),
             ),
             "class_declaration"
@@ -304,7 +304,7 @@ fn find_annotation_target(
             | "annotation_type_declaration" => (
                 parent
                     .child_by_field_name("name")
-                    .map(|node| parser.node_text(node))
+                    .map(|node| ctx.node_text(node))
                     .unwrap_or_default(),
                 match parent.kind() {
                     "class_declaration" => "class",
@@ -318,7 +318,7 @@ fn find_annotation_target(
                 format!(
                     "{}\n{}",
                     annotation_signature,
-                    extract_signature(parser, parent)
+                    extract_signature(ctx, parent)
                         .lines()
                         .next()
                         .unwrap_or("")
@@ -326,13 +326,13 @@ fn find_annotation_target(
                 ),
             ),
             "field_declaration" => {
-                let field_name = variable_declarator_name(parser, parent);
-                (field_name, "field".to_string(), parser.node_text(parent))
+                let field_name = variable_declarator_name(ctx, parent);
+                (field_name, "field".to_string(), ctx.node_text(parent))
             }
             "formal_parameter" | "spread_parameter" => (
                 parent
                     .child_by_field_name("name")
-                    .map(|node| parser.node_text(node))
+                    .map(|node| ctx.node_text(node))
                     .unwrap_or_default(),
                 "parameter".to_string(),
                 {
@@ -343,7 +343,7 @@ fn find_annotation_target(
                             ancestor.kind(),
                             "method_declaration" | "constructor_declaration"
                         ) {
-                            signature = extract_signature(parser, ancestor);
+                            signature = extract_signature(ctx, ancestor);
                             break;
                         }
                         current = ancestor;
@@ -352,8 +352,8 @@ fn find_annotation_target(
                 },
             ),
             "local_variable_declaration" => {
-                let var_name = variable_declarator_name(parser, parent);
-                (var_name, "variable".to_string(), parser.node_text(parent))
+                let var_name = variable_declarator_name(ctx, parent);
+                (var_name, "variable".to_string(), ctx.node_text(parent))
             }
             _ => {
                 current = parent;
@@ -365,12 +365,12 @@ fn find_annotation_target(
     (String::new(), String::new(), String::new())
 }
 
-fn variable_declarator_name(parser: &ParseContext, decl_node: Node<'_>) -> String {
+fn variable_declarator_name(ctx: &ParseContext, decl_node: Node<'_>) -> String {
     let mut cursor = decl_node.walk();
     for child in decl_node.children(&mut cursor) {
         if child.kind() == "variable_declarator" {
             if let Some(name_node) = child.child_by_field_name("name") {
-                return parser.node_text(name_node);
+                return ctx.node_text(name_node);
             }
         }
     }

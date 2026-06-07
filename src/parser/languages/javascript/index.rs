@@ -23,9 +23,9 @@ pub(crate) struct JsReceiverIndex {
 }
 
 impl JsReceiverIndex {
-    pub(super) fn resolve_symbolic_targets(
+    pub(super) fn symbolic_targets_via_index(
         &self,
-        parser: &ParseContext,
+        ctx: &ParseContext,
         call_node: Node<'_>,
         target: &str,
     ) -> Vec<String> {
@@ -36,24 +36,24 @@ impl JsReceiverIndex {
             return vec![target.to_string()];
         }
         if target == "this" {
-            return parser
+            return ctx
                 .find_enclosing_context(call_node)
                 .class_name
                 .into_iter()
                 .collect();
         }
         if let Some(chain) = target.strip_prefix("this.") {
-            return parser
+            return ctx
                 .find_enclosing_context(call_node)
                 .class_name
                 .into_iter()
-                .flat_map(|class_name| self.resolve_field_chain(&class_name, chain))
+                .flat_map(|class_name| self.field_chain_via_index(&class_name, chain))
                 .collect();
         }
         Vec::new()
     }
 
-    fn resolve_field_chain(&self, root_class: &str, chain: &str) -> Vec<String> {
+    fn field_chain_via_index(&self, root_class: &str, chain: &str) -> Vec<String> {
         let mut current = vec![root_class.to_string()];
         for segment in chain.split('.') {
             if segment.is_empty() {
@@ -61,7 +61,7 @@ impl JsReceiverIndex {
             }
             let mut next = Vec::new();
             for class_name in &current {
-                next.extend(self.targets_for_field(class_name, segment));
+                next.extend(self.field_targets(class_name, segment));
             }
             next.sort_unstable();
             next.dedup();
@@ -73,7 +73,7 @@ impl JsReceiverIndex {
         current
     }
 
-    fn targets_for_field(&self, class_name: &str, field_name: &str) -> Vec<String> {
+    fn field_targets(&self, class_name: &str, field_name: &str) -> Vec<String> {
         self.field_targets_by_class
             .get(class_name)
             .and_then(|fields| fields.get(field_name))
@@ -82,27 +82,27 @@ impl JsReceiverIndex {
     }
 }
 
-pub(crate) fn type_index(parser: &ParseContext) -> Rc<JsTypeIndex> {
-    if let Some(cached) = parser.caches.borrow().language.js.type_index.as_ref() {
+pub(crate) fn type_index(ctx: &ParseContext) -> Rc<JsTypeIndex> {
+    if let Some(cached) = ctx.caches.borrow().language.js.type_index.as_ref() {
         return Rc::clone(cached);
     }
 
-    let semantic = semantic_facts(parser);
+    let semantic = semantic_facts(ctx);
     let index = Rc::new(JsTypeIndex {
         class_names: semantic.class_names.clone(),
         field_types_by_class: semantic.field_types_by_class.clone(),
         field_infos_by_class: semantic.field_infos_by_class.clone(),
     });
-    parser.caches.borrow_mut().language.js.type_index = Some(Rc::clone(&index));
+    ctx.caches.borrow_mut().language.js.type_index = Some(Rc::clone(&index));
     index
 }
 
-pub(crate) fn receiver_index(parser: &ParseContext) -> Rc<JsReceiverIndex> {
-    if let Some(cached) = { parser.caches.borrow().language.js.receiver_index.clone() } {
+pub(crate) fn receiver_index(ctx: &ParseContext) -> Rc<JsReceiverIndex> {
+    if let Some(cached) = { ctx.caches.borrow().language.js.receiver_index.clone() } {
         return cached;
     }
 
-    let semantic = semantic_facts(parser);
+    let semantic = semantic_facts(ctx);
     let mut field_targets_by_class = HashMap::new();
     for (class_name, fields) in &semantic.field_types_by_class {
         let mut targets_by_field = HashMap::new();
@@ -126,6 +126,6 @@ pub(crate) fn receiver_index(parser: &ParseContext) -> Rc<JsReceiverIndex> {
         class_names: semantic.class_names.clone(),
         field_targets_by_class,
     });
-    parser.caches.borrow_mut().language.js.receiver_index = Some(Rc::clone(&index));
+    ctx.caches.borrow_mut().language.js.receiver_index = Some(Rc::clone(&index));
     index
 }

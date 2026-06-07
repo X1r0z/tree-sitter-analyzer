@@ -16,24 +16,24 @@ struct ParseCache {
 }
 
 pub struct CodeExtractor {
-    parser: ParseContext,
+    ctx: ParseContext,
     cache: ParseCache,
 }
 
 impl CodeExtractor {
     pub fn new(file_path: &str) -> anyhow::Result<Self> {
-        let parser = ParseContext::new(file_path)?;
-        Ok(Self::from_parser(parser))
+        let ctx = ParseContext::new(file_path)?;
+        Ok(Self::from_ctx(ctx))
     }
 
     pub fn from_source(file_path: &str, source: Vec<u8>) -> anyhow::Result<Self> {
-        let parser = ParseContext::from_source(file_path, source)?;
-        Ok(Self::from_parser(parser))
+        let ctx = ParseContext::from_source(file_path, source)?;
+        Ok(Self::from_ctx(ctx))
     }
 
     pub fn collect_functions(&mut self) -> Vec<FunctionInfo> {
         if self.cache.functions.is_none() {
-            let mut functions = self.parser.collect_functions(false);
+            let mut functions = self.ctx.collect_functions(false);
             functions
                 .sort_by_key(|function| (function.location.start_line, function.location.end_line));
             self.cache.functions = Some(functions);
@@ -43,7 +43,7 @@ impl CodeExtractor {
 
     pub fn collect_functions_with_bodies(&mut self) -> Vec<FunctionInfo> {
         if self.cache.functions_with_bodies.is_none() {
-            let mut functions = self.parser.collect_functions(true);
+            let mut functions = self.ctx.collect_functions(true);
             functions
                 .sort_by_key(|function| (function.location.start_line, function.location.end_line));
             self.cache.functions_with_bodies = Some(functions);
@@ -76,16 +76,16 @@ impl CodeExtractor {
 
     pub fn collect_imports(&mut self) -> Vec<ImportInfo> {
         if self.cache.imports.is_none() {
-            self.cache.imports = Some(self.parser.collect_imports());
+            self.cache.imports = Some(self.ctx.collect_imports());
         }
         self.cache.imports.as_deref().unwrap_or(&[]).to_vec()
     }
 
     pub fn collect_annotations(&self) -> Vec<AnnotationInfo> {
-        if !matches!(self.parser.language(), "python" | "java") {
+        if !matches!(self.ctx.language(), "python" | "java") {
             return Vec::new();
         }
-        self.parser.collect_annotations()
+        self.ctx.collect_annotations()
     }
 
     pub fn build_snapshot(&mut self) -> FileSnapshot {
@@ -101,11 +101,11 @@ impl CodeExtractor {
         let calls = self.collect_calls();
         let imports = self.collect_imports();
         let annotations = self.collect_annotations();
-        let refs = self.parser.collect_refs();
-        let (python_properties, python_property_callers) = if self.parser.language() == "python" {
+        let refs = self.ctx.collect_refs();
+        let (python_properties, python_property_callers) = if self.ctx.language() == "python" {
             (
-                self.parser.collect_properties(),
-                self.parser.collect_property_callers(None),
+                self.ctx.collect_properties(),
+                self.ctx.collect_property_callers(None),
             )
         } else {
             (Vec::new(), Vec::new())
@@ -125,12 +125,12 @@ impl CodeExtractor {
     }
 
     pub fn hydrate_refs(&mut self, candidates: &[RefInfo]) -> Vec<RefInfo> {
-        self.parser.hydrate_refs(candidates)
+        self.ctx.hydrate_refs(candidates)
     }
 
-    fn from_parser(parser: ParseContext) -> Self {
+    fn from_ctx(ctx: ParseContext) -> Self {
         Self {
-            parser,
+            ctx,
             cache: ParseCache {
                 functions: None,
                 functions_with_bodies: None,
@@ -147,14 +147,14 @@ impl CodeExtractor {
         if self.cache.calls.is_some() {
             return;
         }
-        self.cache.calls = Some(self.parser.collect_calls());
+        self.cache.calls = Some(self.ctx.collect_calls());
     }
 
     fn ensure_class_snapshot(&mut self) {
         if self.cache.classes.is_some() && self.cache.snapshot_fields.is_some() {
             return;
         }
-        let snapshot = self.parser.collect_class_snapshot();
+        let snapshot = self.ctx.collect_class_snapshot();
         self.cache.classes = Some(snapshot.classes);
         self.cache.snapshot_fields = Some(snapshot.fields);
         self.cache.fields_by_class = snapshot.field_infos_by_class;

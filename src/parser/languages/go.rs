@@ -210,7 +210,7 @@ impl LanguageEngine for GoEngine {
     }
 }
 
-pub(crate) fn receiver_type_name(parser: &ParseContext, method_node: Node<'_>) -> Option<String> {
+pub(crate) fn receiver_type_name(ctx: &ParseContext, method_node: Node<'_>) -> Option<String> {
     let receiver_list = method_node.child_by_field_name("receiver").or_else(|| {
         let mut cursor = method_node.walk();
         let receiver = method_node
@@ -225,7 +225,7 @@ pub(crate) fn receiver_type_name(parser: &ParseContext, method_node: Node<'_>) -
             continue;
         }
         if let Some(type_node) = param.child_by_field_name("type") {
-            return base_type_name(parser, type_node);
+            return base_type_name(ctx, type_node);
         }
         let mut param_cursor = param.walk();
         for child in param.children(&mut param_cursor) {
@@ -233,38 +233,38 @@ pub(crate) fn receiver_type_name(parser: &ParseContext, method_node: Node<'_>) -
                 let mut child_cursor = child.walk();
                 for pointer_child in child.children(&mut child_cursor) {
                     if pointer_child.kind() == "type_identifier" {
-                        return Some(parser.node_text(pointer_child));
+                        return Some(ctx.node_text(pointer_child));
                     }
                 }
             }
             if child.kind() == "type_identifier" {
-                return Some(parser.node_text(child));
+                return Some(ctx.node_text(child));
             }
         }
     }
     None
 }
 
-pub(crate) fn base_type_name(parser: &ParseContext, type_node: Node<'_>) -> Option<String> {
+pub(crate) fn base_type_name(ctx: &ParseContext, type_node: Node<'_>) -> Option<String> {
     match type_node.kind() {
-        "type_identifier" => Some(parser.node_text(type_node)),
+        "type_identifier" => Some(ctx.node_text(type_node)),
         "pointer_type" => {
             let mut cursor = type_node.walk();
             for child in type_node.children(&mut cursor) {
                 if child.kind() != "*" {
-                    return base_type_name(parser, child);
+                    return base_type_name(ctx, child);
                 }
             }
             None
         }
         "generic_type" => {
             if let Some(base) = type_node.child_by_field_name("type") {
-                return base_type_name(parser, base);
+                return base_type_name(ctx, base);
             }
             let mut cursor = type_node.walk();
             for child in type_node.children(&mut cursor) {
                 if child.kind() == "type_identifier" {
-                    return Some(parser.node_text(child));
+                    return Some(ctx.node_text(child));
                 }
             }
             None
@@ -273,14 +273,14 @@ pub(crate) fn base_type_name(parser: &ParseContext, type_node: Node<'_>) -> Opti
     }
 }
 
-fn embedded_type_name(parser: &ParseContext, node: Node<'_>) -> Option<String> {
+fn embedded_type_name(ctx: &ParseContext, node: Node<'_>) -> Option<String> {
     match node.kind() {
-        "type_identifier" => Some(parser.node_text(node)),
+        "type_identifier" => Some(ctx.node_text(node)),
         "qualified_type" => {
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 if child.kind() == "type_identifier" {
-                    return Some(parser.node_text(child));
+                    return Some(ctx.node_text(child));
                 }
             }
             None
@@ -292,7 +292,7 @@ fn embedded_type_name(parser: &ParseContext, node: Node<'_>) -> Option<String> {
                     child.kind(),
                     "type_identifier" | "qualified_type" | "pointer_type"
                 ) {
-                    return embedded_type_name(parser, child);
+                    return embedded_type_name(ctx, child);
                 }
             }
             None
@@ -304,7 +304,7 @@ fn embedded_type_name(parser: &ParseContext, node: Node<'_>) -> Option<String> {
                     child.kind(),
                     "type_identifier" | "qualified_type" | "generic_type" | "parenthesized_type"
                 ) {
-                    return embedded_type_name(parser, child);
+                    return embedded_type_name(ctx, child);
                 }
             }
             None
@@ -312,7 +312,7 @@ fn embedded_type_name(parser: &ParseContext, node: Node<'_>) -> Option<String> {
         "parenthesized_type" => {
             let mut cursor = node.walk();
             for child in node.named_children(&mut cursor) {
-                if let Some(name) = embedded_type_name(parser, child) {
+                if let Some(name) = embedded_type_name(ctx, child) {
                     return Some(name);
                 }
             }
@@ -322,7 +322,7 @@ fn embedded_type_name(parser: &ParseContext, node: Node<'_>) -> Option<String> {
     }
 }
 
-fn embedded_type_from_field(parser: &ParseContext, field: Node<'_>) -> Option<String> {
+fn embedded_type_from_field(ctx: &ParseContext, field: Node<'_>) -> Option<String> {
     let mut cursor = field.walk();
     for child in field.children(&mut cursor) {
         if child.kind() == "field_identifier" {
@@ -341,13 +341,13 @@ fn embedded_type_from_field(parser: &ParseContext, field: Node<'_>) -> Option<St
                 | "generic_type"
                 | "pointer_type"
                 | "parenthesized_type"
-        ) {
-            return embedded_type_name(parser, child);
+                ) {
+            return embedded_type_name(ctx, child);
         }
     }
     let mut cursor = field.walk();
     for child in field.named_children(&mut cursor) {
-        if let Some(name) = embedded_type_name(parser, child) {
+        if let Some(name) = embedded_type_name(ctx, child) {
             return Some(name);
         }
     }

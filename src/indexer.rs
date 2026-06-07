@@ -161,12 +161,7 @@ fn index_mode_label(incremental: bool) -> &'static str {
 fn language_scope_label(language: Option<&str>, languages: &BTreeSet<String>) -> String {
     match language {
         Some(language) => language.to_string(),
-        None => {
-            if languages.is_empty() {
-                supported_language_names().join(", ")
-            } else {
-                languages.iter().cloned().collect::<Vec<_>>().join(", ")
-            }
-        }
+        None if languages.is_empty() => supported_language_names().join(", "),
+        None => languages.iter().cloned().collect::<Vec<_>>().join(", "),
     }
 }

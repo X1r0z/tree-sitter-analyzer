@@ -106,7 +106,7 @@ pub(crate) struct ParseContext {
     pub(crate) caches: RefCell<ParseCaches>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub(crate) struct ClassSnapshotData {
     pub(crate) classes: Vec<ClassInfo>,
     pub(crate) fields: Vec<FieldInfo>,
@@ -417,55 +417,14 @@ impl ParseContext {
 
     pub(crate) fn collect_functions(&self, include_body: bool) -> Vec<FunctionInfo> {
         if !include_body {
-            self.ensure_structural_index();
             return self
-                .caches
-                .borrow()
-                .common
-                .structural_index
-                .as_ref()
-                .map(|index| index.functions_without_bodies.clone())
+                .with_structural_index(|index| index.functions_without_bodies.clone())
                 .unwrap_or_default();
         }
-        let mut func_pairs: Vec<(Node<'_>, Node<'_>)> =
-            capture::collect_capture_pairs(self, QueryKind::Function, "function", "name");
-        func_pairs.sort_by_key(|(f, _)| (f.start_byte(), std::cmp::Reverse(f.end_byte())));
-
-        let mut functions = Vec::new();
-        let mut seen = HashSet::new();
-
-        for (func_node, name_node) in func_pairs {
-            let function_node = self.engine().normalize_function_node(self, func_node);
-            let name = self
-                .cached_function_name(function_node)
-                .unwrap_or_else(|| self.node_text(name_node));
-            if name.is_empty() {
-                continue;
-            }
-            let class_name = self.find_enclosing_context(function_node).class_name;
-            let key = (
-                function_node.start_byte(),
-                function_node.end_byte(),
-                name.clone(),
-                class_name.clone(),
-            );
-            if !seen.insert(key) {
-                continue;
-            }
-            functions.push(FunctionInfo {
-                name,
-                location: self.node_location(function_node),
-                body: if include_body {
-                    self.node_text(function_node)
-                } else {
-                    String::new()
-                },
-                class_name,
-                params: self.collect_function_params(function_node),
-            });
-        }
-
-        functions
+        self.collect_function_entries(true)
+            .into_iter()
+            .map(|entry| entry.function)
+            .collect()
     }
 
     pub(crate) fn collect_python_properties(&self) -> Vec<PythonPropertyInfo> {
@@ -485,43 +444,25 @@ impl ParseContext {
     }
 
     pub(crate) fn collect_classes(&self) -> Vec<ClassInfo> {
-        self.ensure_structural_index();
-        self.caches
-            .borrow()
-            .common
-            .structural_index
-            .as_ref()
-            .map(|index| index.class_snapshot.classes.clone())
+        self.with_structural_index(|index| index.class_snapshot.classes.clone())
             .unwrap_or_default()
     }
 
     pub(crate) fn collect_fields_for_class(&self, class_name: &str) -> Vec<FieldInfo> {
-        self.ensure_structural_index();
-        self.caches
-            .borrow()
-            .common
-            .structural_index
-            .as_ref()
-            .and_then(|index| index.class_snapshot.field_infos_by_class.get(class_name))
-            .cloned()
-            .unwrap_or_default()
+        self.with_structural_index(|index| {
+            index
+                .class_snapshot
+                .field_infos_by_class
+                .get(class_name)
+                .cloned()
+        })
+        .flatten()
+        .unwrap_or_default()
     }
 
     pub(crate) fn collect_class_snapshot(&self) -> ClassSnapshotData {
-        self.ensure_structural_index();
-        self.caches
-            .borrow()
-            .common
-            .structural_index
-            .as_ref()
-            .map_or_else(
-                || ClassSnapshotData {
-                    classes: Vec::new(),
-                    fields: Vec::new(),
-                    field_infos_by_class: HashMap::new(),
-                },
-                |index| index.class_snapshot.clone(),
-            )
+        self.with_structural_index(|index| index.class_snapshot.clone())
+            .unwrap_or_default()
     }
 
     pub(crate) fn collect_calls(&self) -> Vec<CallInfo> {
@@ -694,26 +635,30 @@ impl ParseContext {
                         refs.push(reference);
                     }
                 }
-                let mut cursor = node.walk();
-                let children: Vec<_> = node.named_children(&mut cursor).collect();
-                for child in children.into_iter().rev() {
-                    stack.push(child);
-                }
+                push_children_rev(&mut stack, node, true);
             }
         }
         refs
     }
 
-    #[allow(clippy::too_many_lines)]
-    fn ensure_structural_index(&self) {
-        if self.caches.borrow().common.structural_index.is_some() {
-            return;
-        }
+    /// Builds the structural index if needed, then runs `f` against it.
+    /// Returns `None` only when the index could not be built.
+    fn with_structural_index<T>(&self, f: impl FnOnce(&StructuralIndexData) -> T) -> Option<T> {
+        self.ensure_structural_index();
+        self.caches
+            .borrow()
+            .common
+            .structural_index
+            .as_ref()
+            .map(f)
+    }
+
+    fn collect_function_entries(&self, include_body: bool) -> Vec<FunctionSnapshotEntry> {
         let mut func_pairs: Vec<(Node<'_>, Node<'_>)> =
             capture::collect_capture_pairs(self, QueryKind::Function, "function", "name");
         func_pairs.sort_by_key(|(f, _)| (f.start_byte(), std::cmp::Reverse(f.end_byte())));
 
-        let mut function_entries = Vec::new();
+        let mut entries = Vec::new();
         let mut seen = HashSet::new();
 
         for (func_node, name_node) in func_pairs {
@@ -734,40 +679,76 @@ impl ParseContext {
             if !seen.insert(key) {
                 continue;
             }
-            function_entries.push(FunctionSnapshotEntry {
+            entries.push(FunctionSnapshotEntry {
                 start_byte: function_node.start_byte(),
                 end_byte: function_node.end_byte(),
                 function: FunctionInfo {
                     name,
                     location: self.node_location(function_node),
-                    body: String::new(),
+                    body: if include_body {
+                        self.node_text(function_node)
+                    } else {
+                        String::new()
+                    },
                     class_name,
                     params: self.collect_function_params(function_node),
                 },
             });
         }
 
+        entries
+    }
+
+    fn ensure_structural_index(&self) {
+        if self.caches.borrow().common.structural_index.is_some() {
+            return;
+        }
+        let function_entries = self.collect_function_entries(false);
         let functions_without_bodies = function_entries
             .iter()
             .map(|entry| entry.function.clone())
             .collect::<Vec<_>>();
 
-        let mut methods_by_class = std::collections::HashMap::new();
-        if self.language() == "go" {
-            for function in &functions_without_bodies {
-                if let Some(class_name) = function.class_name.clone() {
-                    methods_by_class
-                        .entry(class_name)
-                        .or_insert_with(Vec::new)
-                        .push(function.name.clone());
-                }
-            }
-            for methods in methods_by_class.values_mut() {
-                methods.sort_unstable();
-                methods.dedup();
+        let methods_by_class = self.go_methods_by_class(&functions_without_bodies);
+        let (class_entries, field_infos_by_class) = self.build_class_entries(&methods_by_class);
+
+        let enclosing_interval_index = build_interval_index(function_entries, &class_entries);
+        let class_snapshot = build_class_snapshot(&class_entries, field_infos_by_class);
+
+        let structural_index = StructuralIndexData {
+            functions_without_bodies,
+            class_snapshot,
+            enclosing_interval_index,
+        };
+        self.caches.borrow_mut().common.structural_index = Some(structural_index);
+    }
+
+    /// Maps each Go type to its receiver-method names (sorted, deduped).
+    /// Non-Go languages get methods directly from the class body, so this is empty.
+    fn go_methods_by_class(&self, functions: &[FunctionInfo]) -> HashMap<String, Vec<String>> {
+        let mut methods_by_class: HashMap<String, Vec<String>> = HashMap::new();
+        if self.language() != "go" {
+            return methods_by_class;
+        }
+        for function in functions {
+            if let Some(class_name) = function.class_name.clone() {
+                methods_by_class
+                    .entry(class_name)
+                    .or_default()
+                    .push(function.name.clone());
             }
         }
+        for methods in methods_by_class.values_mut() {
+            methods.sort_unstable();
+            methods.dedup();
+        }
+        methods_by_class
+    }
 
+    fn build_class_entries(
+        &self,
+        methods_by_class: &HashMap<String, Vec<String>>,
+    ) -> (Vec<ClassSnapshotEntry>, HashMap<String, Vec<FieldInfo>>) {
         let mut class_pairs: Vec<(Node<'_>, Node<'_>)> =
             capture::collect_capture_pairs(self, QueryKind::Class, "class", "name");
         class_pairs.sort_by_key(|(class_node, _)| {
@@ -812,15 +793,13 @@ impl ParseContext {
 
             let field_infos = self.engine().class_fields(self, class_node, &name);
             let field_names = field_infos.iter().map(|field| field.name.clone()).collect();
-            let class_size = end - start;
-            match chosen_fields_by_class.get(&name) {
-                Some((best_size, best_start, _))
-                    if (*best_size, *best_start) <= (class_size, start) => {}
-                _ => {
-                    chosen_fields_by_class
-                        .insert(name.clone(), (class_size, start, field_infos.clone()));
-                }
-            }
+            prefer_smaller_class_fields(
+                &mut chosen_fields_by_class,
+                &name,
+                end - start,
+                start,
+                field_infos,
+            );
 
             let mut method_names = class_method_names(self, class_node);
             if self.language() == "go" {
@@ -846,58 +825,12 @@ impl ParseContext {
             });
         }
 
-        let classes = class_entries
-            .iter()
-            .map(|entry| entry.class.clone())
-            .collect::<Vec<_>>();
         let field_infos_by_class = chosen_fields_by_class
             .into_iter()
             .map(|(name, (_, _, fields))| (name, fields))
             .collect::<HashMap<_, _>>();
-        let fields = classes
-            .iter()
-            .flat_map(|class| {
-                field_infos_by_class
-                    .get(&class.name)
-                    .cloned()
-                    .unwrap_or_default()
-            })
-            .collect();
 
-        let class_snapshot = ClassSnapshotData {
-            classes,
-            fields,
-            field_infos_by_class,
-        };
-
-        let function_ranges = function_entries
-            .into_iter()
-            .map(|entry| FunctionRange {
-                start_byte: entry.start_byte,
-                end_byte: entry.end_byte,
-                function_name: entry.function.name,
-            })
-            .collect();
-        let class_ranges = class_entries
-            .iter()
-            .map(|entry| ClassRange {
-                start_byte: entry.start_byte,
-                end_byte: entry.end_byte,
-                class_name: entry.class.name.clone(),
-            })
-            .collect();
-
-        let enclosing_interval_index = EnclosingIntervalIndex {
-            function_ranges,
-            class_ranges,
-        };
-
-        let structural_index = StructuralIndexData {
-            functions_without_bodies,
-            class_snapshot,
-            enclosing_interval_index,
-        };
-        self.caches.borrow_mut().common.structural_index = Some(structural_index);
+        (class_entries, field_infos_by_class)
     }
 
     fn find_enclosing_function_node(node: Node<'_>) -> Option<Node<'_>> {
@@ -950,6 +883,88 @@ impl ParseContext {
             function_name,
             class_name,
         }
+    }
+}
+
+/// Records `field_infos` as the chosen fields for `name`, keeping whichever
+/// declaration is smaller (and earlier on ties) so the tightest enclosing
+/// class wins when a name is declared more than once.
+fn prefer_smaller_class_fields(
+    chosen: &mut HashMap<String, (usize, usize, Vec<FieldInfo>)>,
+    name: &str,
+    class_size: usize,
+    start: usize,
+    field_infos: Vec<FieldInfo>,
+) {
+    match chosen.get(name) {
+        Some((best_size, best_start, _)) if (*best_size, *best_start) <= (class_size, start) => {}
+        _ => {
+            chosen.insert(name.to_string(), (class_size, start, field_infos));
+        }
+    }
+}
+
+fn build_class_snapshot(
+    class_entries: &[ClassSnapshotEntry],
+    field_infos_by_class: HashMap<String, Vec<FieldInfo>>,
+) -> ClassSnapshotData {
+    let classes = class_entries
+        .iter()
+        .map(|entry| entry.class.clone())
+        .collect::<Vec<_>>();
+    let fields = classes
+        .iter()
+        .flat_map(|class| {
+            field_infos_by_class
+                .get(&class.name)
+                .cloned()
+                .unwrap_or_default()
+        })
+        .collect();
+    ClassSnapshotData {
+        classes,
+        fields,
+        field_infos_by_class,
+    }
+}
+
+fn build_interval_index(
+    function_entries: Vec<FunctionSnapshotEntry>,
+    class_entries: &[ClassSnapshotEntry],
+) -> EnclosingIntervalIndex {
+    let function_ranges = function_entries
+        .into_iter()
+        .map(|entry| FunctionRange {
+            start_byte: entry.start_byte,
+            end_byte: entry.end_byte,
+            function_name: entry.function.name,
+        })
+        .collect();
+    let class_ranges = class_entries
+        .iter()
+        .map(|entry| ClassRange {
+            start_byte: entry.start_byte,
+            end_byte: entry.end_byte,
+            class_name: entry.class.name.clone(),
+        })
+        .collect();
+    EnclosingIntervalIndex {
+        function_ranges,
+        class_ranges,
+    }
+}
+
+/// Pushes `node`'s children onto `stack` in reverse so a stack-based DFS pops
+/// them left-to-right. Set `named` to skip anonymous nodes.
+fn push_children_rev<'a>(stack: &mut Vec<Node<'a>>, node: Node<'a>, named: bool) {
+    let mut cursor = node.walk();
+    let children: Vec<_> = if named {
+        node.named_children(&mut cursor).collect()
+    } else {
+        node.children(&mut cursor).collect()
+    };
+    for child in children.into_iter().rev() {
+        stack.push(child);
     }
 }
 
@@ -1056,11 +1071,7 @@ fn class_method_names(parser: &ParseContext, class_node: Node<'_>) -> Vec<String
             }
             continue;
         }
-        let mut cursor = node.walk();
-        let children: Vec<_> = node.children(&mut cursor).collect();
-        for child in children.into_iter().rev() {
-            stack.push(child);
-        }
+        push_children_rev(&mut stack, node, false);
     }
     methods
 }
@@ -1076,17 +1087,9 @@ pub(crate) fn collect_fields_from_declarations(
     let mut stack = vec![class_node];
 
     while let Some(node) = stack.pop() {
+        // Field collection also treats a bare JS `class` expression as a boundary.
         if node.id() != class_node.id()
-            && matches!(
-                node.kind(),
-                "class_definition"
-                    | "class_declaration"
-                    | "class"
-                    | "interface_declaration"
-                    | "enum_declaration"
-                    | "record_declaration"
-                    | "annotation_type_declaration"
-            )
+            && (is_nested_class_boundary(node.kind()) || node.kind() == "class")
         {
             let nested_name = node
                 .child_by_field_name("name")
@@ -1171,11 +1174,7 @@ pub(crate) fn collect_fields_from_declarations(
             continue;
         }
 
-        let mut cursor = node.walk();
-        let children: Vec<_> = node.children(&mut cursor).collect();
-        for child in children.into_iter().rev() {
-            stack.push(child);
-        }
+        push_children_rev(&mut stack, node, false);
     }
 
     fields

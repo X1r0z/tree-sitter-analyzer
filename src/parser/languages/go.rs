@@ -322,15 +322,15 @@ fn embedded_type_name(parser: &ParseContext, node: Node<'_>) -> Option<String> {
     }
 }
 
-fn embedded_type_from_field(parser: &ParseContext, field_declaration: Node<'_>) -> Option<String> {
-    let mut cursor = field_declaration.walk();
-    for child in field_declaration.children(&mut cursor) {
+fn embedded_type_from_field(parser: &ParseContext, field: Node<'_>) -> Option<String> {
+    let mut cursor = field.walk();
+    for child in field.children(&mut cursor) {
         if child.kind() == "field_identifier" {
             return None;
         }
     }
-    let mut cursor = field_declaration.walk();
-    for child in field_declaration.children(&mut cursor) {
+    let mut cursor = field.walk();
+    for child in field.children(&mut cursor) {
         if child.kind() == "*" {
             continue;
         }
@@ -345,8 +345,8 @@ fn embedded_type_from_field(parser: &ParseContext, field_declaration: Node<'_>) 
             return embedded_type_name(parser, child);
         }
     }
-    let mut cursor = field_declaration.walk();
-    for child in field_declaration.named_children(&mut cursor) {
+    let mut cursor = field.walk();
+    for child in field.named_children(&mut cursor) {
         if let Some(name) = embedded_type_name(parser, child) {
             return Some(name);
         }

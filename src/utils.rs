@@ -144,11 +144,7 @@ pub fn progress_style(unit: &str, bar_style: &str) -> ProgressStyle {
             |state: &ProgressState, w: &mut dyn std::fmt::Write| {
                 let len = state.len().unwrap_or(0);
                 let pos = state.pos();
-                let percent_hundredths = if len == 0 {
-                    0
-                } else {
-                    pos.saturating_mul(10_000) / len
-                };
+                let percent_hundredths = pos.saturating_mul(10_000).checked_div(len).unwrap_or(0);
                 let integer = percent_hundredths / 100;
                 let fraction = percent_hundredths % 100;
                 let _ = write!(w, "{integer:>3}.{fraction:02}");

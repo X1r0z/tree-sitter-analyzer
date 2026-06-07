@@ -158,7 +158,7 @@ impl LanguageEngine for PythonEngine {
         PythonFieldCollector::new(ctx, class_node, class_name).collect()
     }
 
-    fn super_types(&self, ctx: &ParseContext, class_node: Node<'_>) -> Vec<String> {
+    fn super_classes(&self, ctx: &ParseContext, class_node: Node<'_>) -> Vec<String> {
         let mut super_classes = Vec::new();
         let mut cursor = class_node.walk();
         for child in class_node.children(&mut cursor) {
@@ -246,14 +246,14 @@ impl<'a> PythonParamHelper<'a> {
         let mut params = Vec::new();
         let mut cursor = parameters.walk();
         for param in parameters.named_children(&mut cursor) {
-            if let Some(info) = self.build_parameter_info(param) {
+            if let Some(info) = self.build_param_info(param) {
                 params.push(info);
             }
         }
         params
     }
 
-    fn build_parameter_info(&self, param: Node<'_>) -> Option<FunctionParamInfo> {
+    fn build_param_info(&self, param: Node<'_>) -> Option<FunctionParamInfo> {
         let type_node = param.child_by_field_name("type");
         let name = match param.kind() {
             "identifier" => self.parser.node_text(param),
@@ -506,7 +506,7 @@ impl<'a> PythonAnnotationCollector<'a> {
             .child_by_field_name("body")
             .map_or_else(|| definition_node.end_byte(), |body| body.start_byte());
         self.parser
-            .source_text(definition_node.start_byte(), end_byte)
+            .source_slice(definition_node.start_byte(), end_byte)
             .trim_end()
             .to_string()
     }
@@ -534,7 +534,7 @@ impl<'a> PythonPropertyAnalyzer<'a> {
         Self { parser }
     }
 
-    pub(crate) fn collect_infos(&self) -> Vec<PythonPropertyInfo> {
+    pub(crate) fn collect_properties(&self) -> Vec<PythonPropertyInfo> {
         self.with_cached_definitions(|properties| {
             let mut values: Vec<_> = properties
                 .iter()
@@ -578,7 +578,7 @@ impl<'a> PythonPropertyAnalyzer<'a> {
         })
     }
 
-    fn ensure_definitions_cached(&self) {
+    fn ensure_definitions(&self) {
         if self.parser.language() != "python" {
             return;
         }
@@ -605,11 +605,11 @@ impl<'a> PythonPropertyAnalyzer<'a> {
         });
     }
 
-    fn ensure_callers_cached(&self) {
+    fn ensure_callers(&self) {
         if self.parser.language() != "python" {
             return;
         }
-        self.ensure_definitions_cached();
+        self.ensure_definitions();
 
         let should_build = self
             .parser
@@ -654,7 +654,7 @@ impl<'a> PythonPropertyAnalyzer<'a> {
         if self.parser.language() != "python" {
             return f(&HashSet::new());
         }
-        self.ensure_definitions_cached();
+        self.ensure_definitions();
         let caches = self.parser.caches.borrow();
         let definitions = Ref::map(caches, |caches| {
             &caches
@@ -672,7 +672,7 @@ impl<'a> PythonPropertyAnalyzer<'a> {
         if self.parser.language() != "python" {
             return f(&HashMap::new());
         }
-        self.ensure_callers_cached();
+        self.ensure_callers();
         let caches = self.parser.caches.borrow();
         let callers = Ref::map(caches, |caches| {
             caches
@@ -712,7 +712,7 @@ impl<'a> PythonPropertyAnalyzer<'a> {
                 let mut cursor = node.walk();
                 for child in node.named_children(&mut cursor) {
                     if child.kind() == "decorator"
-                        && self.parser.node_trimmed_text_eq(child, "@property")
+                        && self.parser.node_text_trimmed_eq(child, "@property")
                     {
                         is_property = true;
                         break;
@@ -815,12 +815,12 @@ impl<'a> PythonPropertyAnalyzer<'a> {
         let mut current = node;
         while let Some(parent) = current.parent() {
             match parent.kind() {
-                "assignment" | "augmented_assignment" => {
+                "assignment" | "augmented_assignment"
                     if parent.child_by_field_name("left").is_some_and(|left| {
                         left.start_byte() <= node.start_byte() && node.end_byte() <= left.end_byte()
-                    }) {
-                        return false;
-                    }
+                    }) =>
+                {
+                    return false;
                 }
                 _ => {}
             }

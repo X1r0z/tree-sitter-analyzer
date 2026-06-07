@@ -90,7 +90,7 @@ impl<'a> CallGraphQuery<'a> {
         max_depth: usize,
     ) -> anyhow::Result<Vec<CallGraphPath>> {
         let edge_query = CallEdgeQuery::new(self.ctx);
-        let start_nodes = edge_query.load_exact_functions(function_name, class_name)?;
+        let start_nodes = edge_query.load_functions_by_name_class(function_name, class_name)?;
         if start_nodes.is_empty() {
             anyhow::bail!("Function '{function_name}' not found");
         }
@@ -144,7 +144,7 @@ impl<'a> CallGraphQuery<'a> {
                     .map(|step| (step.node.key(), step.edge.clone()))
                     .collect::<Vec<_>>()
             },
-            Self::materialize_graph,
+            Self::build_graph,
         )?;
 
         results.sort_by(|left, right| {
@@ -156,7 +156,7 @@ impl<'a> CallGraphQuery<'a> {
         Ok(results)
     }
 
-    fn materialize_graph(
+    fn build_graph(
         direction: GraphDirection,
         steps: &[TraversalPathStep<IndexedFunction, CallSite>],
     ) -> CallGraphPath {

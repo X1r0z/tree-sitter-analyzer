@@ -126,8 +126,8 @@ impl CodeExtractor {
         let refs = self.parser.collect_refs();
         let (python_properties, python_property_callers) = if self.parser.language() == "python" {
             (
-                self.parser.collect_python_properties(),
-                self.parser.collect_python_property_callers(None),
+                self.parser.collect_properties(),
+                self.parser.collect_property_callers(None),
             )
         } else {
             (Vec::new(), Vec::new())

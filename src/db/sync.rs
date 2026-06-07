@@ -114,7 +114,7 @@ impl IndexSynchronizer {
     ) -> anyhow::Result<()> {
         let stale_file_ids = IndexStore::stale_indexed_file_ids(tx, scope_languages)?;
         if !stale_file_ids.is_empty() {
-            Self::delete_files_by_id(tx, &stale_file_ids)?;
+            Self::delete_files_by_ids(tx, &stale_file_ids)?;
             for _ in &stale_file_ids {
                 progress.inc(1);
             }
@@ -138,7 +138,7 @@ impl IndexSynchronizer {
             }
         }
         if !replaced_file_ids.is_empty() {
-            Self::delete_files_by_id(tx, &replaced_file_ids)?;
+            Self::delete_files_by_ids(tx, &replaced_file_ids)?;
         }
 
         let mut writer = SnapshotWriter::new(tx)?;
@@ -158,7 +158,7 @@ impl IndexSynchronizer {
         Ok(())
     }
 
-    fn delete_files_by_id(tx: &Transaction<'_>, file_ids: &[i64]) -> anyhow::Result<()> {
+    fn delete_files_by_ids(tx: &Transaction<'_>, file_ids: &[i64]) -> anyhow::Result<()> {
         if file_ids.is_empty() {
             return Ok(());
         }

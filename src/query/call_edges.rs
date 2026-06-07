@@ -504,7 +504,7 @@ impl<'a> CallEdgeQuery<'a> {
         Ok(results)
     }
 
-    pub(super) fn load_exact_functions(
+    pub(super) fn load_functions_by_name_class(
         &self,
         function_name: &str,
         class_name: Option<&str>,
@@ -564,7 +564,7 @@ impl<'a> CallEdgeQuery<'a> {
             return Ok(Arc::clone(cached));
         }
 
-        let loaded: IndexedFunctionSlice = self.load_exact_functions(function_name, None)?.into();
+        let loaded: IndexedFunctionSlice = self.load_functions_by_name_class(function_name, None)?.into();
         cache.insert(key, Arc::clone(&loaded));
         Ok(loaded)
     }
@@ -649,7 +649,7 @@ impl<'a> CallEdgeQuery<'a> {
             Arc::clone(cached)
         } else {
             let loaded: IndexedFunctionSlice =
-                self.load_exact_functions(function_name, class_name)?.into();
+                self.load_functions_by_name_class(function_name, class_name)?.into();
             caches.candidates.insert(cache_key, Arc::clone(&loaded));
             loaded
         };

@@ -146,10 +146,10 @@ impl LanguageEngine for JavaEngine {
         class_node: Node<'_>,
         class_name: &str,
     ) -> Vec<FieldInfo> {
-        context::collect_fields_from_declarations(ctx, class_node, class_name, false)
+        context::collect_class_fields(ctx, class_node, class_name, false)
     }
 
-    fn super_types(&self, ctx: &ParseContext, class_node: Node<'_>) -> Vec<String> {
+    fn super_classes(&self, ctx: &ParseContext, class_node: Node<'_>) -> Vec<String> {
         let mut super_classes = Vec::new();
 
         let mut cursor = class_node.walk();
@@ -245,7 +245,7 @@ pub(crate) fn extract_signature(parser: &ParseContext, declaration_node: Node<'_
         .map_or_else(|| declaration_node.end_byte(), |body| body.start_byte());
     let start_byte = signature_start_byte(declaration_node);
     parser
-        .source_text(start_byte, end_byte)
+        .source_slice(start_byte, end_byte)
         .trim_end()
         .trim_end_matches(';')
         .trim_end()

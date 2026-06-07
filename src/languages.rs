@@ -100,7 +100,7 @@ pub trait LanguageEngine: Sync {
         class_name: &str,
     ) -> Vec<FieldInfo>;
 
-    fn super_types(&self, ctx: &ParseContext, class_node: Node<'_>) -> Vec<String>;
+    fn super_classes(&self, ctx: &ParseContext, class_node: Node<'_>) -> Vec<String>;
 
     fn annotations(&self, _ctx: &ParseContext) -> Vec<AnnotationInfo> {
         Vec::new()

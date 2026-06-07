@@ -158,7 +158,7 @@ impl<'a> LookupQuery<'a> {
                 end_line: row.get::<_, usize>(6)?,
             })
         })?;
-        self.hydrate_class_rows(rows.collect::<Result<Vec<_>, _>>()?)
+        self.classes_from_rows(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
     pub(crate) fn find_fields(&self, class_name: &str) -> anyhow::Result<Vec<FieldInfo>> {
@@ -373,7 +373,7 @@ impl<'a> LookupQuery<'a> {
         Ok(map)
     }
 
-    pub(super) fn load_superclasses_by_class_id(
+    pub(super) fn load_super_classes_by_class_id(
         &self,
         class_ids: &[i64],
     ) -> anyhow::Result<HashMap<i64, Vec<String>>> {
@@ -486,17 +486,17 @@ impl<'a> LookupQuery<'a> {
             class_rows.extend(rows.collect::<Result<Vec<_>, _>>()?);
         }
 
-        self.hydrate_class_rows(class_rows)
+        self.classes_from_rows(class_rows)
     }
 
-    fn hydrate_class_rows(&self, class_rows: Vec<ClassRow>) -> anyhow::Result<Vec<ClassInfo>> {
+    fn classes_from_rows(&self, class_rows: Vec<ClassRow>) -> anyhow::Result<Vec<ClassInfo>> {
         let class_ids: Vec<i64> = class_rows.iter().map(|row| row.class_id).collect();
         let field_keys: Vec<(i64, String)> = class_rows
             .iter()
             .map(|row| (row.file_id, row.name.clone()))
             .collect();
         let methods_by_class = self.load_methods_by_class_id(&class_ids)?;
-        let super_classes_by_class = self.load_superclasses_by_class_id(&class_ids)?;
+        let super_classes_by_class = self.load_super_classes_by_class_id(&class_ids)?;
         let fields_by_class = self.load_field_names_by_file_class(&field_keys)?;
 
         Ok(class_rows

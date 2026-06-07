@@ -166,10 +166,10 @@ impl LanguageEngine for GoEngine {
         class_node: Node<'_>,
         class_name: &str,
     ) -> Vec<FieldInfo> {
-        context::collect_fields_from_declarations(ctx, class_node, class_name, true)
+        context::collect_class_fields(ctx, class_node, class_name, true)
     }
 
-    fn super_types(&self, ctx: &ParseContext, class_node: Node<'_>) -> Vec<String> {
+    fn super_classes(&self, ctx: &ParseContext, class_node: Node<'_>) -> Vec<String> {
         let mut embedded_type_names = Vec::new();
 
         let mut cursor = class_node.walk();

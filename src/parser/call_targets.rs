@@ -54,7 +54,7 @@ where
                 }
             }
 
-            if let Some(attr_name) = extract_instance_attr(object_name) {
+            if let Some(attr_name) = extract_instance_attribute(object_name) {
                 for candidate in candidates {
                     if let Some(candidate_class_name) = class_name_of(candidate) {
                         if field_matches(attr_name, candidate_class_name)
@@ -112,7 +112,7 @@ pub(crate) fn split_function_target(function_name: &str) -> (&str, Option<&str>)
     }
 }
 
-pub(crate) fn extract_instance_attr(object_name: &str) -> Option<&str> {
+pub(crate) fn extract_instance_attribute(object_name: &str) -> Option<&str> {
     for prefix in ["self.", "this.", "cls."] {
         if let Some(rest) = object_name.strip_prefix(prefix) {
             if !rest.is_empty() {
@@ -171,7 +171,7 @@ where
         return true;
     }
 
-    let Some(attr_name) = extract_instance_attr(object_name) else {
+    let Some(attr_name) = extract_instance_attribute(object_name) else {
         return false;
     };
 
@@ -204,7 +204,7 @@ where
         return false;
     }
 
-    let Some(attr_name) = extract_instance_attr(object_name) else {
+    let Some(attr_name) = extract_instance_attribute(object_name) else {
         return false;
     };
 

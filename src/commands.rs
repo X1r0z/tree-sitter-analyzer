@@ -25,7 +25,7 @@ impl CommandContext {
         })
     }
 
-    fn searched_files(&self) -> usize {
+    fn file_count(&self) -> usize {
         self.analyzer.file_count()
     }
 }
@@ -48,7 +48,7 @@ pub(crate) fn functions(path: &str, language: Option<&str>, query: &str) -> Valu
     };
     success_response(
         &context.resolved_path,
-        context.searched_files(),
+        context.file_count(),
         output::functions(&functions, FunctionView::Summary),
     )
 }
@@ -64,7 +64,7 @@ pub(crate) fn classes(path: &str, language: Option<&str>, query: &str) -> Value 
     };
     success_response(
         &context.resolved_path,
-        context.searched_files(),
+        context.file_count(),
         output::classes(&classes),
     )
 }
@@ -80,7 +80,7 @@ pub(crate) fn fields(path: &str, language: Option<&str>, class_name: &str) -> Va
     };
     success_response(
         &context.resolved_path,
-        context.searched_files(),
+        context.file_count(),
         output::fields(&fields),
     )
 }
@@ -96,7 +96,7 @@ pub(crate) fn imports(path: &str, language: Option<&str>, query: &str) -> Value 
     };
     success_response(
         &context.resolved_path,
-        context.searched_files(),
+        context.file_count(),
         output::imports(&imports),
     )
 }
@@ -112,7 +112,7 @@ pub(crate) fn annotations(path: &str, language: Option<&str>, query: &str) -> Va
     };
     success_response(
         &context.resolved_path,
-        context.searched_files(),
+        context.file_count(),
         output::annotations(&annotations),
     )
 }
@@ -133,7 +133,7 @@ pub(crate) fn callers(
     };
     success_response(
         &context.resolved_path,
-        context.searched_files(),
+        context.file_count(),
         output::callers(&callers),
     )
 }
@@ -154,7 +154,7 @@ pub(crate) fn callees(
     };
     success_response(
         &context.resolved_path,
-        context.searched_files(),
+        context.file_count(),
         output::callees(&callees),
     )
 }
@@ -180,7 +180,7 @@ pub(crate) fn graph(
     };
     success_response(
         &context.resolved_path,
-        context.searched_files(),
+        context.file_count(),
         output::graphs(&graphs),
     )
 }
@@ -197,7 +197,7 @@ pub(crate) fn refs(path: &str, language: Option<&str>, name: &str) -> Value {
     let refs = hydrate_ref_contexts(refs);
     success_response(
         &context.resolved_path,
-        context.searched_files(),
+        context.file_count(),
         output::refs(&refs),
     )
 }
@@ -227,14 +227,14 @@ pub(crate) fn definition(
         return json!({"error": format!("Function '{}' not found", function_name)});
     }
     let functions = hydrate_function_bodies(functions);
-    let searched_files = functions
+    let file_count = functions
         .iter()
         .map(|function| function.location.file.as_str())
         .collect::<HashSet<_>>()
         .len();
     success_response(
         &context.resolved_path,
-        searched_files,
+        file_count,
         output::functions(&functions, FunctionView::Definition),
     )
 }
@@ -250,7 +250,7 @@ pub(crate) fn super_classes(path: &str, language: Option<&str>, class_name: &str
     };
     success_response(
         &context.resolved_path,
-        context.searched_files(),
+        context.file_count(),
         output::classes(&super_classes),
     )
 }
@@ -266,7 +266,7 @@ pub(crate) fn sub_classes(path: &str, language: Option<&str>, class_name: &str) 
     };
     success_response(
         &context.resolved_path,
-        context.searched_files(),
+        context.file_count(),
         output::classes(&sub_classes),
     )
 }

@@ -85,7 +85,7 @@ impl<'a> CallTargetResolver<'a> {
                 return Ok(false);
             };
             return Ok(self
-                .load_class_ancestors(caller.file_id, caller_class_name, ancestors_cache)?
+                .load_ancestor_classes(caller.file_id, caller_class_name, ancestors_cache)?
                 .iter()
                 .any(|ancestor| ancestor == class_name)
                 || caller_class_name == class_name);
@@ -104,7 +104,7 @@ impl<'a> CallTargetResolver<'a> {
             .transpose()?
             .unwrap_or_default();
         let param_types =
-            self.load_param_types_by_function(caller.function_id, param_type_cache)?;
+            self.load_param_types_by_function_id(caller.function_id, param_type_cache)?;
         Ok(call_matches_property_target(
             caller.function.class_name.as_deref(),
             object_name,
@@ -139,7 +139,7 @@ impl<'a> CallTargetResolver<'a> {
                 return Ok(false);
             };
             return Ok(self
-                .load_class_parents(caller.file_id, caller_class_name)?
+                .load_super_classes(caller.file_id, caller_class_name)?
                 .iter()
                 .any(|parent| parent == class_name));
         }
@@ -157,7 +157,7 @@ impl<'a> CallTargetResolver<'a> {
             .transpose()?
             .unwrap_or_default();
         let param_types =
-            self.load_param_types_by_function(caller.function_id, param_type_cache)?;
+            self.load_param_types_by_function_id(caller.function_id, param_type_cache)?;
         Ok(matches_call_target(
             caller.function.class_name.as_deref(),
             object_name,
@@ -191,7 +191,7 @@ impl<'a> CallTargetResolver<'a> {
             let Some(caller_class_name) = caller.function.class_name.as_deref() else {
                 return Ok(Vec::new());
             };
-            let parents = self.load_class_parents(caller.file_id, caller_class_name)?;
+            let parents = self.load_super_classes(caller.file_id, caller_class_name)?;
             let mut resolved: Vec<_> = candidates
                 .iter()
                 .filter(|candidate| {
@@ -225,7 +225,7 @@ impl<'a> CallTargetResolver<'a> {
             .transpose()?
             .unwrap_or_default();
         let param_types =
-            self.load_param_types_by_function(caller.function_id, param_type_cache)?;
+            self.load_param_types_by_function_id(caller.function_id, param_type_cache)?;
         let mut resolved = resolve_forward_targets_from_candidates(
             ForwardTargetContext {
                 caller_class_name: caller.function.class_name.as_deref(),
@@ -330,7 +330,7 @@ impl<'a> CallTargetResolver<'a> {
         Ok(map)
     }
 
-    fn load_param_types_by_function(
+    fn load_param_types_by_function_id(
         &self,
         function_id: i64,
         cache: &mut ParamTypeCache,
@@ -360,7 +360,7 @@ impl<'a> CallTargetResolver<'a> {
         Ok(map)
     }
 
-    fn load_class_parents(&self, file_id: i64, class_name: &str) -> anyhow::Result<Vec<String>> {
+    fn load_super_classes(&self, file_id: i64, class_name: &str) -> anyhow::Result<Vec<String>> {
         let mut stmt = self.ctx.conn.prepare(
             "
             SELECT rel.super_class_name
@@ -374,7 +374,7 @@ impl<'a> CallTargetResolver<'a> {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
-    fn load_class_ancestors(
+    fn load_ancestor_classes(
         &self,
         file_id: i64,
         class_name: &str,
@@ -388,7 +388,7 @@ impl<'a> CallTargetResolver<'a> {
         let ancestors = collect_reachable_bfs(
             [class_name.to_string()],
             [class_name.to_string()],
-            |current| match self.load_class_parents(file_id, current) {
+            |current| match self.load_super_classes(file_id, current) {
                 Ok(parents) => parents,
                 Err(err) => {
                     if error.is_none() {

@@ -1,3 +1,4 @@
+mod schema;
 mod snapshot;
 mod store;
 mod sync;

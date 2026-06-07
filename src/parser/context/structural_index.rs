@@ -7,7 +7,7 @@ use crate::models::{ClassInfo, FieldInfo, FunctionInfo};
 use crate::parser::capture;
 
 use super::enclosing::{ClassRange, EnclosingIntervalIndex, FunctionRange};
-use super::symbols::{class_kind, class_methods};
+use super::class_info::{class_kind, class_methods};
 use super::ParseContext;
 
 #[derive(Clone, Default)]

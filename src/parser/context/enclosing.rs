@@ -1,7 +1,7 @@
 use tree_sitter::Node;
 
 use super::caches::CachedEnclosingNames;
-use super::symbols::class_name;
+use super::class_info::class_name;
 use super::ParseContext;
 
 pub(crate) struct EnclosingContext<'a> {

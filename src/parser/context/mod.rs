@@ -9,6 +9,7 @@ use crate::languages::{detect_language, LanguageInfo, QueryKind};
 use crate::models::Location;
 
 mod caches;
+mod class_info;
 mod enclosing;
 mod structural_index;
 mod symbols;
@@ -16,8 +17,8 @@ mod symbols;
 use caches::{NodeId, ParseCaches};
 
 pub(crate) use caches::{PythonPropertyCallers, PythonPropertyDefinitions, PythonPropertyIndexes};
+pub(crate) use class_info::collect_class_fields;
 pub(crate) use enclosing::EnclosingContext;
-pub(crate) use symbols::collect_class_fields;
 
 pub(crate) struct ParseInput {
     pub(crate) file_path: PathBuf,

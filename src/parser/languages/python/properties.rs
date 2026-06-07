@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 
 use tree_sitter::Node;
 
-use super::AttributeParts;
+use super::attribute::AttributeParts;
 use crate::models::{Location, PythonPropertyCallerInfo, PythonPropertyInfo};
 use crate::parser::call_targets::{
     matches_property_target as call_matches_property_target, type_matches_class,

@@ -10,7 +10,7 @@ use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Transact
 
 use super::types::{IndexedFileMetadata, IndexedFileRow};
 use crate::languages::supported_language_names;
-use crate::utils::collect_files;
+use crate::utils::collect_languages;
 
 pub(crate) struct IndexStore {
     conn: Connection,
@@ -31,12 +31,14 @@ impl IndexStore {
         &self,
         root_path: &str,
         language: Option<&str>,
+        precomputed_languages: Option<&BTreeSet<String>>,
     ) -> anyhow::Result<bool> {
         if !self.matches_root_path(root_path)? {
             return Ok(false);
         }
         let indexed_languages = self.indexed_languages()?;
-        let required_languages = Self::required_languages(root_path, language);
+        let required_languages =
+            Self::required_languages(root_path, language, precomputed_languages);
         Ok(required_languages.is_subset(&indexed_languages))
     }
 
@@ -48,15 +50,18 @@ impl IndexStore {
         &self,
         root_path: &str,
         language: Option<&str>,
+        precomputed_languages: Option<&BTreeSet<String>>,
     ) -> anyhow::Result<Vec<String>> {
         if !self.matches_root_path(root_path)? {
-            return Ok(Self::required_languages(root_path, language)
-                .into_iter()
-                .collect());
+            return Ok(
+                Self::required_languages(root_path, language, precomputed_languages)
+                    .into_iter()
+                    .collect(),
+            );
         }
 
         let indexed_languages = self.indexed_languages()?;
-        let mut missing = Self::required_languages(root_path, language)
+        let mut missing = Self::required_languages(root_path, language, precomputed_languages)
             .difference(&indexed_languages)
             .cloned()
             .collect::<Vec<_>>();
@@ -100,6 +105,13 @@ impl IndexStore {
 
     pub(crate) fn open_connection(path: &Path) -> anyhow::Result<Connection> {
         let conn = Connection::open(path)?;
+        conn.execute_batch(
+            "
+            PRAGMA cache_size = -65536;
+            PRAGMA mmap_size = 268435456;
+            PRAGMA temp_store = MEMORY;
+            ",
+        )?;
         Self::register_regexp_function(&conn)?;
         Ok(conn)
     }
@@ -308,6 +320,17 @@ impl IndexStore {
         Ok(())
     }
 
+    pub(crate) fn read_metadata_value(
+        conn: &Connection,
+        key: &str,
+    ) -> anyhow::Result<Option<String>> {
+        conn.query_row("SELECT value FROM metadata WHERE key = ?1", [key], |row| {
+            row.get(0)
+        })
+        .optional()
+        .map_err(Into::into)
+    }
+
     pub(crate) fn read_metadata(tx: &Transaction<'_>) -> anyhow::Result<HashMap<String, String>> {
         let mut stmt = tx.prepare("SELECT key, value FROM metadata")?;
         let rows = stmt.query_map([], |row| {
@@ -376,10 +399,17 @@ impl IndexStore {
             .collect()
     }
 
-    fn required_languages(root_path: &str, language: Option<&str>) -> BTreeSet<String> {
+    fn required_languages(
+        root_path: &str,
+        language: Option<&str>,
+        precomputed_languages: Option<&BTreeSet<String>>,
+    ) -> BTreeSet<String> {
         match language {
             Some(language) => std::iter::once(language.to_string()).collect(),
-            None => collect_files(root_path, None).languages,
+            None => match precomputed_languages {
+                Some(languages) => languages.clone(),
+                None => collect_languages(root_path),
+            },
         }
     }
 }

@@ -17,7 +17,6 @@ pub(crate) fn collect_class_fields(
     let mut stack = vec![class_node];
 
     while let Some(node) = stack.pop() {
-        // Field collection also treats a bare JS `class` expression as a boundary.
         if node.id() != class_node.id()
             && (is_nested_class_boundary(node.kind()) || node.kind() == "class")
         {
@@ -203,8 +202,6 @@ fn is_nested_class_boundary(kind: &str) -> bool {
     )
 }
 
-/// Pushes `node`'s children onto `stack` in reverse so a stack-based DFS pops
-/// them left-to-right. Set `named` to skip anonymous nodes.
 pub(super) fn push_children_reversed<'a>(stack: &mut Vec<Node<'a>>, node: Node<'a>, named: bool) {
     let mut cursor = node.walk();
     let children: Vec<_> = if named {

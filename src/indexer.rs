@@ -12,7 +12,11 @@ use crate::languages::{detect_language, supported_language_names};
 use crate::models::IndexInfo;
 use crate::utils::{collect_files, progress_bar, resolve_path};
 
-pub(crate) fn ensure_index(path: &str, language: Option<&str>) -> anyhow::Result<()> {
+pub(crate) fn ensure_index(
+    path: &str,
+    language: Option<&str>,
+    precomputed_languages: Option<&BTreeSet<String>>,
+) -> anyhow::Result<()> {
     let db_path = db_path_in_current_dir()?;
     if !db_path.exists() {
         build_index(path, language)?;
@@ -20,7 +24,7 @@ pub(crate) fn ensure_index(path: &str, language: Option<&str>) -> anyhow::Result
     }
 
     let missing_languages = if let Ok(store) = IndexStore::open(&db_path) {
-        store.missing_languages(path, language)?
+        store.missing_languages(path, language, precomputed_languages)?
     } else {
         build_index(path, language)?;
         return Ok(());

@@ -7,7 +7,7 @@ use crate::hydrator::{hydrate_function_bodies, hydrate_ref_contexts};
 use crate::indexer::{build_index, ensure_index};
 use crate::models::GraphDirection;
 use crate::output::{self, FunctionView};
-use crate::utils::{error_response, resolve_path, success_response};
+use crate::utils::{collect_languages, error_response, resolve_path, success_response};
 
 struct CommandContext {
     resolved_path: String,
@@ -17,8 +17,10 @@ struct CommandContext {
 impl CommandContext {
     fn load(path: &str, language: Option<&str>) -> anyhow::Result<Self> {
         let resolved_path = resolve_path(path);
-        ensure_index(&resolved_path, language)?;
-        let analyzer = CodeAnalyzer::from_current_dir(&resolved_path, language)?;
+        let on_disk_languages = (language.is_none()).then(|| collect_languages(&resolved_path));
+        ensure_index(&resolved_path, language, on_disk_languages.as_ref())?;
+        let analyzer =
+            CodeAnalyzer::from_current_dir(&resolved_path, language, on_disk_languages.as_ref())?;
         Ok(Self {
             resolved_path,
             analyzer,

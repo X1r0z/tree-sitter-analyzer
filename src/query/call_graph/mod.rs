@@ -21,6 +21,15 @@ struct GraphNeighbor {
     call_site: CallSite,
 }
 
+impl GraphNeighbor {
+    fn edge_key(&self) -> GraphEdgeKey {
+        GraphEdgeKey {
+            node: self.node.key(),
+            call_site: self.call_site.clone(),
+        }
+    }
+}
+
 #[derive(Clone, Eq, Hash, PartialEq)]
 struct GraphEdgeKey {
     node: FunctionKey,

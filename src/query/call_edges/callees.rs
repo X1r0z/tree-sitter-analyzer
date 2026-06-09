@@ -7,15 +7,159 @@ use rusqlite::params_from_iter;
 use super::super::call_resolver::CallTargetResolver;
 use super::{CalleeRow, CallEdgeQuery, EnclosingFunctionCaches};
 use crate::models::{CalleeInfo, Location};
-use crate::utils::sort_callees_by_file_line;
 
 impl CallEdgeQuery<'_> {
-    #[allow(clippy::too_many_lines)]
     pub(crate) fn find_callees(
         &self,
         function_name: &str,
         class_name: Option<&str>,
     ) -> anyhow::Result<Vec<CalleeInfo>> {
+        let mut callees = self.collect_callees(function_name, class_name)?;
+        callees.append(&mut self.collect_property_callees(function_name, class_name)?);
+        let mut seen = HashSet::new();
+        callees.retain(|callee| {
+            seen.insert((
+                callee.location.file.clone(),
+                callee.callee.clone(),
+                callee.location.start_line,
+                callee.location.end_line,
+            ))
+        });
+        callees.sort_by(|left, right| {
+            left.location
+                .file
+                .cmp(&right.location.file)
+                .then(left.location.start_line.cmp(&right.location.start_line))
+                .then(left.callee.cmp(&right.callee))
+        });
+        Ok(callees)
+    }
+
+    fn collect_callees(
+        &self,
+        function_name: &str,
+        class_name: Option<&str>,
+    ) -> anyhow::Result<Vec<CalleeInfo>> {
+        let (sql, params) = self.build_callee_sql(function_name, class_name);
+        let mut stmt = self.ctx.conn.prepare(&sql)?;
+        let resolver = CallTargetResolver::new(self.ctx);
+        let mut field_type_cache = HashMap::new();
+        let mut param_type_cache = HashMap::new();
+        let mut node_cache = HashMap::new();
+        let mut resolution_cache = HashMap::new();
+        let mut enclosing_caches = EnclosingFunctionCaches {
+            candidates: &mut node_cache,
+            resolutions: &mut resolution_cache,
+        };
+        let rows: Vec<CalleeRow> = stmt
+            .query_map(params_from_iter(params.iter()), |row| {
+                Ok(CalleeRow {
+                    file_id: row.get(0)?,
+                    callee: row.get(2)?,
+                    object_name: row.get(3)?,
+                    caller_class_name: row.get(4)?,
+                    location: Location {
+                        file: row.get(1)?,
+                        start_line: row.get::<_, usize>(5)?,
+                        end_line: row.get::<_, usize>(6)?,
+                    },
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut callees = Vec::new();
+        for row in rows {
+            if row.object_name.as_deref() == Some("super()") {
+                if let Some(caller) = self.resolve_enclosing_function(
+                    row.file_id,
+                    &row.location.file,
+                    function_name,
+                    row.caller_class_name.as_deref(),
+                    row.location.start_line,
+                    &mut enclosing_caches,
+                )? {
+                    let candidates =
+                        self.load_functions_by_name(&row.callee, enclosing_caches.candidates)?;
+                    let resolved_targets = resolver.resolve_forward_targets(
+                        &caller,
+                        row.object_name.as_deref(),
+                        candidates.as_ref(),
+                        &mut field_type_cache,
+                        &mut param_type_cache,
+                    )?;
+                    if !resolved_targets.is_empty() {
+                        for candidate in resolved_targets {
+                            let callee = match candidate.function.class_name.as_deref() {
+                                Some(class_name) => {
+                                    format!("{}.{}", class_name, candidate.function.name)
+                                }
+                                None => candidate.function.name.clone(),
+                            };
+                            callees.push(CalleeInfo {
+                                callee,
+                                location: row.location.clone(),
+                            });
+                        }
+                        continue;
+                    }
+                }
+            }
+            let callee = match row.object_name {
+                Some(object_name) => format!("{}.{}", object_name, row.callee),
+                None => row.callee,
+            };
+            callees.push(CalleeInfo {
+                callee,
+                location: row.location,
+            });
+        }
+
+        Ok(callees)
+    }
+
+    fn collect_property_callees(
+        &self,
+        function_name: &str,
+        class_name: Option<&str>,
+    ) -> anyhow::Result<Vec<CalleeInfo>> {
+        let (property_sql, property_params) =
+            self.build_property_callee_sql(function_name, class_name);
+        let mut property_stmt = self.ctx.conn.prepare(&property_sql)?;
+        let property_rows =
+            property_stmt.query_map(params_from_iter(property_params.iter()), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, usize>(3)?,
+                    row.get::<_, usize>(4)?,
+                ))
+            })?;
+        let mut callees = Vec::new();
+        for row in property_rows {
+            let (file, property_name, object_name, start_line, end_line) = row?;
+            let callee = match object_name {
+                Some(object_name) => format!("{object_name}.{property_name}"),
+                None => property_name,
+            };
+            callees.push(CalleeInfo {
+                callee,
+                location: Location {
+                    file,
+                    start_line,
+                    end_line,
+                },
+            });
+        }
+
+        Ok(callees)
+    }
+
+    fn build_callee_sql(
+        &self,
+        function_name: &str,
+        class_name: Option<&str>,
+    ) -> (String, Vec<Value>) {
         let mut sql = String::from(
             "
             SELECT c.file_id, f.path, c.callee, c.object_name, c.caller_class_name, c.start_line, c.end_line
@@ -60,97 +204,14 @@ impl CallEdgeQuery<'_> {
             params.push(Value::from(language.to_string()));
         }
         sql.push_str(" ) ORDER BY f.path, c.start_line");
+        (sql, params)
+    }
 
-        let mut stmt = self.ctx.conn.prepare(&sql)?;
-        let resolver = CallTargetResolver::new(self.ctx);
-        let mut field_type_cache = HashMap::new();
-        let mut param_type_cache = HashMap::new();
-        let mut node_cache = HashMap::new();
-        let mut resolution_cache = HashMap::new();
-        let mut enclosing_caches = EnclosingFunctionCaches {
-            candidates: &mut node_cache,
-            resolutions: &mut resolution_cache,
-        };
-        let rows: Vec<CalleeRow> = stmt
-            .query_map(params_from_iter(params.iter()), |row| {
-                Ok(CalleeRow {
-                    file_id: row.get(0)?,
-                    callee: row.get(2)?,
-                    object_name: row.get(3)?,
-                    caller_class_name: row.get(4)?,
-                    location: Location {
-                        file: row.get(1)?,
-                        start_line: row.get::<_, usize>(5)?,
-                        end_line: row.get::<_, usize>(6)?,
-                    },
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let mut results = Vec::new();
-        let mut seen = HashSet::new();
-        for row in rows {
-            if row.object_name.as_deref() == Some("super()") {
-                if let Some(caller) = self.resolve_enclosing_function(
-                    row.file_id,
-                    &row.location.file,
-                    function_name,
-                    row.caller_class_name.as_deref(),
-                    row.location.start_line,
-                    &mut enclosing_caches,
-                )? {
-                    let candidates =
-                        self.load_functions_by_name(&row.callee, enclosing_caches.candidates)?;
-                    let resolved_targets = resolver.resolve_forward_targets(
-                        &caller,
-                        row.object_name.as_deref(),
-                        candidates.as_ref(),
-                        &mut field_type_cache,
-                        &mut param_type_cache,
-                    )?;
-                    if !resolved_targets.is_empty() {
-                        for candidate in resolved_targets {
-                            let callee = match candidate.function.class_name.as_deref() {
-                                Some(class_name) => {
-                                    format!("{}.{}", class_name, candidate.function.name)
-                                }
-                                None => candidate.function.name.clone(),
-                            };
-                            let key = (
-                                row.location.file.clone(),
-                                callee.clone(),
-                                row.location.start_line,
-                                row.location.end_line,
-                            );
-                            if seen.insert(key) {
-                                results.push(CalleeInfo {
-                                    callee,
-                                    location: row.location.clone(),
-                                });
-                            }
-                        }
-                        continue;
-                    }
-                }
-            }
-            let callee = match row.object_name {
-                Some(object_name) => format!("{}.{}", object_name, row.callee),
-                None => row.callee,
-            };
-            let key = (
-                row.location.file.clone(),
-                callee.clone(),
-                row.location.start_line,
-                row.location.end_line,
-            );
-            if seen.insert(key) {
-                results.push(CalleeInfo {
-                    callee,
-                    location: row.location,
-                });
-            }
-        }
-
+    fn build_property_callee_sql(
+        &self,
+        function_name: &str,
+        class_name: Option<&str>,
+    ) -> (String, Vec<Value>) {
         let mut property_sql = String::from(
             "
             SELECT f.path, ppc.property_name, ppc.object_name, ppc.start_line, ppc.end_line
@@ -213,37 +274,6 @@ impl CallEdgeQuery<'_> {
             ORDER BY f.path, ppc.start_line
             ",
         );
-
-        let mut property_stmt = self.ctx.conn.prepare(&property_sql)?;
-        let property_rows =
-            property_stmt.query_map(params_from_iter(property_params.iter()), |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, usize>(3)?,
-                    row.get::<_, usize>(4)?,
-                ))
-            })?;
-        for row in property_rows {
-            let (file, property_name, object_name, start_line, end_line) = row?;
-            let callee = match object_name {
-                Some(object_name) => format!("{object_name}.{property_name}"),
-                None => property_name,
-            };
-            let key = (file.clone(), callee.clone(), start_line, end_line);
-            if seen.insert(key) {
-                results.push(CalleeInfo {
-                    callee,
-                    location: Location {
-                        file,
-                        start_line,
-                        end_line,
-                    },
-                });
-            }
-        }
-        sort_callees_by_file_line(&mut results);
-        Ok(results)
+        (property_sql, property_params)
     }
 }

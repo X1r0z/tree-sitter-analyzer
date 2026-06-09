@@ -8,7 +8,6 @@ use indicatif::{ProgressBar, ProgressDrawTarget, ProgressState, ProgressStyle};
 use serde_json::{json, Value};
 
 use crate::languages::detect_language;
-use crate::models::{CalleeInfo, CallerInfo};
 
 #[derive(Debug, Default)]
 pub struct FileDiscovery {
@@ -179,26 +178,6 @@ pub fn progress_bar(total: usize, unit: &str, bar_style: &str, message: &str) ->
     progress.set_style(progress_style(unit, bar_style));
     progress.set_message(message.to_string());
     progress
-}
-
-pub fn sort_callers_by_file_line(results: &mut [CallerInfo]) {
-    results.sort_by(|left, right| {
-        left.location
-            .file
-            .cmp(&right.location.file)
-            .then(left.location.start_line.cmp(&right.location.start_line))
-            .then(left.caller.cmp(&right.caller))
-    });
-}
-
-pub fn sort_callees_by_file_line(results: &mut [CalleeInfo]) {
-    results.sort_by(|left, right| {
-        left.location
-            .file
-            .cmp(&right.location.file)
-            .then(left.location.start_line.cmp(&right.location.start_line))
-            .then(left.callee.cmp(&right.callee))
-    });
 }
 
 pub fn select_most_specific_by_line<C, Bounds>(

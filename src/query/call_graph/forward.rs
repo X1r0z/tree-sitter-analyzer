@@ -5,18 +5,16 @@ use rusqlite::params;
 use super::super::call_edges::{EnclosingFunctionCaches, IndexedFunction};
 use super::super::call_resolver::CallTargetResolver;
 use super::super::CallEdgeQuery;
-use super::{CallGraphQuery, CallSite, GraphEdgeKey, GraphNeighbor, GraphTraversalCaches};
+use super::{CallGraphQuery, CallSite, GraphNeighbor, GraphTraversalCaches};
 use crate::models::{FunctionInfo, Location};
 
 impl CallGraphQuery<'_> {
-    #[allow(clippy::too_many_lines)]
     pub(super) fn load_forward_neighbors(
         &self,
         node: &IndexedFunction,
         caches: &mut GraphTraversalCaches<'_>,
     ) -> anyhow::Result<Vec<GraphNeighbor>> {
         let edge_query = CallEdgeQuery::new(self.ctx);
-        let resolver = CallTargetResolver::new(self.ctx);
         let rows = self.load_forward_call_rows(node)?;
         let property_rows = self.load_forward_property_rows(node)?;
         let mut callee_names = BTreeSet::new();
@@ -28,8 +26,22 @@ impl CallGraphQuery<'_> {
         );
         edge_query.load_functions_by_names(&callee_names, caches.nodes)?;
 
+        let mut neighbors = self.collect_forward_calls(node, rows, caches)?;
+        neighbors.append(&mut self.collect_forward_properties(node, property_rows, caches)?);
         let mut seen = HashSet::new();
-        let mut results = Vec::new();
+        neighbors.retain(|neighbor| seen.insert(neighbor.edge_key()));
+        Ok(neighbors)
+    }
+
+    fn collect_forward_calls(
+        &self,
+        node: &IndexedFunction,
+        rows: Vec<(String, Option<String>, usize)>,
+        caches: &mut GraphTraversalCaches<'_>,
+    ) -> anyhow::Result<Vec<GraphNeighbor>> {
+        let edge_query = CallEdgeQuery::new(self.ctx);
+        let resolver = CallTargetResolver::new(self.ctx);
+        let mut neighbors = Vec::new();
         for (callee_name, object_name, line) in rows {
             let enclosing = edge_query.resolve_enclosing_function(
                 node.file_id,
@@ -75,25 +87,28 @@ impl CallGraphQuery<'_> {
                 });
             }
             for candidate in resolved_targets {
-                let key = GraphEdgeKey {
-                    node: candidate.key(),
+                neighbors.push(GraphNeighbor {
+                    node: candidate,
                     call_site: CallSite {
                         file: node.function.location.file.clone(),
                         line,
                     },
-                };
-                if seen.insert(key) {
-                    results.push(GraphNeighbor {
-                        node: candidate,
-                        call_site: CallSite {
-                            file: node.function.location.file.clone(),
-                            line,
-                        },
-                    });
-                }
+                });
             }
         }
 
+        Ok(neighbors)
+    }
+
+    fn collect_forward_properties(
+        &self,
+        node: &IndexedFunction,
+        property_rows: Vec<(String, Option<String>, usize)>,
+        caches: &mut GraphTraversalCaches<'_>,
+    ) -> anyhow::Result<Vec<GraphNeighbor>> {
+        let edge_query = CallEdgeQuery::new(self.ctx);
+        let resolver = CallTargetResolver::new(self.ctx);
+        let mut neighbors = Vec::new();
         for (property_name, object_name, line) in property_rows {
             let candidates = edge_query.load_functions_by_name(&property_name, caches.nodes)?;
             let mut matched = Vec::new();
@@ -151,26 +166,17 @@ impl CallGraphQuery<'_> {
             }
 
             for candidate in matched {
-                let key = GraphEdgeKey {
-                    node: candidate.key(),
+                neighbors.push(GraphNeighbor {
+                    node: candidate,
                     call_site: CallSite {
                         file: node.function.location.file.clone(),
                         line,
                     },
-                };
-                if seen.insert(key) {
-                    results.push(GraphNeighbor {
-                        node: candidate,
-                        call_site: CallSite {
-                            file: node.function.location.file.clone(),
-                            line,
-                        },
-                    });
-                }
+                });
             }
         }
 
-        Ok(results)
+        Ok(neighbors)
     }
 
     fn load_forward_call_rows(

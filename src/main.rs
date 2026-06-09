@@ -17,7 +17,7 @@ use std::process;
 use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::models::GraphDirection;
-use crate::utils::relativize_json_file_paths;
+use crate::utils::relativize_paths;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum LanguageFilter {
@@ -238,9 +238,8 @@ fn parse_positive_depth(value: &str) -> Result<usize, String> {
 }
 
 #[allow(clippy::too_many_lines)]
-fn run() -> i32 {
-    let cli = Cli::parse();
-    let mut result = match cli.command {
+fn dispatch(command: Commands) -> serde_json::Value {
+    match command {
         Commands::Index { path, language } => {
             commands::index(&path, language.map(LanguageFilter::as_str))
         }
@@ -353,14 +352,19 @@ fn run() -> i32 {
             language,
             class_name,
         } => commands::sub_classes(&path, language.map(LanguageFilter::as_str), &class_name),
-    };
+    }
+}
+
+fn run() -> i32 {
+    let cli = Cli::parse();
+    let mut result = dispatch(cli.command);
 
     if result.get("error").is_none() {
         let root_path = result["meta"]["root"]
             .as_str()
             .unwrap_or_default()
             .to_string();
-        relativize_json_file_paths(&mut result, &root_path);
+        relativize_paths(&mut result, &root_path);
     }
 
     println!(

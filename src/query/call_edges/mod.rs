@@ -6,7 +6,7 @@ use rusqlite::{params, params_from_iter, ToSql};
 
 use super::QueryContext;
 use crate::models::{FunctionInfo, FunctionKey, Location};
-use crate::utils::select_most_specific_by_line;
+use crate::utils::innermost_at_line;
 
 mod callees;
 mod callers;
@@ -220,7 +220,7 @@ impl<'a> CallEdgeQuery<'a> {
             .partition_point(|candidate| candidate.function.location.file.as_str() <= file);
         let file_candidates = &candidates[file_start..file_end];
 
-        let resolved = select_most_specific_by_line(file_candidates, line, |candidate| {
+        let resolved = innermost_at_line(file_candidates, line, |candidate| {
             (
                 candidate.function.location.start_line,
                 candidate.function.location.end_line,

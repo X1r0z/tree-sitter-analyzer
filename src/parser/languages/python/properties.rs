@@ -12,7 +12,7 @@ use crate::parser::{
     ParseContext, PythonPropertyCallers, PythonPropertyDefinitions, PythonPropertyIndexes,
 };
 use crate::traversal::collect_reachable_bfs;
-use crate::utils::select_most_specific_by_line;
+use crate::utils::innermost_at_line;
 
 type PythonPropertyCallerKey = (String, String, Option<String>, Option<String>, usize, usize);
 
@@ -465,7 +465,7 @@ impl<'a> PythonPropertyAnalyzer<'a> {
         }
 
         let caller_params =
-            select_most_specific_by_line(functions, caller.location.start_line, |function| {
+            innermost_at_line(functions, caller.location.start_line, |function| {
                 (function.location.start_line, function.location.end_line)
             })
             .filter(|function| {

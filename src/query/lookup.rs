@@ -327,7 +327,7 @@ impl<'a> LookupQuery<'a> {
             let sql = format!(
                 "SELECT class_id, method_name FROM class_methods WHERE class_id IN ({placeholders}) ORDER BY class_id, method_name"
             );
-            let mut stmt = self.ctx.conn.prepare(&sql)?;
+            let mut stmt = self.ctx.conn.prepare_cached(&sql)?;
             let rows = stmt.query_map(params_from_iter(chunk.iter()), |row| {
                 Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
             })?;
@@ -354,7 +354,7 @@ impl<'a> LookupQuery<'a> {
             let sql = format!(
                 "SELECT function_id, name, param_type FROM function_params WHERE function_id IN ({placeholders}) ORDER BY function_id, position"
             );
-            let mut stmt = self.ctx.conn.prepare(&sql)?;
+            let mut stmt = self.ctx.conn.prepare_cached(&sql)?;
             let rows = stmt.query_map(params_from_iter(chunk.iter()), |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
@@ -387,7 +387,7 @@ impl<'a> LookupQuery<'a> {
             let sql = format!(
                 "SELECT class_id, super_class_name FROM class_super_classes WHERE class_id IN ({placeholders}) ORDER BY class_id, super_class_name"
             );
-            let mut stmt = self.ctx.conn.prepare(&sql)?;
+            let mut stmt = self.ctx.conn.prepare_cached(&sql)?;
             let rows = stmt.query_map(params_from_iter(chunk.iter()), |row| {
                 Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
             })?;
@@ -435,7 +435,7 @@ impl<'a> LookupQuery<'a> {
                 bind_values.push(class_name);
             }
 
-            let mut stmt = self.ctx.conn.prepare(&sql)?;
+            let mut stmt = self.ctx.conn.prepare_cached(&sql)?;
             let rows = stmt.query_map(params_from_iter(bind_values), |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
@@ -471,7 +471,7 @@ impl<'a> LookupQuery<'a> {
                 ORDER BY f.path, c.start_line
                 "
             );
-            let mut stmt = self.ctx.conn.prepare(&sql)?;
+            let mut stmt = self.ctx.conn.prepare_cached(&sql)?;
             let rows = stmt.query_map(params_from_iter(chunk.iter()), |row| {
                 Ok(ClassRow {
                     class_id: row.get(0)?,

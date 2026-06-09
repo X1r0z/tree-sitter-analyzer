@@ -203,14 +203,16 @@ impl<'a> CallTargetResolver<'a> {
                 })
                 .cloned()
                 .collect();
-            resolved.sort_by_key(|candidate| {
-                (
-                    candidate.function.location.file.clone(),
-                    candidate.function.location.start_line,
-                    candidate.function.location.end_line,
-                    candidate.function.class_name.clone(),
-                    candidate.function.name.clone(),
-                )
+            resolved.sort_unstable_by(|left, right| {
+                let left = &left.function;
+                let right = &right.function;
+                left.location
+                    .file
+                    .cmp(&right.location.file)
+                    .then(left.location.start_line.cmp(&right.location.start_line))
+                    .then(left.location.end_line.cmp(&right.location.end_line))
+                    .then(left.class_name.cmp(&right.class_name))
+                    .then(left.name.cmp(&right.name))
             });
             resolved.dedup_by(|left, right| left.key() == right.key());
             return Ok(resolved);
@@ -285,7 +287,7 @@ impl<'a> CallTargetResolver<'a> {
             params.push(language);
         }
 
-        let mut stmt = self.ctx.conn.prepare(&sql)?;
+        let mut stmt = self.ctx.conn.prepare_cached(&sql)?;
         let classes = stmt
             .query_map(rusqlite::params_from_iter(params), |row| {
                 row.get::<_, String>(0)
@@ -310,7 +312,7 @@ impl<'a> CallTargetResolver<'a> {
             return Ok(Arc::clone(cached));
         }
 
-        let mut stmt = self.ctx.conn.prepare(
+        let mut stmt = self.ctx.conn.prepare_cached(
             "
             SELECT name, field_type
             FROM fields
@@ -339,7 +341,7 @@ impl<'a> CallTargetResolver<'a> {
             return Ok(Arc::clone(cached));
         }
 
-        let mut stmt = self.ctx.conn.prepare(
+        let mut stmt = self.ctx.conn.prepare_cached(
             "
             SELECT name, param_type
             FROM function_params
@@ -361,7 +363,7 @@ impl<'a> CallTargetResolver<'a> {
     }
 
     fn load_super_classes(&self, file_id: i64, class_name: &str) -> anyhow::Result<Vec<String>> {
-        let mut stmt = self.ctx.conn.prepare(
+        let mut stmt = self.ctx.conn.prepare_cached(
             "
             SELECT rel.super_class_name
             FROM classes cls

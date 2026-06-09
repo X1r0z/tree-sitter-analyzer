@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use rusqlite::Connection;
 
 use crate::db::IndexStore;
@@ -16,11 +18,12 @@ impl CodeAnalyzer {
     pub(crate) fn from_current_dir(
         root_path: &str,
         language: Option<&str>,
+        precomputed_languages: Option<&BTreeSet<String>>,
     ) -> anyhow::Result<Self> {
         let db_path = std::env::current_dir()?.join("tsa.db");
         let store = IndexStore::open(&db_path)?;
         anyhow::ensure!(
-            store.is_compatible_with(root_path, language)?,
+            store.is_compatible_with(root_path, language, precomputed_languages)?,
             "Index at '{}' is incompatible with path/language",
             db_path.display()
         );

@@ -19,6 +19,14 @@ impl IndexSynchronizer {
     ) -> anyhow::Result<()> {
         let mut conn = IndexStore::open_connection(db_path)?;
         IndexStore::ensure_core_schema(&conn)?;
+
+        let same_root_hint = IndexStore::read_metadata_value(&conn, "indexed_root_path")?
+            .as_deref()
+            == Some(root_path);
+        if !same_root_hint {
+            conn.execute_batch("PRAGMA synchronous = OFF;")?;
+        }
+
         let tx = conn.transaction()?;
         let metadata = IndexStore::read_metadata(&tx)?;
         progress.inc(1);

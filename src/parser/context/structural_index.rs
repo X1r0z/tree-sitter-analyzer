@@ -6,8 +6,8 @@ use crate::languages::QueryKind;
 use crate::models::{ClassInfo, FieldInfo, FunctionInfo};
 use crate::parser::capture;
 
-use super::enclosing::{ClassRange, EnclosingIntervalIndex, FunctionRange};
 use super::class_info::{class_kind, class_methods};
+use super::enclosing::{ClassRange, EnclosingIntervalIndex, FunctionRange};
 use super::ParseContext;
 
 #[derive(Clone, Default)]
@@ -20,6 +20,7 @@ pub(crate) struct ClassSnapshotData {
 #[derive(Clone)]
 pub(super) struct StructuralIndexData {
     pub(super) functions_without_bodies: Vec<FunctionInfo>,
+    pub(super) function_byte_ranges: Vec<(usize, usize)>,
     pub(super) class_snapshot: ClassSnapshotData,
     pub(super) enclosing_interval_index: EnclosingIntervalIndex,
 }
@@ -38,15 +39,22 @@ struct ClassSnapshotEntry {
 
 impl ParseContext {
     pub(crate) fn collect_functions(&self, include_body: bool) -> Vec<FunctionInfo> {
-        if !include_body {
-            return self
-                .with_structural_index(|index| index.functions_without_bodies.clone())
-                .unwrap_or_default();
-        }
-        self.build_function_entries(true)
-            .into_iter()
-            .map(|entry| entry.function)
-            .collect()
+        self.with_structural_index(|index| {
+            if !include_body {
+                return index.functions_without_bodies.clone();
+            }
+            index
+                .functions_without_bodies
+                .iter()
+                .zip(index.function_byte_ranges.iter())
+                .map(|(function, &(start_byte, end_byte))| {
+                    let mut function = function.clone();
+                    function.body = self.source_slice(start_byte, end_byte);
+                    function
+                })
+                .collect()
+        })
+        .unwrap_or_default()
     }
 
     pub(crate) fn collect_classes(&self) -> Vec<ClassInfo> {
@@ -75,10 +83,14 @@ impl ParseContext {
         if self.caches.borrow().common.structural_index.is_some() {
             return;
         }
-        let function_entries = self.build_function_entries(false);
+        let function_entries = self.build_function_entries();
         let functions_without_bodies = function_entries
             .iter()
             .map(|entry| entry.function.clone())
+            .collect::<Vec<_>>();
+        let function_byte_ranges = function_entries
+            .iter()
+            .map(|entry| (entry.start_byte, entry.end_byte))
             .collect::<Vec<_>>();
 
         let methods_by_class = self.receiver_methods_by_class(&functions_without_bodies);
@@ -89,25 +101,19 @@ impl ParseContext {
 
         let structural_index = StructuralIndexData {
             functions_without_bodies,
+            function_byte_ranges,
             class_snapshot,
             enclosing_interval_index,
         };
         self.caches.borrow_mut().common.structural_index = Some(structural_index);
     }
 
-    /// Builds the structural index if needed, then runs `f` against it.
-    /// Returns `None` only when the index could not be built.
     fn with_structural_index<T>(&self, f: impl FnOnce(&StructuralIndexData) -> T) -> Option<T> {
         self.ensure_structural_index();
-        self.caches
-            .borrow()
-            .common
-            .structural_index
-            .as_ref()
-            .map(f)
+        self.caches.borrow().common.structural_index.as_ref().map(f)
     }
 
-    fn build_function_entries(&self, include_body: bool) -> Vec<FunctionSnapshotEntry> {
+    fn build_function_entries(&self) -> Vec<FunctionSnapshotEntry> {
         let mut func_pairs: Vec<(Node<'_>, Node<'_>)> =
             capture::collect_capture_pairs(self, QueryKind::Function, "function", "name");
         func_pairs.sort_by_key(|(f, _)| (f.start_byte(), std::cmp::Reverse(f.end_byte())));
@@ -139,11 +145,7 @@ impl ParseContext {
                 function: FunctionInfo {
                     name,
                     location: self.node_location(function_node),
-                    body: if include_body {
-                        self.node_text(function_node)
-                    } else {
-                        String::new()
-                    },
+                    body: String::new(),
                     class_name,
                     params: self.collect_function_params(function_node),
                 },
@@ -241,9 +243,10 @@ impl ParseContext {
         (class_entries, field_infos_by_class)
     }
 
-    /// Maps each Go type to its receiver-method names (sorted, deduped).
-    /// Non-Go languages get methods directly from the class body, so this is empty.
-    fn receiver_methods_by_class(&self, functions: &[FunctionInfo]) -> HashMap<String, Vec<String>> {
+    fn receiver_methods_by_class(
+        &self,
+        functions: &[FunctionInfo],
+    ) -> HashMap<String, Vec<String>> {
         let mut methods_by_class: HashMap<String, Vec<String>> = HashMap::new();
         if self.language() != "go" {
             return methods_by_class;
@@ -264,9 +267,6 @@ impl ParseContext {
     }
 }
 
-/// Records `field_infos` as the chosen fields for `name`, keeping whichever
-/// declaration is smaller (and earlier on ties) so the tightest enclosing
-/// class wins when a name is declared more than once.
 fn record_class_fields(
     chosen: &mut HashMap<String, (usize, usize, Vec<FieldInfo>)>,
     name: &str,

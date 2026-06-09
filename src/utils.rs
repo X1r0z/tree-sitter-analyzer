@@ -58,6 +58,31 @@ pub fn collect_files(path: &str, language: Option<&str>) -> FileDiscovery {
     }
 }
 
+pub fn collect_languages(path: &str) -> BTreeSet<String> {
+    let languages = Mutex::new(BTreeSet::<String>::new());
+    let walker = ignore::WalkBuilder::new(path)
+        .hidden(false)
+        .require_git(false)
+        .build_parallel();
+
+    walker.run(|| {
+        let mut local = ThreadLocalLanguageCollector::new(&languages);
+        Box::new(move |entry| {
+            if let Ok(entry) = entry {
+                let p = entry.path();
+                if p.is_file() {
+                    if let Some(detected_language) = detect_language(p) {
+                        local.languages.insert(detected_language.name.to_string());
+                    }
+                }
+            }
+            WalkState::Continue
+        })
+    });
+
+    languages.into_inner().unwrap_or_default()
+}
+
 #[derive(Debug, Clone, Default, Eq, Hash, PartialEq)]
 struct FileIdentity {
     #[cfg(unix)]
@@ -107,6 +132,28 @@ impl Drop for ThreadLocalFileCollector<'_> {
         if let Ok(mut shared) = self.shared.lock() {
             shared.files.append(&mut self.local.files);
             shared.languages.append(&mut self.local.languages);
+        }
+    }
+}
+
+struct ThreadLocalLanguageCollector<'a> {
+    shared: &'a Mutex<BTreeSet<String>>,
+    languages: BTreeSet<String>,
+}
+
+impl<'a> ThreadLocalLanguageCollector<'a> {
+    fn new(shared: &'a Mutex<BTreeSet<String>>) -> Self {
+        Self {
+            shared,
+            languages: BTreeSet::new(),
+        }
+    }
+}
+
+impl Drop for ThreadLocalLanguageCollector<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut shared) = self.shared.lock() {
+            shared.append(&mut self.languages);
         }
     }
 }
@@ -250,11 +297,7 @@ pub fn error_response(error: impl std::fmt::Display) -> Value {
     json!({ "error": error.to_string() })
 }
 
-pub fn innermost_at_line<C, Bounds>(
-    candidates: &[C],
-    line: usize,
-    bounds: Bounds,
-) -> Option<&C>
+pub fn innermost_at_line<C, Bounds>(candidates: &[C], line: usize, bounds: Bounds) -> Option<&C>
 where
     Bounds: Fn(&C) -> (usize, usize),
 {

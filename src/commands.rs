@@ -175,7 +175,7 @@ pub(crate) fn graph(
     };
     let graphs = match context
         .analyzer
-        .find_graphs(function_name, class_name, direction, max_depth)
+        .find_paths(function_name, class_name, direction, max_depth)
     {
         Ok(graphs) => graphs,
         Err(error) => return error_response(error),

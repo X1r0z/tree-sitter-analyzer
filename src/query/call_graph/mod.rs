@@ -4,7 +4,7 @@ use super::call_edges::IndexedFunction;
 use super::call_resolver::{AncestorsByFileClass, FieldTypeCache, ParamTypeCache};
 use super::{CallEdgeQuery, QueryContext};
 use crate::models::{CallGraphPath, FunctionKey, GraphDirection, GraphPathNode};
-use crate::traversal::{collect_paths_dfs, TraversalPathStep};
+use crate::traversal::{collect_paths, TraversalPathStep};
 
 mod backward;
 mod forward;
@@ -66,7 +66,7 @@ impl<'a> CallGraphQuery<'a> {
         Self { ctx }
     }
 
-    pub(crate) fn find_graphs(
+    pub(crate) fn find_paths(
         &self,
         function_name: &str,
         class_name: Option<&str>,
@@ -99,7 +99,7 @@ impl<'a> CallGraphQuery<'a> {
             properties: &mut state.properties,
         };
 
-        let mut results = collect_paths_dfs(
+        let mut results = collect_paths(
             &start_nodes,
             direction,
             max_depth,
@@ -110,7 +110,7 @@ impl<'a> CallGraphQuery<'a> {
                     cached.clone()
                 } else {
                     let loaded =
-                        self.load_graph_neighbors(current, direction, &mut traversal_caches)?;
+                        self.load_neighbors(current, direction, &mut traversal_caches)?;
                     neighbors.insert(cache_key, loaded.clone());
                     loaded
                 };
@@ -128,7 +128,7 @@ impl<'a> CallGraphQuery<'a> {
                     .map(|step| (step.node.key(), step.edge.clone()))
                     .collect::<Vec<_>>()
             },
-            Self::build_graph,
+            Self::build,
         )?;
 
         results.sort_by(|left, right| {
@@ -140,7 +140,7 @@ impl<'a> CallGraphQuery<'a> {
         Ok(results)
     }
 
-    fn build_graph(
+    fn build(
         direction: GraphDirection,
         steps: &[TraversalPathStep<IndexedFunction, CallSite>],
     ) -> CallGraphPath {
@@ -167,7 +167,7 @@ impl<'a> CallGraphQuery<'a> {
         }
     }
 
-    fn load_graph_neighbors(
+    fn load_neighbors(
         &self,
         node: &IndexedFunction,
         direction: GraphDirection,

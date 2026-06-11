@@ -20,7 +20,7 @@ impl IndexSynchronizer {
         let mut conn = IndexStore::open_connection(db_path)?;
         IndexStore::ensure_core_schema(&conn)?;
 
-        let same_root_hint = IndexStore::read_metadata_value(&conn, "indexed_root_path")?
+        let same_root_hint = IndexStore::metadata_value(&conn, "indexed_root_path")?
             .as_deref()
             == Some(root_path);
         if !same_root_hint {
@@ -35,8 +35,8 @@ impl IndexSynchronizer {
         let scope_languages = scope_languages(language);
 
         let deleted_files = if same_root {
-            IndexStore::refresh_temp_current_files(&tx, &plan.current_files)?;
-            IndexStore::count_stale_indexed_files(&tx, &scope_languages)?
+            IndexStore::refresh_current_files(&tx, &plan.current_files)?;
+            IndexStore::count_stale_files(&tx, &scope_languages)?
         } else {
             0
         };
@@ -55,26 +55,10 @@ impl IndexSynchronizer {
         }
 
         let indexed_languages = if same_root {
-            let mut languages = metadata
-                .get("indexed_languages")
-                .map(std::string::String::as_str)
-                .map_or_else(
-                    || {
-                        let language_filter = metadata
-                            .get("language_filter")
-                            .map(String::as_str)
-                            .unwrap_or_default();
-                        if language_filter.is_empty() {
-                            crate::languages::supported_language_names()
-                                .into_iter()
-                                .map(str::to_string)
-                                .collect()
-                        } else {
-                            std::iter::once(language_filter.to_string()).collect()
-                        }
-                    },
-                    parse_language_set,
-                );
+            let mut languages = IndexStore::languages_from_metadata(
+                metadata.get("indexed_languages").map(String::as_str),
+                metadata.get("language_filter").map(String::as_str),
+            );
             languages.extend(scope_languages.iter().cloned());
             languages
         } else {
@@ -91,7 +75,7 @@ impl IndexSynchronizer {
         IndexStore::upsert_metadata(
             &tx,
             "language_filter",
-            &IndexStore::legacy_language_filter_value(&indexed_languages),
+            &IndexStore::legacy_language_filter(&indexed_languages),
         )?;
         progress.inc(1);
         IndexStore::upsert_metadata(&tx, "updated_at", &IndexStore::current_timestamp()?)?;
@@ -102,7 +86,7 @@ impl IndexSynchronizer {
         } else {
             let mut writer = SnapshotWriter::without_fts(&tx)?;
             for snapshot in &plan.changed_snapshots {
-                writer.insert_snapshot(snapshot)?;
+                writer.insert(snapshot)?;
                 progress.inc(1);
             }
         }
@@ -120,7 +104,7 @@ impl IndexSynchronizer {
         scope_languages: &[String],
         progress: &ProgressBar,
     ) -> anyhow::Result<()> {
-        let stale_file_ids = IndexStore::stale_indexed_file_ids(tx, scope_languages)?;
+        let stale_file_ids = IndexStore::stale_file_ids(tx, scope_languages)?;
         if !stale_file_ids.is_empty() {
             Self::delete_files_by_ids(tx, &stale_file_ids)?;
             for _ in &stale_file_ids {
@@ -132,15 +116,11 @@ impl IndexSynchronizer {
             .iter()
             .map(|snapshot| snapshot.metadata.path.clone())
             .collect();
-        let existing = IndexStore::indexed_file_rows_by_path(tx, &changed_paths)?;
+        let existing = IndexStore::file_rows_by_path(tx, &changed_paths)?;
         let mut replaced_file_ids = Vec::new();
         for snapshot in changed_snapshots {
             if let Some(record) = existing.get(snapshot.metadata.path.as_str()) {
-                let unchanged = record.language == snapshot.metadata.language
-                    && record.mtime_nanos == snapshot.metadata.mtime_nanos
-                    && record.size_bytes == snapshot.metadata.size_bytes
-                    && record.content_hash == snapshot.metadata.content_hash;
-                if !unchanged {
+                if record.metadata != snapshot.metadata {
                     replaced_file_ids.push(record.id);
                 }
             }
@@ -149,16 +129,12 @@ impl IndexSynchronizer {
             Self::delete_files_by_ids(tx, &replaced_file_ids)?;
         }
 
-        let mut writer = SnapshotWriter::new(tx)?;
+        let mut writer = SnapshotWriter::with_fts(tx)?;
         for snapshot in changed_snapshots {
             match existing.get(snapshot.metadata.path.as_str()) {
-                Some(record)
-                    if record.language == snapshot.metadata.language
-                        && record.mtime_nanos == snapshot.metadata.mtime_nanos
-                        && record.size_bytes == snapshot.metadata.size_bytes
-                        && record.content_hash == snapshot.metadata.content_hash => {}
+                Some(record) if record.metadata == snapshot.metadata => {}
                 Some(_) | None => {
-                    writer.insert_snapshot(snapshot)?;
+                    writer.insert(snapshot)?;
                 }
             }
             progress.inc(1);
@@ -196,11 +172,7 @@ impl IndexSynchronizer {
     }
 }
 
-pub(crate) fn db_path_in_current_dir() -> anyhow::Result<std::path::PathBuf> {
-    Ok(std::env::current_dir()?.join("tsa.db"))
-}
-
-pub(crate) fn file_record_from_metadata(
+pub(crate) fn indexed_file_metadata_from_fs(
     path: &str,
     language: &str,
     metadata: &std::fs::Metadata,
@@ -229,13 +201,4 @@ fn scope_languages(language: Option<&str>) -> Vec<String> {
             .map(str::to_string)
             .collect(),
     }
-}
-
-fn parse_language_set(value: &str) -> std::collections::BTreeSet<String> {
-    value
-        .split(',')
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .collect()
 }

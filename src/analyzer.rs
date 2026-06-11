@@ -77,14 +77,14 @@ impl CodeAnalyzer {
         CallEdgeQuery::new(self.query_context()).find_callees(function_name, class_name)
     }
 
-    pub(crate) fn find_graphs(
+    pub(crate) fn find_paths(
         &self,
         function_name: &str,
         class_name: Option<&str>,
         direction: GraphDirection,
         max_depth: usize,
     ) -> anyhow::Result<Vec<CallGraphPath>> {
-        CallGraphQuery::new(self.query_context()).find_graphs(
+        CallGraphQuery::new(self.query_context()).find_paths(
             function_name,
             class_name,
             direction,

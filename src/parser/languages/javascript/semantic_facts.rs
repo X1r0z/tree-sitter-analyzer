@@ -367,7 +367,7 @@ impl<'a> JsSemanticFactsBuilder<'a> {
                                     context.class_name.clone(),
                                     &type_index,
                                 )
-                                .resolve_expression_targets(argument);
+                                .resolve(argument);
                                 targets.sort_unstable();
                                 targets.dedup();
                                 if targets.len() == 1 {

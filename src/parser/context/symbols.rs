@@ -32,7 +32,7 @@ impl ParseContext {
     }
 
     pub(crate) fn collect_calls(&self) -> Vec<CallInfo> {
-        let mut matches = capture::collect_call_capture_matches(self);
+        let mut matches = capture::collect_call_matches(self);
         matches.sort_by_key(|matched| {
             (
                 matched.call.start_byte(),
@@ -132,7 +132,7 @@ impl ParseContext {
     }
 
     pub(crate) fn collect_imports(&self) -> Vec<ImportInfo> {
-        capture::collect_import_capture_matches(self, QueryKind::Import)
+        capture::collect_import_matches(self, QueryKind::Import)
             .into_iter()
             .map(|import_match| ImportInfo {
                 module: self.node_text_unquoted(import_match.module).into_owned(),

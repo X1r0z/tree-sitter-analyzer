@@ -79,7 +79,7 @@ pub(crate) fn collect_capture_pairs<'a>(
     pairs
 }
 
-pub(crate) fn collect_call_capture_matches(context: &ParseContext) -> Vec<CallCaptureMatch<'_>> {
+pub(crate) fn collect_call_matches(context: &ParseContext) -> Vec<CallCaptureMatch<'_>> {
     let query = context.query(QueryKind::Call);
     let Some(indices) = CallCaptureIndices::for_query(query) else {
         return Vec::new();
@@ -89,14 +89,43 @@ pub(crate) fn collect_call_capture_matches(context: &ParseContext) -> Vec<CallCa
     let mut capture_matches = cursor.matches(query, context.tree().root_node(), context.source());
     let mut out = Vec::new();
     while let Some(capture_match) = capture_matches.next() {
-        if let Some(matched) = decode_call_capture_match(capture_match, indices) {
+        if let Some(matched) = decode_call_match(capture_match, indices) {
             out.push(matched);
         }
     }
     out
 }
 
-pub(crate) fn collect_import_capture_matches(
+pub(crate) fn decode_call_match<'a>(
+    capture_match: &QueryMatch<'_, 'a>,
+    indices: CallCaptureIndices,
+) -> Option<CallCaptureMatch<'a>> {
+    let mut call = None;
+    let mut callee = None;
+    let mut method = None;
+    let mut object = None;
+
+    for capture in capture_match.captures {
+        if capture.index == indices.call {
+            call = Some(capture.node);
+        } else if indices.callee == Some(capture.index) {
+            callee = Some(capture.node);
+        } else if indices.method == Some(capture.index) {
+            method = Some(capture.node);
+        } else if indices.object == Some(capture.index) {
+            object = Some(capture.node);
+        }
+    }
+
+    Some(CallCaptureMatch {
+        call: call?,
+        callee,
+        method,
+        object,
+    })
+}
+
+pub(crate) fn collect_import_matches(
     context: &ParseContext,
     kind: QueryKind,
 ) -> Vec<ImportCaptureMatch<'_>> {
@@ -132,33 +161,4 @@ pub(crate) fn collect_import_capture_matches(
         }
     }
     out
-}
-
-pub(crate) fn decode_call_capture_match<'a>(
-    capture_match: &QueryMatch<'_, 'a>,
-    indices: CallCaptureIndices,
-) -> Option<CallCaptureMatch<'a>> {
-    let mut call = None;
-    let mut callee = None;
-    let mut method = None;
-    let mut object = None;
-
-    for capture in capture_match.captures {
-        if capture.index == indices.call {
-            call = Some(capture.node);
-        } else if indices.callee == Some(capture.index) {
-            callee = Some(capture.node);
-        } else if indices.method == Some(capture.index) {
-            method = Some(capture.node);
-        } else if indices.object == Some(capture.index) {
-            object = Some(capture.node);
-        }
-    }
-
-    Some(CallCaptureMatch {
-        call: call?,
-        callee,
-        method,
-        object,
-    })
 }

@@ -4,13 +4,13 @@ use std::path::Path;
 use rayon::prelude::*;
 
 use crate::db::{
-    db_path_in_current_dir, file_record_from_metadata, IndexStore, IndexSyncPlan,
-    IndexSynchronizer, IndexedFileMetadata, IndexedFileSnapshot,
+    indexed_file_metadata_from_fs, IndexStore, IndexSyncPlan, IndexSynchronizer,
+    IndexedFileMetadata, IndexedFileSnapshot,
 };
 use crate::extractor::CodeExtractor;
 use crate::languages::{detect_language, supported_language_names};
 use crate::models::IndexInfo;
-use crate::utils::{collect_files, progress_bar, resolve_path};
+use crate::utils::{collect_files, db_path_in_current_dir, progress_bar, resolve_path};
 
 pub(crate) fn ensure_index(
     path: &str,
@@ -59,7 +59,7 @@ pub(crate) fn build_index(path: &str, language: Option<&str>) -> anyhow::Result<
         Ok(store) if store.matches_root_path(&resolved_path).unwrap_or(false) => (
             true,
             store
-                .indexed_file_metadata_by_path(&files)
+                .file_metadata_by_path(&files)
                 .unwrap_or_default(),
         ),
         Ok(_) | Err(_) => (false, HashMap::default()),
@@ -131,7 +131,7 @@ fn build_file_index(
         .name
         .to_string();
     let metadata = fs::metadata(file)?;
-    let record_without_hash = file_record_from_metadata(file, &language, &metadata)?;
+    let record_without_hash = indexed_file_metadata_from_fs(file, &language, &metadata)?;
     if let Some(record) = existing.filter(|record| {
         record.language == record_without_hash.language
             && record.mtime_nanos == record_without_hash.mtime_nanos
@@ -149,7 +149,7 @@ fn build_file_index(
         file_record.clone(),
         Some(IndexedFileSnapshot {
             metadata: file_record,
-            snapshot,
+            parsed: snapshot,
         }),
     ))
 }

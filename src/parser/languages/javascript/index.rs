@@ -23,7 +23,7 @@ pub(crate) struct JsReceiverIndex {
 }
 
 impl JsReceiverIndex {
-    pub(super) fn symbolic_targets_via_index(
+    pub(super) fn symbolic_targets(
         &self,
         ctx: &ParseContext,
         call_node: Node<'_>,
@@ -47,13 +47,13 @@ impl JsReceiverIndex {
                 .find_enclosing_context(call_node)
                 .class_name
                 .into_iter()
-                .flat_map(|class_name| self.field_chain_via_index(&class_name, chain))
+                .flat_map(|class_name| self.field_chain(&class_name, chain))
                 .collect();
         }
         Vec::new()
     }
 
-    fn field_chain_via_index(&self, root_class: &str, chain: &str) -> Vec<String> {
+    fn field_chain(&self, root_class: &str, chain: &str) -> Vec<String> {
         let mut current = vec![root_class.to_string()];
         for segment in chain.split('.') {
             if segment.is_empty() {

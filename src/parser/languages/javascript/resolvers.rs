@@ -164,11 +164,11 @@ impl JsReceiverResolver {
         }
 
         let mut class_targets =
-            Self::resolve_targets_for_identifier(ctx, function_node, call_node, &object_name);
+            Self::resolve_identifier_targets(ctx, function_node, call_node, &object_name);
         (class_targets.len() == 1).then(|| class_targets.swap_remove(0))
     }
 
-    fn resolve_targets_for_identifier(
+    fn resolve_identifier_targets(
         ctx: &ParseContext,
         function_node: Node<'_>,
         call_node: Node<'_>,
@@ -194,12 +194,12 @@ impl JsReceiverResolver {
 
         let index = receiver_index(ctx);
         if symbolic_targets.len() == 1 {
-            return index.symbolic_targets_via_index(ctx, call_node, &symbolic_targets[0]);
+            return index.symbolic_targets(ctx, call_node, &symbolic_targets[0]);
         }
 
         let mut resolved = symbolic_targets
             .into_iter()
-            .flat_map(|target| index.symbolic_targets_via_index(ctx, call_node, &target))
+            .flat_map(|target| index.symbolic_targets(ctx, call_node, &target))
             .collect::<Vec<_>>();
         resolved.sort_unstable();
         resolved.dedup();

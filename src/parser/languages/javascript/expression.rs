@@ -17,10 +17,6 @@ pub(super) struct ExpressionTargetResolver<'a> {
 }
 
 impl<'a> ExpressionTargetResolver<'a> {
-    fn type_helper(&self) -> JsTypeHelper<'a> {
-        JsTypeHelper::new(self.ctx)
-    }
-
     pub(super) fn new(
         ctx: &'a ParseContext,
         call_node: Node<'a>,
@@ -38,6 +34,17 @@ impl<'a> ExpressionTargetResolver<'a> {
         }
     }
 
+    pub(super) fn resolve(mut self, expression_node: Node<'a>) -> Vec<String> {
+        let mut targets = self.visit_expression(expression_node);
+        targets.sort_unstable();
+        targets.dedup();
+        targets
+    }
+
+    fn type_helper(&self) -> JsTypeHelper<'a> {
+        JsTypeHelper::new(self.ctx)
+    }
+
     fn visit_expression(&mut self, expression_node: Node<'a>) -> Vec<String> {
         let expr_text = self.ctx.node_text(expression_node);
         if expr_text.is_empty() || !self.seen.insert(expr_text.clone()) {
@@ -53,7 +60,7 @@ impl<'a> ExpressionTargetResolver<'a> {
                         .resolve_call_targets(function_node, self.call_node, &expr_text)
                         .into_iter()
                 })
-                .flat_map(|target| self.symbolic_targets_via_type_index(&target))
+                .flat_map(|target| self.symbolic_targets(&target))
                 .collect(),
             "new_expression" => expression_node
                 .child_by_field_name("constructor")
@@ -78,7 +85,7 @@ impl<'a> ExpressionTargetResolver<'a> {
                         .clone()
                         .into_iter()
                         .flat_map(|class_name| {
-                            self.field_class_targets(&class_name, &property_name)
+                            self.field_targets(&class_name, &property_name)
                         })
                         .collect();
                 }
@@ -86,7 +93,7 @@ impl<'a> ExpressionTargetResolver<'a> {
                 self.visit_expression(object_node)
                     .into_iter()
                     .flat_map(|class_name| {
-                        self.field_class_targets(&class_name, &property_name)
+                        self.field_targets(&class_name, &property_name)
                     })
                     .collect()
             }
@@ -101,14 +108,7 @@ impl<'a> ExpressionTargetResolver<'a> {
         }
     }
 
-    pub(super) fn resolve_expression_targets(mut self, expression_node: Node<'a>) -> Vec<String> {
-        let mut targets = self.visit_expression(expression_node);
-        targets.sort_unstable();
-        targets.dedup();
-        targets
-    }
-
-    fn symbolic_targets_via_type_index(&self, target: &str) -> Vec<String> {
+    fn symbolic_targets(&self, target: &str) -> Vec<String> {
         if target.is_empty() {
             return Vec::new();
         }
@@ -123,13 +123,13 @@ impl<'a> ExpressionTargetResolver<'a> {
                 .class_name
                 .clone()
                 .into_iter()
-                .flat_map(|class_name| self.field_chain_via_type_index(&class_name, chain))
+                .flat_map(|class_name| self.field_chain(&class_name, chain))
                 .collect();
         }
         Vec::new()
     }
 
-    fn field_chain_via_type_index(&self, root_class: &str, chain: &str) -> Vec<String> {
+    fn field_chain(&self, root_class: &str, chain: &str) -> Vec<String> {
         let mut current = vec![root_class.to_string()];
         for segment in chain.split('.') {
             if segment.is_empty() {
@@ -137,7 +137,7 @@ impl<'a> ExpressionTargetResolver<'a> {
             }
             let mut next = Vec::new();
             for class_name in &current {
-                next.extend(self.field_class_targets(class_name, segment));
+                next.extend(self.field_targets(class_name, segment));
             }
             next.sort_unstable();
             next.dedup();
@@ -149,7 +149,7 @@ impl<'a> ExpressionTargetResolver<'a> {
         current
     }
 
-    fn field_class_targets(&self, class_name: &str, field_name: &str) -> Vec<String> {
+    fn field_targets(&self, class_name: &str, field_name: &str) -> Vec<String> {
         let mut targets: Vec<String> = self
             .type_index
             .field_types_by_class

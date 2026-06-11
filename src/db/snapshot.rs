@@ -25,15 +25,38 @@ pub(crate) struct SnapshotWriter<'tx> {
 }
 
 impl<'tx> SnapshotWriter<'tx> {
-    pub(crate) fn new(tx: &'tx Transaction<'tx>) -> anyhow::Result<Self> {
-        Self::with_fts(tx, true)
+    pub(crate) fn with_fts(tx: &'tx Transaction<'tx>) -> anyhow::Result<Self> {
+        Self::build(tx, true)
     }
 
     pub(crate) fn without_fts(tx: &'tx Transaction<'tx>) -> anyhow::Result<Self> {
-        Self::with_fts(tx, false)
+        Self::build(tx, false)
     }
 
-    fn with_fts(tx: &'tx Transaction<'tx>, maintain_fts: bool) -> anyhow::Result<Self> {
+    pub(crate) fn insert(&mut self, snapshot: &IndexedFileSnapshot) -> anyhow::Result<()> {
+        self.insert_file.execute(params![
+            snapshot.metadata.path,
+            snapshot.metadata.language,
+            snapshot.metadata.mtime_nanos,
+            snapshot.metadata.size_bytes,
+            snapshot.metadata.content_hash,
+        ])?;
+        let file_id = self.tx.last_insert_rowid();
+
+        self.insert_functions(file_id, snapshot)?;
+        self.insert_classes(file_id, snapshot)?;
+        self.insert_fields(file_id, snapshot)?;
+        self.insert_calls(file_id, snapshot)?;
+        self.insert_imports(file_id, snapshot)?;
+        self.insert_annotations(file_id, snapshot)?;
+        self.insert_refs(file_id, snapshot)?;
+        self.insert_python_properties(file_id, snapshot)?;
+        self.insert_python_property_callers(file_id, snapshot)?;
+
+        Ok(())
+    }
+
+    fn build(tx: &'tx Transaction<'tx>, maintain_fts: bool) -> anyhow::Result<Self> {
         Ok(Self {
             tx,
             maintain_fts,
@@ -117,35 +140,12 @@ impl<'tx> SnapshotWriter<'tx> {
         })
     }
 
-    pub(crate) fn insert_snapshot(&mut self, snapshot: &IndexedFileSnapshot) -> anyhow::Result<()> {
-        self.insert_file.execute(params![
-            snapshot.metadata.path,
-            snapshot.metadata.language,
-            snapshot.metadata.mtime_nanos,
-            snapshot.metadata.size_bytes,
-            snapshot.metadata.content_hash,
-        ])?;
-        let file_id = self.tx.last_insert_rowid();
-
-        self.insert_functions(file_id, snapshot)?;
-        self.insert_classes(file_id, snapshot)?;
-        self.insert_fields(file_id, snapshot)?;
-        self.insert_calls(file_id, snapshot)?;
-        self.insert_imports(file_id, snapshot)?;
-        self.insert_annotations(file_id, snapshot)?;
-        self.insert_refs(file_id, snapshot)?;
-        self.insert_python_properties(file_id, snapshot)?;
-        self.insert_python_property_callers(file_id, snapshot)?;
-
-        Ok(())
-    }
-
     fn insert_functions(
         &mut self,
         file_id: i64,
         snapshot: &IndexedFileSnapshot,
     ) -> anyhow::Result<()> {
-        for function in &snapshot.snapshot.functions {
+        for function in &snapshot.parsed.functions {
             self.insert_function.execute(params![
                 file_id,
                 function.name,
@@ -177,7 +177,7 @@ impl<'tx> SnapshotWriter<'tx> {
         file_id: i64,
         snapshot: &IndexedFileSnapshot,
     ) -> anyhow::Result<()> {
-        for class in &snapshot.snapshot.classes {
+        for class in &snapshot.parsed.classes {
             self.insert_class.execute(params![
                 file_id,
                 class.name,
@@ -209,7 +209,7 @@ impl<'tx> SnapshotWriter<'tx> {
         file_id: i64,
         snapshot: &IndexedFileSnapshot,
     ) -> anyhow::Result<()> {
-        for field in &snapshot.snapshot.fields {
+        for field in &snapshot.parsed.fields {
             self.insert_field.execute(params![
                 file_id,
                 field.class_name,
@@ -223,7 +223,7 @@ impl<'tx> SnapshotWriter<'tx> {
     }
 
     fn insert_calls(&mut self, file_id: i64, snapshot: &IndexedFileSnapshot) -> anyhow::Result<()> {
-        for call in &snapshot.snapshot.calls {
+        for call in &snapshot.parsed.calls {
             self.insert_call.execute(params![
                 file_id,
                 call.callee,
@@ -242,7 +242,7 @@ impl<'tx> SnapshotWriter<'tx> {
         file_id: i64,
         snapshot: &IndexedFileSnapshot,
     ) -> anyhow::Result<()> {
-        for import in &snapshot.snapshot.imports {
+        for import in &snapshot.parsed.imports {
             self.insert_import.execute(params![
                 file_id,
                 import.module,
@@ -265,7 +265,7 @@ impl<'tx> SnapshotWriter<'tx> {
         file_id: i64,
         snapshot: &IndexedFileSnapshot,
     ) -> anyhow::Result<()> {
-        for annotation in &snapshot.snapshot.annotations {
+        for annotation in &snapshot.parsed.annotations {
             self.insert_annotation.execute(params![
                 file_id,
                 annotation.name,
@@ -288,7 +288,7 @@ impl<'tx> SnapshotWriter<'tx> {
     }
 
     fn insert_refs(&mut self, file_id: i64, snapshot: &IndexedFileSnapshot) -> anyhow::Result<()> {
-        for reference in &snapshot.snapshot.refs {
+        for reference in &snapshot.parsed.refs {
             self.insert_ref.execute(params![
                 file_id,
                 reference.name,
@@ -307,7 +307,7 @@ impl<'tx> SnapshotWriter<'tx> {
         file_id: i64,
         snapshot: &IndexedFileSnapshot,
     ) -> anyhow::Result<()> {
-        for property in &snapshot.snapshot.python_properties {
+        for property in &snapshot.parsed.python_properties {
             self.insert_python_property.execute(params![
                 file_id,
                 property.name,
@@ -322,7 +322,7 @@ impl<'tx> SnapshotWriter<'tx> {
         file_id: i64,
         snapshot: &IndexedFileSnapshot,
     ) -> anyhow::Result<()> {
-        for caller in &snapshot.snapshot.python_property_callers {
+        for caller in &snapshot.parsed.python_property_callers {
             self.insert_python_property_caller.execute(params![
                 file_id,
                 caller.property_name,

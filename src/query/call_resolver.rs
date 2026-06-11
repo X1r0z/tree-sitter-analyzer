@@ -11,7 +11,7 @@ use crate::parser::call_targets::{
     resolve_forward_targets as resolve_forward_targets_from_candidates, type_matches_class,
     ForwardTargetContext,
 };
-use crate::traversal::collect_reachable_bfs;
+use crate::traversal::collect_reachable;
 
 pub(super) type FieldTypesByName = HashMap<String, Vec<Option<String>>>;
 pub(super) type FieldTypeCache = HashMap<(i64, String), Arc<FieldTypesByName>>;
@@ -387,7 +387,7 @@ impl<'a> CallTargetResolver<'a> {
             return Ok(Arc::clone(cached));
         }
         let mut error = None;
-        let ancestors = collect_reachable_bfs(
+        let ancestors = collect_reachable(
             [class_name.to_string()],
             [class_name.to_string()],
             |current| match self.load_super_classes(file_id, current) {

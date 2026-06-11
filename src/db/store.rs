@@ -27,6 +27,19 @@ impl IndexStore {
         self.conn
     }
 
+    pub(crate) fn open_connection(path: &Path) -> anyhow::Result<Connection> {
+        let conn = Connection::open(path)?;
+        conn.execute_batch(
+            "
+            PRAGMA cache_size = -65536;
+            PRAGMA mmap_size = 268435456;
+            PRAGMA temp_store = MEMORY;
+            ",
+        )?;
+        Self::register_regexp(&conn)?;
+        Ok(conn)
+    }
+
     pub(crate) fn is_compatible_with(
         &self,
         root_path: &str,
@@ -43,7 +56,7 @@ impl IndexStore {
     }
 
     pub(crate) fn matches_root_path(&self, root_path: &str) -> anyhow::Result<bool> {
-        Ok(self.metadata_value("indexed_root_path")?.as_deref() == Some(root_path))
+        Ok(Self::metadata_value(&self.conn, "indexed_root_path")?.as_deref() == Some(root_path))
     }
 
     pub(crate) fn missing_languages(
@@ -70,18 +83,27 @@ impl IndexStore {
     }
 
     pub(crate) fn indexed_languages(&self) -> anyhow::Result<BTreeSet<String>> {
-        if let Some(value) = self.metadata_value("indexed_languages")? {
-            return Ok(Self::parse_language_set(&value));
-        }
+        let indexed_languages = Self::metadata_value(&self.conn, "indexed_languages")?;
+        let language_filter = Self::metadata_value(&self.conn, "language_filter")?;
+        Ok(Self::languages_from_metadata(
+            indexed_languages.as_deref(),
+            language_filter.as_deref(),
+        ))
+    }
 
-        let language_filter = self.metadata_value("language_filter")?.unwrap_or_default();
-        if language_filter.is_empty() {
-            Ok(supported_language_names()
+    pub(crate) fn languages_from_metadata(
+        indexed_languages: Option<&str>,
+        language_filter: Option<&str>,
+    ) -> BTreeSet<String> {
+        if let Some(value) = indexed_languages {
+            return Self::deserialize_language_set(value);
+        }
+        match language_filter.unwrap_or_default() {
+            "" => supported_language_names()
                 .into_iter()
                 .map(str::to_string)
-                .collect())
-        } else {
-            Ok(std::iter::once(language_filter).collect())
+                .collect(),
+            filter => std::iter::once(filter.to_string()).collect(),
         }
     }
 
@@ -89,7 +111,7 @@ impl IndexStore {
         languages.iter().cloned().collect::<Vec<_>>().join(",")
     }
 
-    pub(crate) fn legacy_language_filter_value(languages: &BTreeSet<String>) -> String {
+    pub(crate) fn legacy_language_filter(languages: &BTreeSet<String>) -> String {
         let supported = supported_language_names()
             .into_iter()
             .map(str::to_string)
@@ -101,19 +123,6 @@ impl IndexStore {
         } else {
             "__mixed__".to_string()
         }
-    }
-
-    pub(crate) fn open_connection(path: &Path) -> anyhow::Result<Connection> {
-        let conn = Connection::open(path)?;
-        conn.execute_batch(
-            "
-            PRAGMA cache_size = -65536;
-            PRAGMA mmap_size = 268435456;
-            PRAGMA temp_store = MEMORY;
-            ",
-        )?;
-        Self::register_regexp_function(&conn)?;
-        Ok(conn)
     }
 
     pub(crate) fn clear(tx: &Transaction<'_>) -> anyhow::Result<()> {
@@ -148,7 +157,7 @@ impl IndexStore {
         Ok(())
     }
 
-    pub(crate) fn refresh_temp_current_files(
+    pub(crate) fn refresh_current_files(
         tx: &Transaction<'_>,
         current_files: &[IndexedFileMetadata],
     ) -> anyhow::Result<()> {
@@ -168,7 +177,7 @@ impl IndexStore {
         Ok(())
     }
 
-    pub(crate) fn count_stale_indexed_files(
+    pub(crate) fn count_stale_files(
         tx: &Transaction<'_>,
         scope_languages: &[String],
     ) -> anyhow::Result<u64> {
@@ -194,7 +203,7 @@ impl IndexStore {
         .map_err(Into::into)
     }
 
-    pub(crate) fn stale_indexed_file_ids(
+    pub(crate) fn stale_file_ids(
         tx: &Transaction<'_>,
         scope_languages: &[String],
     ) -> anyhow::Result<Vec<i64>> {
@@ -218,7 +227,7 @@ impl IndexStore {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
-    pub(crate) fn indexed_file_metadata_by_path(
+    pub(crate) fn file_metadata_by_path(
         &self,
         paths: &[String],
     ) -> anyhow::Result<HashMap<String, IndexedFileMetadata>> {
@@ -255,7 +264,7 @@ impl IndexStore {
         Ok(records)
     }
 
-    pub(crate) fn indexed_file_rows_by_path(
+    pub(crate) fn file_rows_by_path(
         tx: &Transaction<'_>,
         paths: &[String],
     ) -> anyhow::Result<HashMap<String, IndexedFileRow>> {
@@ -278,16 +287,18 @@ impl IndexStore {
             let rows = stmt.query_map(params_from_iter(chunk.iter()), |row| {
                 Ok(IndexedFileRow {
                     id: row.get(0)?,
-                    path: row.get(1)?,
-                    language: row.get(2)?,
-                    mtime_nanos: row.get(3)?,
-                    size_bytes: row.get(4)?,
-                    content_hash: row.get(5)?,
+                    metadata: IndexedFileMetadata {
+                        path: row.get(1)?,
+                        language: row.get(2)?,
+                        mtime_nanos: row.get(3)?,
+                        size_bytes: row.get(4)?,
+                        content_hash: row.get(5)?,
+                    },
                 })
             })?;
             for entry in rows {
                 let entry = entry?;
-                entries.insert(entry.path.clone(), entry);
+                entries.insert(entry.metadata.path.clone(), entry);
             }
         }
         Ok(entries)
@@ -320,7 +331,7 @@ impl IndexStore {
         Ok(())
     }
 
-    pub(crate) fn read_metadata_value(
+    pub(crate) fn metadata_value(
         conn: &Connection,
         key: &str,
     ) -> anyhow::Result<Option<String>> {
@@ -359,16 +370,7 @@ impl IndexStore {
         .map_err(Into::into)
     }
 
-    fn metadata_value(&self, key: &str) -> anyhow::Result<Option<String>> {
-        self.conn
-            .query_row("SELECT value FROM metadata WHERE key = ?1", [key], |row| {
-                row.get(0)
-            })
-            .optional()
-            .map_err(Into::into)
-    }
-
-    fn register_regexp_function(conn: &Connection) -> anyhow::Result<()> {
+    fn register_regexp(conn: &Connection) -> anyhow::Result<()> {
         type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
         conn.create_scalar_function(
@@ -390,7 +392,7 @@ impl IndexStore {
         Ok(())
     }
 
-    fn parse_language_set(value: &str) -> BTreeSet<String> {
+    fn deserialize_language_set(value: &str) -> BTreeSet<String> {
         value
             .split(',')
             .map(str::trim)

@@ -11,7 +11,7 @@ use crate::parser::call_targets::{
 use crate::parser::{
     ParseContext, PythonPropertyCallers, PythonPropertyDefinitions, PythonPropertyIndexes,
 };
-use crate::traversal::collect_reachable_bfs;
+use crate::traversal::collect_reachable;
 use crate::utils::innermost_at_line;
 
 type PythonPropertyCallerKey = (String, String, Option<String>, Option<String>, usize, usize);
@@ -243,7 +243,7 @@ impl<'a> PythonPropertyAnalyzer<'a> {
 
         while let Some(node) = stack.pop() {
             if node.kind() == "attribute" {
-                if !Self::is_property_read_access(node) {
+                if !Self::is_read_access(node) {
                     continue;
                 }
                 let parts = AttributeParts::from_attribute(self.ctx, node);
@@ -302,7 +302,7 @@ impl<'a> PythonPropertyAnalyzer<'a> {
         callers_by_property
     }
 
-    fn is_property_read_access(node: Node<'_>) -> bool {
+    fn is_read_access(node: Node<'_>) -> bool {
         let mut current = node;
         while let Some(parent) = current.parent() {
             match parent.kind() {
@@ -492,7 +492,7 @@ impl<'a> PythonPropertyAnalyzer<'a> {
                     .as_deref()
                     .is_some_and(|class_name| {
                         class_name == target_class_name
-                            || collect_reachable_bfs(
+                            || collect_reachable(
                                 [class_name.to_string()],
                                 [class_name.to_string()],
                                 |current| {

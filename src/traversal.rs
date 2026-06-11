@@ -1,6 +1,5 @@
 use std::collections::{HashSet, VecDeque};
 use std::hash::Hash;
-use std::marker::PhantomData;
 
 use crate::models::GraphDirection;
 
@@ -10,7 +9,19 @@ pub(crate) struct TraversalPathStep<N, E> {
     pub(crate) edge: Option<E>,
 }
 
-pub(crate) fn collect_paths_dfs<K, PK, N, E, P, Err, KeyOf, Neighbors, PathIdentity, Materialize>(
+enum WalkStep<N, E, K> {
+    Enter {
+        node: N,
+        edge: Option<E>,
+        key: K,
+        depth: usize,
+    },
+    Leave {
+        key: K,
+    },
+}
+
+pub(crate) fn collect_paths<K, PK, N, E, P, Err, KeyOf, Neighbors, PathIdentity, Materialize>(
     start_nodes: &[N],
     direction: GraphDirection,
     max_depth: usize,
@@ -29,109 +40,72 @@ where
     PathIdentity: FnMut(&[TraversalPathStep<N, E>]) -> PK,
     Materialize: FnMut(GraphDirection, &[TraversalPathStep<N, E>]) -> P,
 {
-    let mut walker = DfsWalker::<K, PK, N, E, P, Err, KeyOf, Neighbors, PathIdentity, Materialize> {
-        direction,
-        key_of: &mut key_of,
-        neighbors_for: &mut neighbors_for,
-        path_identity: &mut path_identity,
-        materialize: &mut materialize,
-        seen_paths: HashSet::new(),
-        results: Vec::new(),
-        _marker: PhantomData,
-    };
-    walker.run(start_nodes, max_depth)?;
+    let mut seen_paths: HashSet<PK> = HashSet::new();
+    let mut results: Vec<P> = Vec::new();
+    let mut path: Vec<TraversalPathStep<N, E>> = Vec::new();
+    let mut visited: HashSet<K> = HashSet::new();
 
-    Ok(walker.results)
-}
+    let mut stack: Vec<WalkStep<N, E, K>> = start_nodes
+        .iter()
+        .rev()
+        .map(|start| WalkStep::Enter {
+            node: start.clone(),
+            edge: None,
+            key: key_of(start),
+            depth: max_depth,
+        })
+        .collect();
 
-struct DfsWalker<'a, K, PK, N, E, P, Err, KeyOf, Neighbors, PathIdentity, Materialize>
-where
-    K: Clone + Eq + Hash,
-    PK: Eq + Hash,
-    N: Clone,
-    E: Clone,
-    KeyOf: FnMut(&N) -> K,
-    Neighbors: FnMut(&N) -> Result<Vec<(N, E)>, Err>,
-    PathIdentity: FnMut(&[TraversalPathStep<N, E>]) -> PK,
-    Materialize: FnMut(GraphDirection, &[TraversalPathStep<N, E>]) -> P,
-{
-    direction: GraphDirection,
-    key_of: &'a mut KeyOf,
-    neighbors_for: &'a mut Neighbors,
-    path_identity: &'a mut PathIdentity,
-    materialize: &'a mut Materialize,
-    seen_paths: HashSet<PK>,
-    results: Vec<P>,
-    _marker: PhantomData<(N, E)>,
-}
+    while let Some(step) = stack.pop() {
+        let (node, edge, key, depth) = match step {
+            WalkStep::Leave { key } => {
+                path.pop();
+                visited.remove(&key);
+                continue;
+            }
+            WalkStep::Enter {
+                node,
+                edge,
+                key,
+                depth,
+            } => (node, edge, key, depth),
+        };
 
-impl<K, PK, N, E, P, Err, KeyOf, Neighbors, PathIdentity, Materialize>
-    DfsWalker<'_, K, PK, N, E, P, Err, KeyOf, Neighbors, PathIdentity, Materialize>
-where
-    K: Clone + Eq + Hash,
-    PK: Eq + Hash,
-    N: Clone,
-    E: Clone,
-    KeyOf: FnMut(&N) -> K,
-    Neighbors: FnMut(&N) -> Result<Vec<(N, E)>, Err>,
-    PathIdentity: FnMut(&[TraversalPathStep<N, E>]) -> PK,
-    Materialize: FnMut(GraphDirection, &[TraversalPathStep<N, E>]) -> P,
-{
-    fn run(&mut self, start_nodes: &[N], max_depth: usize) -> Result<(), Err> {
-        for start in start_nodes {
-            let start_key = (self.key_of)(start);
-            let mut path = vec![TraversalPathStep {
-                node: start.clone(),
-                edge: None,
-            }];
-            let mut visited = HashSet::from([start_key]);
-            self.walk(max_depth, &mut path, &mut visited)?;
-        }
-        Ok(())
-    }
-
-    fn walk(
-        &mut self,
-        remaining_depth: usize,
-        path: &mut Vec<TraversalPathStep<N, E>>,
-        visited: &mut HashSet<K>,
-    ) -> Result<(), Err> {
-        let current = path
-            .last()
-            .map_or_else(|| unreachable!(), |step| step.node.clone());
+        visited.insert(key.clone());
 
         let mut next_nodes = Vec::new();
-        for (node, edge) in (self.neighbors_for)(&current)? {
-            let key = (self.key_of)(&node);
-            if !visited.contains(&key) {
-                next_nodes.push((key, node, edge));
+        for (neighbor, neighbor_edge) in neighbors_for(&node)? {
+            let neighbor_key = key_of(&neighbor);
+            if !visited.contains(&neighbor_key) {
+                next_nodes.push((neighbor_key, neighbor, neighbor_edge));
             }
         }
 
-        if remaining_depth == 0 || next_nodes.is_empty() {
-            let keys = (self.path_identity)(path);
-            if self.seen_paths.insert(keys) {
-                self.results.push((self.materialize)(self.direction, path));
+        path.push(TraversalPathStep { node, edge });
+        stack.push(WalkStep::Leave { key });
+
+        if depth == 0 || next_nodes.is_empty() {
+            let identity = path_identity(&path);
+            if seen_paths.insert(identity) {
+                results.push(materialize(direction, &path));
             }
-            return Ok(());
+            continue;
         }
 
-        for (next_key, next_node, next_edge) in next_nodes {
-            visited.insert(next_key.clone());
-            path.push(TraversalPathStep {
-                node: next_node,
-                edge: Some(next_edge),
+        for (neighbor_key, neighbor, neighbor_edge) in next_nodes.into_iter().rev() {
+            stack.push(WalkStep::Enter {
+                node: neighbor,
+                edge: Some(neighbor_edge),
+                key: neighbor_key,
+                depth: depth - 1,
             });
-            self.walk(remaining_depth - 1, path, visited)?;
-            path.pop();
-            visited.remove(&next_key);
         }
-
-        Ok(())
     }
+
+    Ok(results)
 }
 
-pub(crate) fn collect_reachable_bfs<State, Item, Key, Expand, NextState, KeyOf>(
+pub(crate) fn collect_reachable<State, Item, Key, Expand, NextState, KeyOf>(
     start_states: impl IntoIterator<Item = State>,
     initial_visited: impl IntoIterator<Item = Key>,
     mut expand: Expand,

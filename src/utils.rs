@@ -227,6 +227,10 @@ fn progress_style(unit: &str, bar_style: &str) -> ProgressStyle {
         .progress_chars("##-")
 }
 
+pub fn db_path_in_current_dir() -> anyhow::Result<std::path::PathBuf> {
+    Ok(std::env::current_dir()?.join("tsa.db"))
+}
+
 pub fn resolve_path(path: &str) -> String {
     if let Ok(path) = std::fs::canonicalize(path) {
         path.to_string_lossy().to_string()

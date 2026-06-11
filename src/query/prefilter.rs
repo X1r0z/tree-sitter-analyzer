@@ -5,10 +5,8 @@ use regex_syntax::hir::{Hir, HirKind};
 const MIN_FTS_LITERAL_LEN: usize = 3;
 const MAX_FTS_LITERALS: usize = 8;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct RegexPrefilter {
     pub(super) match_all: bool,
-    pub(super) mandatory_literals: Vec<String>,
     pub(super) fts_match_query: Option<String>,
 }
 
@@ -17,7 +15,6 @@ impl RegexPrefilter {
         if pattern.is_empty() {
             return Self {
                 match_all: true,
-                mandatory_literals: Vec::new(),
                 fts_match_query: None,
             };
         }
@@ -33,7 +30,6 @@ impl RegexPrefilter {
 
         Self {
             match_all: false,
-            mandatory_literals,
             fts_match_query,
         }
     }

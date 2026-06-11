@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use crate::models::{
     AnnotationInfo, CallInfo, ClassInfo, FieldInfo, FileSnapshot, FunctionInfo, ImportInfo, RefInfo,
 };
@@ -12,7 +10,6 @@ struct ParseCache {
     snapshot_fields: Option<Vec<FieldInfo>>,
     calls: Option<Vec<CallInfo>>,
     imports: Option<Vec<ImportInfo>>,
-    fields_by_class: HashMap<String, Vec<FieldInfo>>,
 }
 
 pub struct CodeExtractor {
@@ -70,7 +67,9 @@ impl CodeExtractor {
     }
 
     pub fn collect_calls(&mut self) -> Vec<CallInfo> {
-        self.ensure_calls();
+        if self.cache.calls.is_none() {
+            self.cache.calls = Some(self.ctx.collect_calls());
+        }
         self.cache.calls.as_deref().unwrap_or(&[]).to_vec()
     }
 
@@ -138,16 +137,8 @@ impl CodeExtractor {
                 snapshot_fields: None,
                 calls: None,
                 imports: None,
-                fields_by_class: HashMap::new(),
             },
         }
-    }
-
-    fn ensure_calls(&mut self) {
-        if self.cache.calls.is_some() {
-            return;
-        }
-        self.cache.calls = Some(self.ctx.collect_calls());
     }
 
     fn ensure_class_snapshot(&mut self) {
@@ -157,6 +148,5 @@ impl CodeExtractor {
         let snapshot = self.ctx.collect_class_snapshot();
         self.cache.classes = Some(snapshot.classes);
         self.cache.snapshot_fields = Some(snapshot.fields);
-        self.cache.fields_by_class = snapshot.field_infos_by_class;
     }
 }
